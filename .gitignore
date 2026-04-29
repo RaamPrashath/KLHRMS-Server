@@ -1,0 +1,132 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ── Build / packaging ─────────────────────────────────────────────────────────
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+MANIFEST
+
+# ── Virtual environment ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── uv ───────────────────────────────────────────────────────────────────────
+# uv.lock IS committed — it pins exact versions for reproducible installs
+# .python-version IS committed — pins the Python version for the project
+# Do NOT ignore uv.lock or .python-version
+
+# ── Environment variables ─────────────────────────────────────────────────────
+.env
+.env.local
+.env.development
+.env.staging
+.env.production
+.env.test
+# Keep the example file — it documents required vars
+!.env.example
+
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+.cursor/
+
+# ── Testing / Coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.tox/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+log/
+
+# ── Alembic ───────────────────────────────────────────────────────────────────
+# Migration scripts ARE committed — they are source of truth for schema
+# Only ignore compiled artifacts
+alembic/versions/__pycache__/
+
+# ── OS generated ──────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+# Dockerfile and docker-compose.yml ARE committed
+# Only ignore local override files
+docker-compose.override.yml
+docker-compose.local.yml
+
+# ── Secrets / credentials ─────────────────────────────────────────────────────
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+secrets/
+credentials/
+
+# ── Uploads / generated files ─────────────────────────────────────────────────
+uploads/
+media/
+generated/
+exports/
+tmp/
+temp/
+
+# ── PDF / Office generated output ─────────────────────────────────────────────
+# Template source files ARE committed (app/templates/)
+# Generated output is not
+app/templates/**/*.pdf
+app/templates/**/*.xlsx
+app/templates/**/*.csv
+
+# ── Database ──────────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Kiro / agent workspace ────────────────────────────────────────────────────
+# .agents/ contains skills and specs used during development
+# Commit if your team uses them, ignore if not
+# Uncomment the line below to ignore:
+# .agents/
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+.cache/
+*.bak
+*.orig
+*.patch
+skills-lock.json
+
+
+.env.*
+.agents
+.kiro
+.windsurf
+.cursor
