@@ -32,9 +32,9 @@ class Settings(BaseSettings):
     allowed_hosts: str = Field(default="localhost,127.0.0.1,testserver", alias="ALLOWED_HOSTS")
 
     # ── Database ──────────────────────────────────────────────────────────────
-    postgres_dsn: str = Field(
+    database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/klhrms",
-        alias="POSTGRES_DSN",
+        alias="DATABASE_URL",
     )
 
     # ── Redis ─────────────────────────────────────────────────────────────────

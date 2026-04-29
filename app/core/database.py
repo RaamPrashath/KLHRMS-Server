@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 engine: AsyncEngine = create_async_engine(
-    settings.postgres_dsn,
+    settings.database_url,
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,

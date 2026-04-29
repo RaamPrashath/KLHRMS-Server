@@ -17,7 +17,7 @@ config = context.config
 settings = get_settings()
 
 # Strip +asyncpg for the sync Alembic engine
-sync_url = settings.postgres_dsn.replace("+asyncpg", "")
+sync_url = settings.database_url.replace("+asyncpg", "")
 config.set_main_option("sqlalchemy.url", sync_url)
 
 if config.config_file_name is not None:
