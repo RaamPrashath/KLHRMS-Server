@@ -1,17 +1,9 @@
 # Import all models here so Alembic autogenerate picks them up.
-from app.models.base import Base, HRMSBase  # noqa: F401
-from app.models.hrms_role import HRMSRole  # noqa: F401
-from app.models.audit_log import AuditLog  # noqa: F401
-from app.models.employee import Employee  # noqa: F401
-from app.models.department import Department  # noqa: F401
-from app.models.attendance import Attendance  # noqa: F401
-from app.models.leave import Leave  # noqa: F401
-from app.models.timesheet import Timesheet  # noqa: F401
-from app.models.project import Project  # noqa: F401
-from app.models.recruitment import Recruitment  # noqa: F401
-from app.models.payroll import Payroll  # noqa: F401
-from app.models.payslip import Payslip  # noqa: F401
-from app.models.asset import Asset  # noqa: F401
-from app.models.helpdesk import HelpdeskTicket  # noqa: F401
-from app.models.document import Document  # noqa: F401
-from app.models.developer import DeveloperToken  # noqa: F401
+from app.models.account import Account
+from app.models.member import Member
+from app.models.organization import Organization
+from app.models.role import Role
+from app.models.session import Session
+from app.models.user import User
+from app.models.verification import Verification
+from app.models.base import Base

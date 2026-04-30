@@ -26,6 +26,13 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+# 🔥 Ignore Prisma internal table
+def include_object(object, name, type_, reflected, compare_to):
+    if name == "_prisma_migrations":
+        return False
+    return True
+
+
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
@@ -33,8 +40,11 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,
+        compare_index=compare_index,
+        compare_type=False,
+        include_object=include_object,
     )
+
     with context.begin_transaction():
         context.run_migrations()
 
@@ -46,15 +56,27 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
         future=True,
     )
+
     with connectable.connect() as connection:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            compare_type=True,
+            compare_index=compare_index,
+            compare_type=False,
+            include_object=include_object,
         )
+
         with context.begin_transaction():
             context.run_migrations()
 
+def include_object(object, name, type_, reflected, compare_to):
+    if name == "_prisma_migrations":
+        return False
+    return True
+
+
+def compare_index(context, metadata_index, inspector_index):
+    return False
 
 if context.is_offline_mode():
     run_migrations_offline()
