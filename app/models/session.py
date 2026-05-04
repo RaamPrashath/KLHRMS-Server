@@ -1,14 +1,17 @@
 from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, Index
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, Index
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from datetime import datetime
+from app.models.base import Base, TimestampMixin, generate_uuid
 
-from app.models.base import Base, TimestampMixin
+
 class Session(Base, TimestampMixin):
     __tablename__ = "session"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
 
-    expiresAt: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expiresAt: Mapped[datetime] = mapped_column(nullable=False)
 
     token: Mapped[str] = mapped_column(String(255), nullable=False)
 
@@ -18,6 +21,8 @@ class Session(Base, TimestampMixin):
     userId: Mapped[str] = mapped_column(
         String(36), ForeignKey("user.id", ondelete="CASCADE"), nullable=False
     )
+
+    user = relationship("User", back_populates="sessions")
 
     __table_args__ = (
         UniqueConstraint("token", name="session_token_key"),

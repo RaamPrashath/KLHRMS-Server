@@ -7,15 +7,17 @@ from sqlalchemy import (
     Index,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column
-
-from app.models.base import Base
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from datetime import datetime
+from app.models.base import Base, generate_uuid
 
 
 class Member(Base):
     __tablename__ = "Member"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
 
     organizationId: Mapped[str] = mapped_column(
         String(36),
@@ -29,24 +31,26 @@ class Member(Base):
         nullable=False,
     )
 
-    roleId: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    roleId: Mapped[str | None] = mapped_column(String(32))
 
-    createdAt: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
+    createdAt: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
+
+    organization = relationship("Organization", back_populates="members")
+    user = relationship("User", back_populates="members")
+    role = relationship("Role")
 
     __table_args__ = (
         UniqueConstraint(
             "organizationId",
             "userId",
-            name="Member_organizationId_userId_key",
+            name="member_organizationId_userId_key",
         ),
         ForeignKeyConstraint(
             ["organizationId", "roleId"],
             ["Role.organizationId", "Role.id"],
         ),
-        Index("Member_organizationId_idx", "organizationId"),
-        Index("Member_userId_idx", "userId"),
+        Index("member_organizationId_idx", "organizationId"),
+        Index("member_userId_idx", "userId"),
     )
