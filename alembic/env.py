@@ -1,23 +1,24 @@
 """
 Alembic migration environment.
-Uses the async PostgreSQL engine from app.core.database.
-All HRMS models are imported via app.models.__init__ so
-autogenerate picks up every table.
+
+All HRMS models are imported via app.models.__init__ so autogenerate
+picks up every table. Prisma-owned tables are automatically ignored
+via the include_name allowlist strategy.
 """
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from app.core.config import get_settings
-from app.models import Base  # noqa: F401 — imports all models for autogenerate
-from app.models import *  # noqa: F401, F403
+from app.models import Base  # noqa: F401 — registers all model metadata
+from app.models import *     # noqa: F401, F403
+from app.shared.config import get_settings
 
 config = context.config
 settings = get_settings()
 
 # Strip +asyncpg for the sync Alembic engine
-# Also convert ?ssl=require → ?sslmode=require for psycopg2 compatibility
+# Convert ?ssl=require → ?sslmode=require for psycopg2 compatibility
 sync_url = settings.database_url.replace("+asyncpg", "")
 sync_url = sync_url.replace("?ssl=require", "?sslmode=require")
 config.set_main_option("sqlalchemy.url", sync_url)
@@ -27,16 +28,11 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# ── Tables that Prisma owns — Alembic must never touch these ─────────────────
-# Instead of a hardcoded blocklist (which breaks when new Prisma tables are added),
-# we use an allowlist: only process tables that are defined in SQLAlchemy models.
-# Any table NOT in Base.metadata is assumed to be Prisma-managed and is ignored.
 
 def include_name(name, type_, parent_names):
     """
-    Only include tables that Alembic owns (i.e. defined in SQLAlchemy models).
-    Any table in the DB that has no corresponding SQLAlchemy model is left alone.
-    This means new Prisma tables are automatically ignored without any config change.
+    Only migrate tables defined in SQLAlchemy models.
+    Any table not in Base.metadata is Prisma-managed and left untouched.
     """
     if type_ == "table":
         return name in target_metadata.tables
