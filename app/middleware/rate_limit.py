@@ -2,12 +2,10 @@ import time
 from collections.abc import Awaitable, Callable
 
 from fastapi import Request
-from redis.exceptions import RedisError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
 from app.core.config import get_settings
-from app.core import redis as core_redis
 
 settings = get_settings()
 
@@ -47,15 +45,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 
 async def _increase_counter(key: str, window_seconds: int) -> int:
-    if core_redis.redis_client is not None:
-        try:
-            current_count = await core_redis.redis_client.incr(key)
-            if current_count == 1:
-                await core_redis.redis_client.expire(key, window_seconds)
-            return int(current_count)
-        except RedisError:
-            pass
-
+    # Redis removed; using in-memory fallback only
     now = time.time()
     count, expires_at = _memory_store.get(key, (0, now + window_seconds))
     if now > expires_at:

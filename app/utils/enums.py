@@ -91,3 +91,11 @@ class RecruitmentStatus(StrEnum):
     ON_HOLD = "on_hold"
     CLOSED = "closed"
     CANCELLED = "cancelled"
+
+
+class WorkLocationType(StrEnum):
+    HOME    = "home"
+    OFFICE  = "office"
+    HYBRID  = "hybrid"
+    LEAVE   = "leave"
+    HOLIDAY = "holiday"

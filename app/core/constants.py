@@ -8,10 +8,7 @@ DEFAULT_PAGE_SIZE: int = 20
 MAX_PAGE_SIZE: int = 200
 
 # ── Redis key prefixes ────────────────────────────────────────────────────────
-REDIS_PREFIX_RATE_LIMIT: str = "rl:"
-REDIS_PREFIX_CACHE: str = "cache:"
-REDIS_PREFIX_SESSION: str = "session:"
-REDIS_PREFIX_TASK: str = "task:"
+# Redis removed - key prefixes not used
 
 # ── HRMS roles ────────────────────────────────────────────────────────────────
 ROLE_SUPER_ADMIN: str = "super_admin"

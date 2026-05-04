@@ -4,14 +4,20 @@ All values loaded from environment / .env file.
 No Oracle, no MongoDB, no multi-auth-provider complexity.
 """
 from functools import lru_cache
+from pathlib import Path
+import os
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+BASE_DIR = Path(__file__).resolve().parents[2]
+ENV_FILE = BASE_DIR / ".env"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(ENV_FILE),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -33,7 +39,7 @@ class Settings(BaseSettings):
 
     # ── Database ──────────────────────────────────────────────────────────────
     database_url: str = Field(
-        default="postgresql+asyncpg://postgres:postgres@localhost:5432/klhrms",
+        default=os.getenv("DATABASE_URL", "postgresql+asyncpg://neondb_owner:npg_DAWwZ1hzp5kS@ep-misty-union-aore5yx2-pooler.c-2.ap-southeast-1.aws.neon.tech/neondb?ssl=require"),
         alias="DATABASE_URL",
     )
 

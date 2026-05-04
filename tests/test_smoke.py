@@ -16,9 +16,4 @@ def test_health(client):
     body = resp.json()
     assert "status" in body
     assert "checks" in body
-
-
-def test_protected_endpoint_requires_auth(client):
-    """Employees endpoint must reject unauthenticated requests."""
-    resp = client.get("/api/v1/employees")
-    assert resp.status_code == 401
+ 

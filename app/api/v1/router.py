@@ -1,25 +1,12 @@
 """
 KL HRMS v1 API router.
-All HRMS module endpoints registered here.
+Modules are added here incrementally as they are built.
 """
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
-    attendance,
-    assets,
-    developers,
-    documents,
-    employees,
     health,
-    helpdesk,
-    leaves,
-    organization,
-    payroll,
-    payslips,
-    projects,
-    recruitment,
-    reports,
-    timesheet,
+    weekly_plan,
 )
 
 api_router = APIRouter()
@@ -28,17 +15,5 @@ api_router = APIRouter()
 api_router.include_router(health.router)
 
 # ── HRMS Modules ──────────────────────────────────────────────────────────────
-api_router.include_router(organization.router)
-api_router.include_router(employees.router)
-api_router.include_router(attendance.router)
-api_router.include_router(leaves.router)
-api_router.include_router(timesheet.router)
-api_router.include_router(projects.router)
-api_router.include_router(recruitment.router)
-api_router.include_router(payroll.router)
-api_router.include_router(payslips.router)
-api_router.include_router(assets.router)
-api_router.include_router(helpdesk.router)
-api_router.include_router(documents.router)
-api_router.include_router(reports.router)
-api_router.include_router(developers.router)
+api_router.include_router(weekly_plan.router)
+# Note: employees and attendance endpoints removed per request

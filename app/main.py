@@ -6,12 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from app.api.v1.endpoints import health
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.database import engine
 from app.core.exceptions import HRMSException
 from app.core.logging import setup_logging
-from app.core.redis import close_redis, init_redis
 from app.middleware.audit_log import AuditLogMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware
@@ -25,9 +25,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     logger.info("klhrms.starting")
-    await init_redis()
     yield
-    await close_redis()
     await engine.dispose()
     logger.info("klhrms.stopped")
 
@@ -38,8 +36,9 @@ app = FastAPI(
     description="KL HRMS — multi-tenant SaaS HRMS backend",
     debug=settings.debug,
     lifespan=lifespan,
-    docs_url="/docs" if settings.debug else None,
-    redoc_url="/redoc" if settings.debug else None,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
 )
 
 # ── Exception handlers ────────────────────────────────────────────────────────
@@ -66,6 +65,7 @@ app.add_middleware(
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+app.include_router(health.router)
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 
 
