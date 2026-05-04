@@ -19,7 +19,7 @@ class Organization(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    members = relationship("Member", back_populates="organization")
+    members = relationship("Member", back_populates="organization", overlaps="role")
     roles = relationship("Role", back_populates="organization")
 
     __table_args__ = (

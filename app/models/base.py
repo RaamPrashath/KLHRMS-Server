@@ -10,7 +10,7 @@ class Base(DeclarativeBase):
 
 
 def generate_uuid():
-    return str(uuid.uuid4())
+    return str(uuid.uuid4())  # 36-char UUID with hyphens
 
 
 class TimestampMixin:
@@ -22,6 +22,7 @@ class TimestampMixin:
     updatedAt: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
+        default=func.now(),
         onupdate=func.now(),
         nullable=False,
     )

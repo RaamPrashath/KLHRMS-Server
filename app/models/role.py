@@ -9,7 +9,7 @@ class Role(Base, TimestampMixin):
     __tablename__ = "role"  # Prisma: @@map("role")
 
     id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=generate_uuid
+        String(36), primary_key=True, default=generate_uuid
     )
 
     organizationId: Mapped[str] = mapped_column(
@@ -23,7 +23,7 @@ class Role(Base, TimestampMixin):
     permissions: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
     organization = relationship("Organization", back_populates="roles")
-    members = relationship("Member")
+    members = relationship("Member", back_populates="role", overlaps="organization,members")
 
     __table_args__ = (
         UniqueConstraint("organizationId", "id"),

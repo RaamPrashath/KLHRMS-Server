@@ -39,7 +39,7 @@ class Member(Base):
 
     organization = relationship("Organization", back_populates="members")
     user = relationship("User", back_populates="members")
-    role = relationship("Role")
+    role = relationship("Role", back_populates="members", overlaps="organization")
 
     __table_args__ = (
         UniqueConstraint(
