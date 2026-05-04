@@ -13,7 +13,7 @@ from app.models.base import Base, generate_uuid
 
 
 class Member(Base):
-    __tablename__ = "Member"
+    __tablename__ = "member"  # Prisma: @@map("member")
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=generate_uuid
@@ -21,7 +21,7 @@ class Member(Base):
 
     organizationId: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("Organization.id", ondelete="CASCADE"),
+        ForeignKey("organization.id", ondelete="CASCADE"),
         nullable=False,
     )
 
@@ -49,7 +49,7 @@ class Member(Base):
         ),
         ForeignKeyConstraint(
             ["organizationId", "roleId"],
-            ["Role.organizationId", "Role.id"],
+            ["role.organizationId", "role.id"],
         ),
         Index("member_organizationId_idx", "organizationId"),
         Index("member_userId_idx", "userId"),

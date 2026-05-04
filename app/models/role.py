@@ -6,7 +6,7 @@ from app.models.base import Base, TimestampMixin, generate_uuid
 
 
 class Role(Base, TimestampMixin):
-    __tablename__ = "Role"
+    __tablename__ = "role"  # Prisma: @@map("role")
 
     id: Mapped[str] = mapped_column(
         String(32), primary_key=True, default=generate_uuid
@@ -14,7 +14,7 @@ class Role(Base, TimestampMixin):
 
     organizationId: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("Organization.id", ondelete="CASCADE"),
+        ForeignKey("organization.id", ondelete="CASCADE"),
         nullable=False,
     )
 

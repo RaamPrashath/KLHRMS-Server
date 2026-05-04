@@ -5,7 +5,7 @@ from app.models.base import Base, generate_uuid
 
 
 class Organization(Base):
-    __tablename__ = "Organization"
+    __tablename__ = "organization"  # Prisma: @@map("organization")
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=generate_uuid
