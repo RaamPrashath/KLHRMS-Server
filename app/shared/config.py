@@ -1,16 +1,44 @@
 """
 KL HRMS application settings.
-All values loaded from environment / .env file via pydantic-settings.
+Loads environment values safely and normalizes DATABASE_URL for asyncpg.
 """
+
 import os
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 ENV_FILE = BASE_DIR / ".env"
+
+
+def normalize_database_url(url: str) -> str:
+    """
+    Fixes common DB URL issues:
+    - postgres:// -> postgresql://
+    - sslmode=require -> ssl=require (for asyncpg)
+    """
+    if not url:
+        return url
+
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+
+    parsed = urlparse(url)
+    query_params = dict(parse_qsl(parsed.query))
+
+    # asyncpg doesn't support sslmode
+    if "sslmode" in query_params:
+        sslmode_value = query_params.pop("sslmode")
+        if sslmode_value:
+            query_params["ssl"] = sslmode_value
+
+    new_query = urlencode(query_params)
+
+    return urlunparse(parsed._replace(query=new_query))
 
 
 class Settings(BaseSettings):
@@ -20,46 +48,63 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── App ───────────────────────────────────────────────────────────────────
+    # ── App ───────────────────────────────────────────────
     app_name: str = Field(default="KL HRMS API", alias="APP_NAME")
     app_env: str = Field(default="development", alias="APP_ENV")
     app_port: int = Field(default=8000, alias="APP_PORT")
     api_v1_prefix: str = Field(default="/api/v1", alias="API_V1_PREFIX")
     debug: bool = Field(default=False, alias="DEBUG")
 
-    # ── Logging ───────────────────────────────────────────────────────────────
+    # ── Logging ───────────────────────────────────────────
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     log_json: bool = Field(default=True, alias="LOG_JSON")
 
-    # ── CORS / Hosts ──────────────────────────────────────────────────────────
-    cors_origins: str = Field(default="http://localhost:3000", alias="CORS_ORIGINS")
-    allowed_hosts: str = Field(
-        default="localhost,127.0.0.1,testserver", alias="ALLOWED_HOSTS"
+    # ── CORS / Hosts ──────────────────────────────────────
+    cors_origins: str = Field(
+        default="http://localhost:3000,http://127.0.0.1:3000",
+        alias="CORS_ORIGINS",
     )
 
-    # ── Database ──────────────────────────────────────────────────────────────
+    allowed_hosts: str = Field(
+        default="localhost,127.0.0.1,testserver",
+        alias="ALLOWED_HOSTS",
+    )
+
+    # ── Database ──────────────────────────────────────────
     database_url: str = Field(
         default=os.getenv(
             "DATABASE_URL",
-            "postgresql+asyncpg://neondb_owner:npg_DAWwZ1hzp5kS@ep-misty-union-aore5yx2-pooler.c-2.ap-southeast-1.aws.neon.tech/neondb?ssl=require",
+            "postgresql+asyncpg://postgres:postgres@localhost:5432/hrms",
         ),
         alias="DATABASE_URL",
     )
 
-    # ── Better Auth ───────────────────────────────────────────────────────────
+    # ── Better Auth ───────────────────────────────────────
     better_auth_url: str = Field(
-        default="http://localhost:3000", alias="BETTER_AUTH_URL"
+        default="http://localhost:3000",
+        alias="BETTER_AUTH_URL",
     )
 
-    # ── Properties ───────────────────────────────────────────────────────────
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def validate_database_url(cls, value: str) -> str:
+        return normalize_database_url(value)
 
     @property
     def cors_origins_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        return [
+            origin.strip()
+            for origin in self.cors_origins.split(",")
+            if origin.strip()
+        ]
 
     @property
     def allowed_hosts_list(self) -> list[str]:
-        return [h.strip() for h in self.allowed_hosts.split(",") if h.strip()]
+        return [
+            host.strip()
+            for host in self.allowed_hosts.split(",")
+            if host.strip()
+        ]
 
 
 @lru_cache

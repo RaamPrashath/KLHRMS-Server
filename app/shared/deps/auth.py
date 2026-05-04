@@ -1,6 +1,13 @@
 """
 FastAPI dependency injection — auth context, RBAC guards, DB session, tenant.
 
+Role source of truth: Prisma's 'Member.hrmsRole' column.
+  Prisma stores uppercase values: SUPER_ADMIN | HR | ADMIN | MANAGER | EMPLOYEE
+  FastAPI constants are lowercase:  super_admin | hr | admin | manager | employee
+
+The mapping is applied once in get_auth_context() so every downstream consumer
+(require_roles, services, repositories) always sees lowercase role strings.
+
 Import from here in all endpoint files:
 
     from app.shared.deps.auth import AuthContextDep, DbSession, require_roles
@@ -14,7 +21,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.hrms_role import HRMSRole
+from app.models.auth_tables import PrismaMember
 from app.shared.auth_context import AuthContext
 from app.shared.config import get_settings
 from app.shared.constants import ROLE_SUPER_ADMIN
@@ -27,17 +34,35 @@ settings = get_settings()
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
+# ── Role mapping — Prisma uppercase → FastAPI lowercase ───────────────────────
+
+_PRISMA_ROLE_MAP: dict[str, str] = {
+    "SUPER_ADMIN": "super_admin",
+    "HR":          "hr",
+    "ADMIN":       "admin",
+    "MANAGER":     "manager",
+    "EMPLOYEE":    "employee",
+}
+
+
+def _map_prisma_role(prisma_role: str | None) -> str | None:
+    """Convert a Prisma HrmsRole enum string to the FastAPI lowercase constant."""
+    if prisma_role is None:
+        return None
+    return _PRISMA_ROLE_MAP.get(prisma_role.upper())
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 
 def _extract_bearer(request: Request) -> str:
-    auth = request.headers.get("authorization", "")
-    if not auth.lower().startswith("bearer "):
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or malformed Authorization header.",
         )
-    return auth.split(" ", 1)[1].strip()
+    return auth_header.split(" ", 1)[1].strip()
 
 
 async def _verify_session_token(token: str, db: AsyncSession) -> dict:
@@ -52,9 +77,8 @@ async def _verify_session_token(token: str, db: AsyncSession) -> dict:
     result = await db.execute(
         text(
             """
-            SELECT s."userId", s."expiresAt", u.id AS user_id
+            SELECT s."userId", s."expiresAt"
             FROM session s
-            JOIN "user" u ON u.id = s."userId"
             WHERE s.token = :token
             LIMIT 1
             """
@@ -70,7 +94,6 @@ async def _verify_session_token(token: str, db: AsyncSession) -> dict:
         )
 
     expires_at: datetime = row["expiresAt"]
-    # Make timezone-aware for comparison if it isn't already
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
 
@@ -80,21 +103,30 @@ async def _verify_session_token(token: str, db: AsyncSession) -> dict:
             detail="Session has expired.",
         )
 
-    return {"user_id": str(row["user_id"])}
+    return {"user_id": str(row["userId"])}
 
 
 # ── Auth dependency ───────────────────────────────────────────────────────────
 
 
 async def get_auth_context(request: Request, db: DbSession) -> AuthContext:
+    """
+    Resolve the caller's identity from the Bearer token + x-organization-id header.
+
+    Steps:
+      1. Extract and verify the Better Auth session token → user_id
+      2. Parse the x-organization-id header → organization_id (UUID)
+      3. Query Prisma's Member table for (userId, organizationId)
+      4. Map Member.hrmsRole (uppercase) → FastAPI role constant (lowercase)
+      5. Return AuthContext with user_id, organization_id, role, permissions={}
+    """
     token = _extract_bearer(request)
     session_data = await _verify_session_token(token, db)
-
     user_id: str = session_data["user_id"]
 
     # The org ID comes from the x-organization-id header sent by the frontend.
-    # This is safe because we verify the user has an active HRMS role in that
-    # org in the next step — a user cannot spoof access to another org.
+    # We verify the user is actually a member of that org in step 3 below —
+    # a user cannot spoof access to an org they don't belong to.
     org_id_raw: str | None = request.headers.get("x-organization-id")
 
     if not org_id_raw:
@@ -103,6 +135,7 @@ async def get_auth_context(request: Request, db: DbSession) -> AuthContext:
             detail="x-organization-id header is required.",
         )
 
+    # Validate UUID format (org IDs are UUIDs in Prisma)
     try:
         organization_id = uuid.UUID(org_id_raw)
     except ValueError:
@@ -111,26 +144,50 @@ async def get_auth_context(request: Request, db: DbSession) -> AuthContext:
             detail="Invalid x-organization-id format.",
         )
 
+    # Query Prisma's Member table — this is the single source of truth for
+    # org membership and role assignment.
     result = await db.execute(
-        select(HRMSRole).where(
-            HRMSRole.user_id == user_id,
-            HRMSRole.organization_id == organization_id,
-            HRMSRole.is_active.is_(True),
+        select(PrismaMember).where(
+            PrismaMember.user_id == user_id,
+            PrismaMember.organization_id == str(organization_id),
         )
     )
-    hrms_role = result.scalar_one_or_none()
+    member = result.scalar_one_or_none()
 
-    if hrms_role is None:
+    if member is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="No active HRMS role found for this user in this organization.",
+            detail="User is not a member of this organization.",
         )
+
+    # Map Prisma uppercase role → FastAPI lowercase constant
+    role = _map_prisma_role(member.hrms_role)
+
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Member has no HRMS role assigned "
+                f"(hrmsRole={member.hrms_role!r}). "
+                "Contact your organization administrator."
+            ),
+        )
+
+    logger.debug(
+        "auth.resolved",
+        extra={
+            "user_id": user_id,
+            "org_id": str(organization_id),
+            "prisma_role": member.hrms_role,
+            "mapped_role": role,
+        },
+    )
 
     return AuthContext(
         user_id=user_id,
         organization_id=organization_id,
-        role=hrms_role.role,
-        permissions=hrms_role.permissions or {},
+        role=role,
+        permissions={},  # Fine-grained permissions come from role alone for now
     )
 
 
@@ -170,11 +227,18 @@ def require_permission(permission: str):
 def require_roles(*roles: str):
     """
     Dependency factory — raises 403 if the user's role is not in the allowed list.
+
+    Roles are compared case-insensitively. Both sides are already lowercase
+    (FastAPI constants + mapped AuthContext.role), but the normalization is kept
+    as a safety net.
+
     Usage: dependencies=[Depends(require_roles(ROLE_SUPER_ADMIN, ROLE_HR))]
     """
 
     async def _check(auth: AuthContextDep) -> AuthContext:
-        if auth.role not in roles:
+        normalized_role = (auth.role or "").lower()
+        allowed = [r.lower() for r in roles]
+        if normalized_role not in allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"One of roles {list(roles)} required. Current role: {auth.role}.",

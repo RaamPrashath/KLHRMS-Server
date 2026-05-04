@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query, status
 from app.modules.weekly_plan.repository import WeeklyPlanRepository
 from app.modules.weekly_plan.schema import WeeklyPlanDayCreate, WeeklyPlanRead
 from app.modules.weekly_plan.service import WeeklyPlanService
-from app.shared.constants import ROLE_ADMIN, ROLE_HR, ROLE_MANAGER, ROLE_SUPER_ADMIN
+from app.shared.constants import ROLE_ADMIN, ROLE_HR, ROLE_MANAGER, ROLE_SUPER_ADMIN, ROLE_EMPLOYEE
 from app.shared.deps.auth import AuthContextDep, DbSession, require_roles
 
 router = APIRouter(prefix="/weekly-plans", tags=["weekly-plans"])

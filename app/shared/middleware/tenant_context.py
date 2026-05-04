@@ -1,10 +1,3 @@
-"""
-Tenant context middleware — observability only.
-
-Reads the x-organization-id header and stores it in request.state for logging.
-The authoritative organization_id always comes from the verified auth context,
-never from this header.
-"""
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -24,12 +17,19 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         raw = request.headers.get(HEADER_TENANT_ID)
+
+        request.state.organization_id = None
+
         if raw:
             try:
                 request.state.organization_id = uuid.UUID(raw)
             except ValueError:
-                request.state.organization_id = None
-        else:
-            request.state.organization_id = None
+                logger.warning(
+                    "invalid.organization_id_header",
+                    extra={
+                        "header_value": raw,
+                        "path": request.url.path,
+                    },
+                )
 
         return await call_next(request)
