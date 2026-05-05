@@ -22,6 +22,14 @@ from app.shared.deps.organization_member import MemberContext
 
 
 def handle_list_roles(ctx: MemberContext, db: Session) -> list[RoleResponse]:
+    scope = getattr(ctx, "scope", "organization")
+
+    if scope == "self":
+        # Member can only see their own role.
+        if ctx.member.role is None:
+            return []
+        return [RoleResponse.model_validate(ctx.member.role)]
+
     roles = list_roles(db, ctx.organization.id)
     return [RoleResponse.model_validate(r) for r in roles]
 

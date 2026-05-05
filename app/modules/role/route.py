@@ -29,10 +29,14 @@ router = APIRouter(prefix="/roles", tags=["roles"])
 
 @router.get("", response_model=list[RoleResponse], status_code=status.HTTP_200_OK)
 def list_roles(
-    ctx: Annotated[MemberContext, Depends(require_permission("permission", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("permission", "view", allow_self=True))],
     db: Session = Depends(get_db),
 ) -> list[RoleResponse]:
-    """List all roles in the organization."""
+    """List roles in the organization.
+
+    - "organization" scope → returns all roles.
+    - "self" scope         → returns only the member's own role.
+    """
     return handle_list_roles(ctx, db)
 
 
