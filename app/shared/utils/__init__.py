@@ -1,1 +1,1 @@
-"""Shared utilities — enums, pagination, filters, validators."""
+# utils package
