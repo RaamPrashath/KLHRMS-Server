@@ -13,7 +13,7 @@ from app.models.base import Base, generate_uuid
 
 
 class Member(Base):
-    __tablename__ = "member"  # Prisma: @@map("member")
+    __tablename__ = "member"
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=generate_uuid
@@ -39,7 +39,8 @@ class Member(Base):
 
     organization = relationship("Organization", back_populates="members")
     user = relationship("User", back_populates="members")
-    role = relationship("Role", back_populates="members", overlaps="organization")
+    role = relationship("Role")
+    departmentMembers = relationship("DepartmentMember", back_populates="member")
 
     __table_args__ = (
         UniqueConstraint(

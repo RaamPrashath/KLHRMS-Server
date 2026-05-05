@@ -1,5 +1,5 @@
-from sqlalchemy import Date, DateTime, Float, Index, Integer, String, UniqueConstraint, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Date, DateTime, Float, Index, String, UniqueConstraint, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime, date
 from app.models.base import Base, generate_uuid
 
@@ -29,6 +29,8 @@ class AttendanceRecord(Base):
     createdAt: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    workLog = relationship("AttendanceWorkLog", back_populates="attendanceRecord")
 
     __table_args__ = (
         UniqueConstraint("employeeId", "date", name="attendanceRecord_employeeId_date_key"),

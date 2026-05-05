@@ -6,5 +6,8 @@ from app.models.session import Session
 from app.models.user import User
 from app.models.verification import Verification
 from app.models.attendance_record import AttendanceRecord
+from app.models.attendance_work_log import AttendanceWorkLog
 from app.models.work_hour_policy import WorkHourPolicy
+from app.models.department import Department
+from app.models.department_member import DepartmentMember
 from app.models.base import Base
