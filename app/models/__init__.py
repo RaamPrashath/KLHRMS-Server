@@ -10,4 +10,6 @@ from app.models.attendance_work_log import AttendanceWorkLog
 from app.models.work_hour_policy import WorkHourPolicy
 from app.models.department import Department
 from app.models.department_member import DepartmentMember
+from app.models.leave import LeaveTypeConfig, LeaveRequest, LeaveBalance, Holiday, EmployeeReporting
+from app.models.weekly_plan import WeeklyPlan
 from app.models.base import Base

@@ -4,7 +4,7 @@ from datetime import date
 from sqlalchemy import Boolean, Date, Float, Integer, String, Text, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.shared.lib.base_model import HRMSBase
+from app.models.base import HRMSBase
 from app.shared.utils.enums import LeaveStatus
 
 
