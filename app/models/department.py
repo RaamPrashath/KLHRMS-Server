@@ -26,14 +26,15 @@ class Department(Base):
 
     parent = relationship(
         "Department",
-        foreign_keys=[parentDepartmentId],
+        foreign_keys="[Department.parentDepartmentId]",
         primaryjoin="Department.parentDepartmentId == Department.id",
+        remote_side="Department.id",
         back_populates="children",
         passive_deletes=True,
     )
     children = relationship(
         "Department",
-        foreign_keys=[parentDepartmentId],
+        foreign_keys="[Department.parentDepartmentId]",
         primaryjoin="Department.id == Department.parentDepartmentId",
         back_populates="parent",
     )

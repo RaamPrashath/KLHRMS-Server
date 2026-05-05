@@ -31,7 +31,7 @@ class Member(Base):
         nullable=False,
     )
 
-    roleId: Mapped[str | None] = mapped_column(String(32))
+    roleId: Mapped[str | None] = mapped_column(String(36))
 
     createdAt: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -39,7 +39,12 @@ class Member(Base):
 
     organization = relationship("Organization", back_populates="members", overlaps="role,members")
     user = relationship("User", back_populates="members")
-    role = relationship("Role", foreign_keys="[Member.roleId]", primaryjoin="Member.roleId == Role.id", overlaps="organization,members")
+    role = relationship(
+        "Role",
+        foreign_keys="[Member.organizationId, Member.roleId]",
+        primaryjoin="and_(Member.organizationId == Role.organizationId, Member.roleId == Role.id)",
+        overlaps="organization,members",
+    )
     departmentMembers = relationship("DepartmentMember", back_populates="member")
 
     __table_args__ = (

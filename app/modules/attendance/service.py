@@ -562,14 +562,23 @@ def get_my_attendance(
     status_filter: str | None = None,
     page: int = 1,
     page_size: int = 20,
-) -> tuple[list[AttendanceRecord], int]:
+) -> tuple[list[tuple[AttendanceRecord, str | None]], int]:
     """
     Return paginated attendance rows for the calling member only.
     Never exposes other members' data.
+    Returns tuples of (AttendanceRecord, employee_name).
     """
-    q = db.query(AttendanceRecord).filter(
-        AttendanceRecord.organizationId == organization_id,
-        AttendanceRecord.employeeId == member_id,
+    from app.models.member import Member
+    from app.models.user import User
+
+    q = (
+        db.query(AttendanceRecord, User.name)
+        .join(Member, Member.id == AttendanceRecord.employeeId)
+        .join(User, User.id == Member.userId)
+        .filter(
+            AttendanceRecord.organizationId == organization_id,
+            AttendanceRecord.employeeId == member_id,
+        )
     )
     if date_from is not None:
         q = q.filter(AttendanceRecord.date >= date_from)
@@ -579,13 +588,13 @@ def get_my_attendance(
         q = q.filter(AttendanceRecord.status == status_filter)
 
     total = q.count()
-    items = (
+    rows = (
         q.order_by(AttendanceRecord.date.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
-    return items, total
+    return [(record, name) for record, name in rows], total
 
 
 def list_attendance(
@@ -594,20 +603,31 @@ def list_attendance(
     actor_member_id: str,
     scope: str,
     target_member_id: str | None = None,
+    employee_name: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     status_filter: str | None = None,
     page: int = 1,
     page_size: int = 20,
-) -> tuple[list[AttendanceRecord], int]:
+) -> tuple[list[tuple[AttendanceRecord, str | None]], int]:
     """
     Return paginated attendance rows respecting scope.
 
-    - "self": always filters to actor's own records, ignores target_member_id.
-    - "organization": allows filtering by target_member_id or listing all org records.
+    - "self": always filters to actor's own records, ignores target_member_id / employee_name.
+    - "organization": allows filtering by target_member_id or partial employee_name search.
+
+    Returns tuples of (AttendanceRecord, employee_name).
     """
-    q = db.query(AttendanceRecord).filter(
-        AttendanceRecord.organizationId == organization_id,
+    from app.models.member import Member
+    from app.models.user import User
+
+    q = (
+        db.query(AttendanceRecord, User.name)
+        .join(Member, Member.id == AttendanceRecord.employeeId)
+        .join(User, User.id == Member.userId)
+        .filter(
+            AttendanceRecord.organizationId == organization_id,
+        )
     )
 
     if scope == "self":
@@ -615,6 +635,8 @@ def list_attendance(
     elif scope == "organization":
         if target_member_id is not None:
             q = q.filter(AttendanceRecord.employeeId == target_member_id)
+        elif employee_name is not None and employee_name.strip():
+            q = q.filter(User.name.ilike(f"%{employee_name.strip()}%"))
     # No team/department filtering — not supported in current schema.
 
     if date_from is not None:
@@ -625,13 +647,13 @@ def list_attendance(
         q = q.filter(AttendanceRecord.status == status_filter)
 
     total = q.count()
-    items = (
+    rows = (
         q.order_by(AttendanceRecord.date.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
-    return items, total
+    return [(record, name) for record, name in rows], total
 
 
 def get_attendance_day(
