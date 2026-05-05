@@ -25,6 +25,7 @@ class AttendanceWorkLog(Base):
     startTime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     endTime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     createdAt: Mapped[datetime] = mapped_column(

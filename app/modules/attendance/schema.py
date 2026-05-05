@@ -181,6 +181,7 @@ class BulkWorkLogItem(BaseModel):
         ...,
         description="End of the work block (timezone-aware).",
     )
+    title: str | None = Field(default=None, max_length=255)
     notes: str | None = Field(default=None, max_length=1000)
 
     @model_validator(mode="after")
@@ -259,6 +260,7 @@ class WorkLogResponse(BaseModel):
     id: str
     startTime: dt.datetime | None
     endTime: dt.datetime | None
+    title: str | None
     notes: str | None
 
     model_config = {"from_attributes": True}

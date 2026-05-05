@@ -270,6 +270,7 @@ def handle_upsert_bulk_work_logs(
                         id=log.id,
                         startTime=log.startTime,
                         endTime=log.endTime,
+                        title=log.title,
                         notes=log.notes,
                     )
                     for log in result.logs
@@ -316,6 +317,7 @@ def handle_get_bulk_work_logs_range(
                     id=log.id,
                     startTime=log.startTime,
                     endTime=log.endTime,
+                    title=log.title,
                     notes=log.notes,
                 )
                 for log in result.logs
@@ -364,6 +366,7 @@ def handle_get_bulk_work_logs_day(
                     id=log.id,
                     startTime=log.startTime,
                     endTime=log.endTime,
+                    title=log.title,
                     notes=log.notes,
                 )
                 for log in result.logs

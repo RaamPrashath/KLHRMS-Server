@@ -737,6 +737,7 @@ class _NormalizedLog:
 
     start_time: datetime
     end_time: datetime
+    title: str | None
     notes: str | None
 
 
@@ -799,7 +800,7 @@ def _validate_work_log_item(
             ),
         )
 
-    return _NormalizedLog(start_time=start, end_time=end, notes=None)
+    return _NormalizedLog(start_time=start, end_time=end, title=None, notes=None)
 
 
 def _derive_day_from_logs(
@@ -872,6 +873,7 @@ def _insert_work_logs(
             date=day,
             startTime=log.start_time,
             endTime=log.end_time,
+            title=log.title,
             notes=log.notes,
         )
         db.add(row)
@@ -952,6 +954,7 @@ def upsert_bulk_work_logs(
                     expected_date=day,
                     index=idx,
                 )
+                n.title = log_item.title
                 n.notes = log_item.notes
                 normalized.append(n)
 
