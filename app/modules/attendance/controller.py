@@ -217,3 +217,175 @@ def handle_get_attendance_day(
         day=day,
     )
     return _to_response(record)
+
+
+# ---------------------------------------------------------------------------
+# Bulk work-log handlers
+# ---------------------------------------------------------------------------
+
+
+def handle_upsert_bulk_work_logs(
+    access: AttendanceAccessContext,
+    db: Session,
+    body: object,  # BulkUpsertRequest — imported at call site to avoid circular
+) -> object:  # BulkUpsertResponse
+    from app.modules.attendance.schema import (
+        BulkDayResponse,
+        BulkUpsertResponse,
+        WorkLogResponse,
+    )
+
+    # Resolve target: default to self.
+    target_id: str = body.employee_id or access.member.id  # type: ignore[union-attr]
+
+    # For non-self targets, verify the member exists in the org.
+    if target_id != access.member.id:
+        service.resolve_target_member(db, access.organization.id, target_id)
+
+    policy = service.load_policy(db, access.organization.id)
+
+    results = service.upsert_bulk_work_logs(
+        db=db,
+        organization_id=access.organization.id,
+        actor_member_id=access.member.id,
+        target_member_id=target_id,
+        scope=access.permission_scope,
+        policy=policy,
+        days=body.days,  # type: ignore[union-attr]
+    )
+
+    day_responses: list[BulkDayResponse] = []
+    for result in results:
+        day_responses.append(
+            BulkDayResponse(
+                date=result.record.date,
+                attendanceRecordId=result.record.id,
+                clockIn=result.record.clockIn,
+                clockOut=result.record.clockOut,
+                totalHours=result.record.totalHours,
+                overtimeHours=result.record.overtimeHours,
+                status=result.record.status,
+                logs=[
+                    WorkLogResponse(
+                        id=log.id,
+                        startTime=log.startTime,
+                        endTime=log.endTime,
+                        notes=log.notes,
+                    )
+                    for log in result.logs
+                ],
+            )
+        )
+
+    return BulkUpsertResponse(days=day_responses)
+
+
+def handle_get_bulk_work_logs_range(
+    access: AttendanceAccessContext,
+    db: Session,
+    date_from: dt.date,
+    date_to: dt.date,
+) -> object:  # BulkRangeResponse
+    from app.modules.attendance.schema import (
+        BulkDayResponse,
+        BulkRangeResponse,
+        WorkLogResponse,
+    )
+
+    results = service.get_bulk_work_logs_range(
+        db=db,
+        organization_id=access.organization.id,
+        actor_member_id=access.member.id,
+        target_member_id=access.member.id,
+        scope=access.permission_scope,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    day_responses: list[BulkDayResponse] = [
+        BulkDayResponse(
+            date=result.record.date,
+            attendanceRecordId=result.record.id,
+            clockIn=result.record.clockIn,
+            clockOut=result.record.clockOut,
+            totalHours=result.record.totalHours,
+            overtimeHours=result.record.overtimeHours,
+            status=result.record.status,
+            logs=[
+                WorkLogResponse(
+                    id=log.id,
+                    startTime=log.startTime,
+                    endTime=log.endTime,
+                    notes=log.notes,
+                )
+                for log in result.logs
+            ],
+        )
+        for result in results
+    ]
+
+    return BulkRangeResponse(days=day_responses)
+
+
+def handle_get_bulk_work_logs_day(
+    access: AttendanceAccessContext,
+    db: Session,
+    day: dt.date,
+) -> object:  # BulkDaySingleResponse
+    from app.modules.attendance.schema import (
+        BulkDayResponse,
+        BulkDaySingleResponse,
+        WorkLogResponse,
+    )
+
+    result = service.get_bulk_work_logs_day(
+        db=db,
+        organization_id=access.organization.id,
+        actor_member_id=access.member.id,
+        target_member_id=access.member.id,
+        scope=access.permission_scope,
+        day=day,
+    )
+
+    if result is None:
+        return BulkDaySingleResponse(day=None)
+
+    return BulkDaySingleResponse(
+        day=BulkDayResponse(
+            date=result.record.date,
+            attendanceRecordId=result.record.id,
+            clockIn=result.record.clockIn,
+            clockOut=result.record.clockOut,
+            totalHours=result.record.totalHours,
+            overtimeHours=result.record.overtimeHours,
+            status=result.record.status,
+            logs=[
+                WorkLogResponse(
+                    id=log.id,
+                    startTime=log.startTime,
+                    endTime=log.endTime,
+                    notes=log.notes,
+                )
+                for log in result.logs
+            ],
+        )
+    )
+
+
+def handle_delete_bulk_work_logs_day(
+    access: AttendanceAccessContext,
+    db: Session,
+    day: dt.date,
+) -> object:  # BulkDeleteDayResponse
+    from app.modules.attendance.schema import BulkDeleteDayResponse
+
+    service.delete_bulk_work_logs_day(
+        db=db,
+        organization_id=access.organization.id,
+        actor_member_id=access.member.id,
+        target_member_id=access.member.id,
+        scope=access.permission_scope,
+        day=day,
+    )
+
+    return BulkDeleteDayResponse(success=True, date=day)

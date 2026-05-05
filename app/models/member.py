@@ -37,9 +37,9 @@ class Member(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    organization = relationship("Organization", back_populates="members")
+    organization = relationship("Organization", back_populates="members", overlaps="role,members")
     user = relationship("User", back_populates="members")
-    role = relationship("Role")
+    role = relationship("Role", foreign_keys="[Member.roleId]", primaryjoin="Member.roleId == Role.id", overlaps="organization,members")
     departmentMembers = relationship("DepartmentMember", back_populates="member")
 
     __table_args__ = (

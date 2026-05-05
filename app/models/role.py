@@ -23,7 +23,7 @@ class Role(Base, TimestampMixin):
     permissions: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
     organization = relationship("Organization", back_populates="roles")
-    members = relationship("Member", back_populates="role", overlaps="organization,members")
+    members = relationship("Member", foreign_keys="[Member.roleId]", primaryjoin="Member.roleId == Role.id", back_populates="role", overlaps="organization,members")
 
     __table_args__ = (
         UniqueConstraint("organizationId", "id"),

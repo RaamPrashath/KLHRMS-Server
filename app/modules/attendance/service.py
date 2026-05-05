@@ -724,3 +724,453 @@ def auto_stop_open_sessions(
             written.append(record)
 
     return written
+
+
+# ---------------------------------------------------------------------------
+# Bulk work-log helpers
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _NormalizedLog:
+    """Internal representation of a validated, normalized work-log item."""
+
+    start_time: datetime
+    end_time: datetime
+    notes: str | None
+
+
+@dataclass
+class _DayDerivation:
+    """Derived day-level values computed from a set of work logs."""
+
+    clock_in: datetime
+    clock_out: datetime
+    total_hours: float
+    overtime_hours: float
+    status: str
+
+
+def _normalize_datetime(dt_value: datetime) -> datetime:
+    """Ensure a datetime is timezone-aware (UTC if naive)."""
+    if dt_value.tzinfo is None:
+        return dt_value.replace(tzinfo=timezone.utc)
+    return dt_value
+
+
+def _validate_work_log_item(
+    log_start: datetime,
+    log_end: datetime,
+    expected_date: date,
+    index: int,
+) -> _NormalizedLog:
+    """
+    Validate a single work-log item and return a normalized form.
+
+    Raises HTTPException(422) for:
+      - startTime >= endTime
+      - either timestamp falls on a different calendar date than expected_date
+    """
+    start = _normalize_datetime(log_start)
+    end = _normalize_datetime(log_end)
+
+    if start >= end:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Log[{index}]: startTime must be before endTime",
+        )
+
+    # Validate both timestamps belong to the declared date.
+    # We compare the date portion in UTC to keep things deterministic.
+    if start.date() != expected_date:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Log[{index}]: startTime date {start.date()} "
+                f"does not match declared date {expected_date}"
+            ),
+        )
+    if end.date() != expected_date:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Log[{index}]: endTime date {end.date()} "
+                f"does not match declared date {expected_date}"
+            ),
+        )
+
+    return _NormalizedLog(start_time=start, end_time=end, notes=None)
+
+
+def _derive_day_from_logs(
+    logs: list[_NormalizedLog],
+    policy: PolicyDefaults,
+) -> _DayDerivation:
+    """
+    Derive parent attendance record values from a list of work logs.
+
+    Uses outer-span rule:
+      clockIn  = earliest startTime across all logs
+      clockOut = latest endTime across all logs
+      totalHours = clockOut - clockIn (outer span, gaps ignored)
+    """
+    clock_in = min(log.start_time for log in logs)
+    clock_out = max(log.end_time for log in logs)
+    total_hours = _compute_hours(clock_in, clock_out)
+    overtime_hours = _compute_overtime(total_hours, policy.overtime_threshold)
+    status = _derive_status(total_hours, policy.half_day_max_hours)
+
+    return _DayDerivation(
+        clock_in=clock_in,
+        clock_out=clock_out,
+        total_hours=total_hours,
+        overtime_hours=overtime_hours,
+        status=status,
+    )
+
+
+def _delete_work_logs_for_day(
+    db: Session,
+    organization_id: str,
+    employee_id: str,
+    day: date,
+) -> None:
+    """
+    Delete all AttendanceWorkLog rows for a given employee/org/date.
+    Called inside a transaction before inserting new logs.
+    """
+    from app.models.attendance_work_log import AttendanceWorkLog
+
+    db.query(AttendanceWorkLog).filter(
+        AttendanceWorkLog.organizationId == organization_id,
+        AttendanceWorkLog.employeeId == employee_id,
+        AttendanceWorkLog.date == day,
+    ).delete(synchronize_session=False)
+
+
+def _insert_work_logs(
+    db: Session,
+    attendance_record_id: str,
+    organization_id: str,
+    employee_id: str,
+    day: date,
+    logs: list[_NormalizedLog],
+) -> list[object]:
+    """
+    Bulk-insert AttendanceWorkLog rows for a single day.
+    Returns the inserted ORM instances (refreshed).
+    """
+    from app.models.attendance_work_log import AttendanceWorkLog
+
+    inserted: list[AttendanceWorkLog] = []
+    for log in logs:
+        row = AttendanceWorkLog(
+            id=generate_uuid(),
+            attendanceRecordId=attendance_record_id,
+            organizationId=organization_id,
+            employeeId=employee_id,
+            date=day,
+            startTime=log.start_time,
+            endTime=log.end_time,
+            notes=log.notes,
+        )
+        db.add(row)
+        inserted.append(row)
+
+    db.flush()  # assign DB state without committing the outer transaction
+    for row in inserted:
+        db.refresh(row)
+
+    return inserted
+
+
+# ---------------------------------------------------------------------------
+# Bulk upsert
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BulkDayResult:
+    """Internal result for one processed day."""
+
+    record: AttendanceRecord
+    logs: list[object]  # list[AttendanceWorkLog]
+
+
+def upsert_bulk_work_logs(
+    db: Session,
+    organization_id: str,
+    actor_member_id: str,
+    target_member_id: str,
+    scope: str,
+    policy: PolicyDefaults,
+    days: list[object],  # list[BulkDayPayload] — imported at call site
+) -> list[BulkDayResult]:
+    """
+    Save one or more days of bulk attendance work logs.
+
+    For each submitted day:
+      - If logs list is empty → delete that day's entry (parent + children).
+      - Otherwise → validate logs, delete existing children, upsert parent,
+        insert new children.
+
+    All days are processed inside a single transaction.
+    Raises HTTPException on any validation or scope failure.
+    """
+    enforce_scope(actor_member_id, target_member_id, scope)
+
+    results: list[BulkDayResult] = []
+
+    try:
+        for day_payload in days:
+            day: date = day_payload.date
+            raw_logs = day_payload.logs
+
+            if not raw_logs:
+                # Empty logs → treat as deletion of that day.
+                _delete_work_logs_for_day(db, organization_id, target_member_id, day)
+                existing_record: AttendanceRecord | None = (
+                    db.query(AttendanceRecord)
+                    .filter(
+                        AttendanceRecord.organizationId == organization_id,
+                        AttendanceRecord.employeeId == target_member_id,
+                        AttendanceRecord.date == day,
+                    )
+                    .first()
+                )
+                if existing_record is not None:
+                    db.delete(existing_record)
+                # No result entry for deleted days — skip.
+                continue
+
+            # Validate and normalize each log item.
+            normalized: list[_NormalizedLog] = []
+            for idx, log_item in enumerate(raw_logs):
+                n = _validate_work_log_item(
+                    log_start=log_item.startTime,
+                    log_end=log_item.endTime,
+                    expected_date=day,
+                    index=idx,
+                )
+                n.notes = log_item.notes
+                normalized.append(n)
+
+            # Sort logs by startTime ascending.
+            normalized.sort(key=lambda x: x.start_time)
+
+            # Derive parent record values from the outer span.
+            derivation = _derive_day_from_logs(normalized, policy)
+
+            # Delete existing child logs for this day.
+            _delete_work_logs_for_day(db, organization_id, target_member_id, day)
+
+            # Upsert the parent attendance record.
+            existing_parent: AttendanceRecord | None = (
+                db.query(AttendanceRecord)
+                .filter(
+                    AttendanceRecord.organizationId == organization_id,
+                    AttendanceRecord.employeeId == target_member_id,
+                    AttendanceRecord.date == day,
+                )
+                .first()
+            )
+
+            if existing_parent is not None:
+                existing_parent.clockIn = derivation.clock_in
+                existing_parent.clockOut = derivation.clock_out
+                existing_parent.totalHours = derivation.total_hours
+                existing_parent.overtimeHours = derivation.overtime_hours
+                existing_parent.status = derivation.status
+                existing_parent.enteredByManagerId = None
+                record = existing_parent
+            else:
+                record = AttendanceRecord(
+                    id=generate_uuid(),
+                    employeeId=target_member_id,
+                    organizationId=organization_id,
+                    date=day,
+                    clockIn=derivation.clock_in,
+                    clockOut=derivation.clock_out,
+                    totalHours=derivation.total_hours,
+                    overtimeHours=derivation.overtime_hours,
+                    status=derivation.status,
+                    enteredByManagerId=None,
+                )
+                db.add(record)
+
+            db.flush()
+            db.refresh(record)
+
+            # Insert new child work logs.
+            inserted_logs = _insert_work_logs(
+                db=db,
+                attendance_record_id=record.id,
+                organization_id=organization_id,
+                employee_id=target_member_id,
+                day=day,
+                logs=normalized,
+            )
+
+            results.append(BulkDayResult(record=record, logs=inserted_logs))
+
+        db.commit()
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save bulk attendance data",
+        ) from exc
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Bulk range fetch
+# ---------------------------------------------------------------------------
+
+
+def get_bulk_work_logs_range(
+    db: Session,
+    organization_id: str,
+    actor_member_id: str,
+    target_member_id: str,
+    scope: str,
+    date_from: date,
+    date_to: date,
+) -> list[BulkDayResult]:
+    """
+    Fetch attendance records and their child work logs for a date range.
+
+    Returns results sorted by date ascending, logs sorted by startTime ascending.
+    """
+    from app.models.attendance_work_log import AttendanceWorkLog
+
+    enforce_scope(actor_member_id, target_member_id, scope)
+
+    records: list[AttendanceRecord] = (
+        db.query(AttendanceRecord)
+        .filter(
+            AttendanceRecord.organizationId == organization_id,
+            AttendanceRecord.employeeId == target_member_id,
+            AttendanceRecord.date >= date_from,
+            AttendanceRecord.date <= date_to,
+        )
+        .order_by(AttendanceRecord.date.asc())
+        .all()
+    )
+
+    if not records:
+        return []
+
+    record_ids = [r.id for r in records]
+
+    all_logs: list[AttendanceWorkLog] = (
+        db.query(AttendanceWorkLog)
+        .filter(AttendanceWorkLog.attendanceRecordId.in_(record_ids))
+        .order_by(AttendanceWorkLog.startTime.asc())
+        .all()
+    )
+
+    # Group logs by attendanceRecordId for O(n) assembly.
+    logs_by_record: dict[str, list[AttendanceWorkLog]] = {}
+    for log in all_logs:
+        logs_by_record.setdefault(log.attendanceRecordId, []).append(log)
+
+    return [
+        BulkDayResult(record=r, logs=logs_by_record.get(r.id, []))
+        for r in records
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Bulk single-day fetch
+# ---------------------------------------------------------------------------
+
+
+def get_bulk_work_logs_day(
+    db: Session,
+    organization_id: str,
+    actor_member_id: str,
+    target_member_id: str,
+    scope: str,
+    day: date,
+) -> BulkDayResult | None:
+    """
+    Fetch one day's attendance record and its child work logs.
+
+    Returns None if no entry exists for that day.
+    """
+    from app.models.attendance_work_log import AttendanceWorkLog
+
+    enforce_scope(actor_member_id, target_member_id, scope)
+
+    record: AttendanceRecord | None = (
+        db.query(AttendanceRecord)
+        .filter(
+            AttendanceRecord.organizationId == organization_id,
+            AttendanceRecord.employeeId == target_member_id,
+            AttendanceRecord.date == day,
+        )
+        .first()
+    )
+
+    if record is None:
+        return None
+
+    logs: list[AttendanceWorkLog] = (
+        db.query(AttendanceWorkLog)
+        .filter(AttendanceWorkLog.attendanceRecordId == record.id)
+        .order_by(AttendanceWorkLog.startTime.asc())
+        .all()
+    )
+
+    return BulkDayResult(record=record, logs=logs)
+
+
+# ---------------------------------------------------------------------------
+# Bulk day deletion
+# ---------------------------------------------------------------------------
+
+
+def delete_bulk_work_logs_day(
+    db: Session,
+    organization_id: str,
+    actor_member_id: str,
+    target_member_id: str,
+    scope: str,
+    day: date,
+) -> None:
+    """
+    Delete one day's bulk attendance entry (parent record + all child logs).
+
+    Child logs are deleted first via the cascade or explicit delete.
+    Raises 404 if no entry exists for that day.
+    """
+    enforce_scope(actor_member_id, target_member_id, scope)
+
+    record: AttendanceRecord | None = (
+        db.query(AttendanceRecord)
+        .filter(
+            AttendanceRecord.organizationId == organization_id,
+            AttendanceRecord.employeeId == target_member_id,
+            AttendanceRecord.date == day,
+        )
+        .first()
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No attendance entry found for this date",
+        )
+
+    # Delete child logs explicitly before the parent to be safe,
+    # even though the FK has ondelete="CASCADE".
+    _delete_work_logs_for_day(db, organization_id, target_member_id, day)
+
+    db.delete(record)
+    db.commit()

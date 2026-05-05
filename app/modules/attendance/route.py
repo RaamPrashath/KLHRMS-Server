@@ -27,21 +27,30 @@ from sqlalchemy.orm import Session
 from app.modules.attendance.controller import (
     handle_clock_in,
     handle_clock_out,
+    handle_delete_bulk_work_logs_day,
     handle_delete_day_entry,
     handle_get_attendance_day,
+    handle_get_bulk_work_logs_day,
+    handle_get_bulk_work_logs_range,
     handle_get_my_attendance,
     handle_list_attendance,
+    handle_upsert_bulk_work_logs,
     handle_upsert_manual_day,
 )
 from app.modules.attendance.schema import (
     AttendanceListFilters,
     AttendanceListResponse,
     AttendanceRecordResponse,
+    AttendanceStatus,
+    BulkDaySingleResponse,
+    BulkDeleteDayResponse,
+    BulkRangeResponse,
+    BulkUpsertRequest,
+    BulkUpsertResponse,
     ClockInRequest,
     ClockOutRequest,
     DeleteDayEntryRequest,
     ManualDayEntryRequest,
-    AttendanceStatus,
 )
 from app.shared.database import get_db
 from app.shared.deps.attendance_permissions import (
@@ -264,3 +273,117 @@ def get_attendance_day(
     day: dt.date = Query(...),
 ) -> AttendanceRecordResponse:
     return handle_get_attendance_day(access, db, target_member_id, day)
+
+
+# ---------------------------------------------------------------------------
+# 8. Upsert bulk work logs  POST /attendance/bulk-work-logs
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/bulk-work-logs",
+    response_model=BulkUpsertResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Upsert bulk work logs",
+    description=(
+        "Save one or more days of bulk attendance work logs for the calling member. "
+        "Each day replaces all existing logs for that date (overwrite semantics). "
+        "An empty logs list for a day deletes that day's entry. "
+        "Requires attendance.create permission."
+    ),
+)
+def upsert_bulk_work_logs(
+    body: BulkUpsertRequest,
+    access: Annotated[
+        AttendanceAccessContext,
+        Depends(require_attendance_permission("create")),
+    ],
+    db: Session = Depends(get_db),
+) -> BulkUpsertResponse:
+    return handle_upsert_bulk_work_logs(access, db, body)
+
+
+# ---------------------------------------------------------------------------
+# 9. Get bulk attendance range  GET /attendance/bulk-work-logs
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/bulk-work-logs",
+    response_model=BulkRangeResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get bulk attendance range",
+    description=(
+        "Fetch the calling member's attendance days and child work logs "
+        "for a date range. Results are sorted by date ascending, logs by "
+        "startTime ascending. "
+        "Requires attendance.view permission."
+    ),
+)
+def get_bulk_work_logs_range(
+    access: Annotated[
+        AttendanceAccessContext,
+        Depends(require_attendance_permission("view")),
+    ],
+    db: Session = Depends(get_db),
+    date_from: dt.date = Query(..., alias="from", description="Inclusive start date (YYYY-MM-DD)."),
+    date_to: dt.date = Query(..., alias="to", description="Inclusive end date (YYYY-MM-DD)."),
+) -> BulkRangeResponse:
+    if date_to < date_from:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(status_code=422, detail="'to' must be >= 'from'")
+    return handle_get_bulk_work_logs_range(access, db, date_from, date_to)
+
+
+# ---------------------------------------------------------------------------
+# 10. Get one day detail  GET /attendance/bulk-work-logs/day
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/bulk-work-logs/day",
+    response_model=BulkDaySingleResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get one day's bulk attendance detail",
+    description=(
+        "Fetch one date's attendance record and all child work logs "
+        "for the calling member. Returns day: null if no entry exists. "
+        "Requires attendance.view permission."
+    ),
+)
+def get_bulk_work_logs_day(
+    access: Annotated[
+        AttendanceAccessContext,
+        Depends(require_attendance_permission("view")),
+    ],
+    db: Session = Depends(get_db),
+    day: dt.date = Query(..., description="Calendar date to fetch (YYYY-MM-DD)."),
+) -> BulkDaySingleResponse:
+    return handle_get_bulk_work_logs_day(access, db, day)
+
+
+# ---------------------------------------------------------------------------
+# 11. Delete one day bulk entry  DELETE /attendance/bulk-work-logs/day
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/bulk-work-logs/day",
+    response_model=BulkDeleteDayResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Delete one day's bulk attendance entry",
+    description=(
+        "Delete the calling member's attendance record and all child work logs "
+        "for the specified date. Returns 404 if no entry exists. "
+        "Requires attendance.delete permission."
+    ),
+)
+def delete_bulk_work_logs_day(
+    access: Annotated[
+        AttendanceAccessContext,
+        Depends(require_attendance_permission("delete")),
+    ],
+    db: Session = Depends(get_db),
+    day: dt.date = Query(..., description="Calendar date to delete (YYYY-MM-DD)."),
+) -> BulkDeleteDayResponse:
+    return handle_delete_bulk_work_logs_day(access, db, day)
