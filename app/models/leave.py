@@ -2,7 +2,7 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,8 +21,8 @@ class LeaveType(Base):
     isPaid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     color: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
-    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()", nullable=False)
-    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()", onupdate="now()", nullable=False)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     deletedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     balances: Mapped[list["LeaveBalance"]] = relationship("LeaveBalance", back_populates="leave_type")
@@ -58,8 +58,8 @@ class LeaveRequest(Base):
     )
     approverComment: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()", nullable=False)
-    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()", onupdate="now()", nullable=False)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     cancelledAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deletedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -97,8 +97,8 @@ class LeaveBalance(Base):
     carriedForward: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     lapsed: Mapped[float] = mapped_column(Float, nullable=False, default=0)
 
-    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()", nullable=False)
-    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()", onupdate="now()", nullable=False)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     member = relationship("Member", foreign_keys=[memberId], back_populates="leave_balances")
     leave_type = relationship("LeaveType", back_populates="balances")
@@ -118,15 +118,36 @@ class Holiday(Base):
     organizationId: Mapped[str] = mapped_column(String(36), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     holidayDate: Mapped[date] = mapped_column(Date, nullable=False)
+    isHoliday: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     isRecurring: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()", nullable=False)
-    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()", onupdate="now()", nullable=False)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     deletedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
+        UniqueConstraint("organizationId", "holidayDate", "name", name="holiday_org_date_name_key"),
         Index("holiday_organizationId_idx", "organizationId"),
         Index("holiday_organizationId_holidayDate_idx", "organizationId", "holidayDate"),
         Index("holiday_organizationId_deletedAt_idx", "organizationId", "deletedAt"),
+    )
+
+
+class PublicHolidayMaster(Base):
+    __tablename__ = "public_holiday_master"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    location: Mapped[str] = mapped_column(String(50), nullable=False, default="IN-TN")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("date", "name", "location", name="public_holiday_master_date_name_location_key"),
+        Index("public_holiday_master_year_location_idx", "year", "location"),
     )
