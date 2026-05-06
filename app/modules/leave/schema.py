@@ -1,218 +1,242 @@
-"""Leave management request/response schemas."""
-import uuid
-from datetime import date, datetime
-from typing import Dict, List, Optional
+"""Pydantic schemas for the leave module."""
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from __future__ import annotations
 
-from app.shared.utils.enums import LeaveStatus
+import datetime as dt
+from typing import Literal
 
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-# ── Leave Type Schemas ───────────────────────────────────────────────────────
-
-class LeaveTypeConfigCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    quota: float = Field(gt=0)
-    carry_forward: bool = False
-    is_paid: bool = True
-    color: str = Field(default="#3b82f6", pattern=r"^#[0-9A-Fa-f]{6}$")
-    description: Optional[str] = None
+LeaveRequestStatus = Literal["PENDING", "APPROVED", "REJECTED", "CANCELLED"]
 
 
-class LeaveTypeConfigUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    quota: Optional[float] = Field(None, gt=0)
-    carry_forward: Optional[bool] = None
-    is_paid: Optional[bool] = None
-    color: Optional[str] = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
-    is_active: Optional[bool] = None
-    description: Optional[str] = None
+class LeaveTypeBasePayload(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    quota: float = Field(..., ge=0)
+    carry_forward: bool = Field(default=False, alias="carryForward")
+    is_paid: bool = Field(default=True, alias="isPaid")
+    color: str | None = Field(default=None, max_length=20)
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("name is required")
+        return trimmed
+
+    @field_validator("color")
+    @classmethod
+    def normalize_color(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
 
 
-class LeaveTypeConfigRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+class LeaveTypeCreateRequest(LeaveTypeBasePayload):
+    pass
 
-    id: uuid.UUID
-    organization_id: uuid.UUID
+
+class LeaveTypeUpdateRequest(LeaveTypeBasePayload):
+    pass
+
+
+class HolidayBasePayload(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    holiday_date: dt.date = Field(..., alias="holidayDate")
+    is_recurring: bool = Field(default=False, alias="isRecurring")
+    description: str | None = Field(default=None, max_length=2000)
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("name is required")
+        return trimmed
+
+    @field_validator("description")
+    @classmethod
+    def normalize_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+
+class HolidayCreateRequest(HolidayBasePayload):
+    pass
+
+
+class HolidayUpdateRequest(HolidayBasePayload):
+    pass
+
+
+class LeaveRequestCreateRequest(BaseModel):
+    leave_type_id: str = Field(..., alias="leaveTypeId")
+    member_id: str | None = Field(default=None, alias="memberId")
+    start_date: dt.date = Field(..., alias="startDate")
+    end_date: dt.date = Field(..., alias="endDate")
+    days: float = Field(..., gt=0)
+    reason: str | None = Field(default=None, max_length=2000)
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "LeaveRequestCreateRequest":
+        if self.end_date < self.start_date:
+            raise ValueError("endDate must be on or after startDate")
+        return self
+
+
+class LeaveRequestDecisionRequest(BaseModel):
+    approver_comment: str | None = Field(default=None, alias="approverComment", max_length=2000)
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("approver_comment")
+    @classmethod
+    def normalize_comment(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+
+class LeaveRequestFilters(BaseModel):
+    status: str | None = None
+    member_id: str | None = Field(default=None, alias="memberId")
+    leave_type_id: str | None = Field(default=None, alias="leaveTypeId")
+    from_date: dt.date | None = Field(default=None, alias="fromDate")
+    to_date: dt.date | None = Field(default=None, alias="toDate")
+    year: int | None = None
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=200)
+
+    model_config = {"populate_by_name": True}
+
+
+class LeaveBalanceFilters(BaseModel):
+    year: int | None = None
+    member_id: str | None = Field(default=None, alias="memberId")
+    leave_type_id: str | None = Field(default=None, alias="leaveTypeId")
+
+    model_config = {"populate_by_name": True}
+
+
+class LeaveCalendarFilters(BaseModel):
+    year: int | None = None
+    month: int | None = Field(default=None, ge=1, le=12)
+    from_date: dt.date | None = Field(default=None, alias="fromDate")
+    to_date: dt.date | None = Field(default=None, alias="toDate")
+
+    model_config = {"populate_by_name": True}
+
+
+class LeaveTypeResponse(BaseModel):
+    id: str
+    organization_id: str = Field(alias="organizationId")
     name: str
     quota: float
-    carry_forward: bool
-    is_paid: bool
-    color: str
-    is_active: bool
-    description: Optional[str]
-    created_at: Optional[date] = None
+    carry_forward: bool = Field(alias="carryForward")
+    is_paid: bool = Field(alias="isPaid")
+    color: str | None
+    created_at: dt.datetime = Field(alias="createdAt")
+    updated_at: dt.datetime = Field(alias="updatedAt")
 
-    @field_validator("created_at", mode="before")
-    @classmethod
-    def coerce_to_date(cls, v):
-        if isinstance(v, datetime):
-            return v.date()
-        return v
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
 
-# ── Leave Request Schemas ──────────────────────────────────────────────────────
+class MemberSummaryResponse(BaseModel):
+    member_id: str = Field(alias="memberId")
+    user_id: str = Field(alias="userId")
+    name: str | None
+    email: str | None
 
-class LeaveRequestCreate(BaseModel):
-    leave_type_id: uuid.UUID
-    start_date: date
-    end_date: date
-    reason: Optional[str] = Field(None, max_length=1000)
-
-    @field_validator("end_date")
-    @classmethod
-    def validate_date_range(cls, end_date: date, info) -> date:
-        start_date = info.data.get("start_date")
-        if start_date and end_date < start_date:
-            raise ValueError("End date must be on or after start date")
-        return end_date
+    model_config = {"populate_by_name": True}
 
 
-class LeaveRequestApprove(BaseModel):
-    """
-    Body for approving a leave request.
-
-    All fields are optional — an empty body {} is valid.
-    The comment is stored as the approver's note visible to the employee.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    comment: Optional[str] = Field(
-        default=None,
-        max_length=1000,
-        description="Optional note from the approver visible to the employee.",
-    )
-
-
-class LeaveRequestReject(BaseModel):
-    """
-    Body for rejecting a leave request.
-
-    comment is required — employees must be told why their request was rejected.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    comment: str = Field(
-        min_length=1,
-        max_length=1000,
-        description="Reason for rejection. Required so the employee understands the decision.",
-    )
-
-
-class LeaveRequestRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    organization_id: uuid.UUID
-    employee_id: str
-    employee_name: Optional[str] = None
-    employee_email: Optional[str] = None
-    leave_type_id: str
-    leave_type_name: Optional[str] = None
-    leave_type_color: Optional[str] = None
-    start_date: date
-    end_date: date
+class LeaveRequestResponse(BaseModel):
+    id: str
+    organization_id: str = Field(alias="organizationId")
+    member_id: str = Field(alias="memberId")
+    leave_type_id: str = Field(alias="leaveTypeId")
+    start_date: dt.date = Field(alias="startDate")
+    end_date: dt.date = Field(alias="endDate")
     days: float
-    reason: Optional[str]
-    status: LeaveStatus
-    approved_by_id: Optional[str] = None
-    approver_name: Optional[str] = None
-    approver_comment: Optional[str] = None
-    created_at: Optional[date] = None
+    reason: str | None
+    status: LeaveRequestStatus
+    approved_by_id: str | None = Field(alias="approvedById")
+    approver_comment: str | None = Field(alias="approverComment")
+    cancelled_at: dt.datetime | None = Field(alias="cancelledAt")
+    created_at: dt.datetime = Field(alias="createdAt")
+    updated_at: dt.datetime = Field(alias="updatedAt")
+    member: MemberSummaryResponse
+    approver: MemberSummaryResponse | None
+    leave_type: LeaveTypeResponse = Field(alias="leaveType")
 
-    @field_validator("created_at", mode="before")
-    @classmethod
-    def coerce_to_date(cls, v):
-        if isinstance(v, datetime):
-            return v.date()
-        return v
-
-
-# ── Leave Balance Schemas ─────────────────────────────────────────────────────
-
-class LeaveBalanceAllocate(BaseModel):
-    employee_id: str
-    leave_type_id: uuid.UUID
-    year: int = Field(ge=2000, le=2100)
-    allocated: float = Field(gt=0)
+    model_config = {"populate_by_name": True}
 
 
-class LeaveBalanceAutoAllocate(BaseModel):
-    year: int = Field(ge=2000, le=2100)
+class LeaveRequestListResponse(BaseModel):
+    items: list[LeaveRequestResponse]
+    total: int
+    page: int
+    page_size: int
 
 
-class LeaveBalanceRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+class HolidayResponse(BaseModel):
+    id: str
+    organization_id: str = Field(alias="organizationId")
+    name: str
+    holiday_date: dt.date = Field(alias="holidayDate")
+    is_recurring: bool = Field(alias="isRecurring")
+    description: str | None
+    created_at: dt.datetime = Field(alias="createdAt")
+    updated_at: dt.datetime = Field(alias="updatedAt")
 
-    id: uuid.UUID
-    organization_id: uuid.UUID
-    employee_id: str
-    employee_name: Optional[str] = None
-    leave_type_id: str
-    leave_type_name: Optional[str] = None
-    leave_type_color: Optional[str] = None
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+
+class LeaveBalanceResponse(BaseModel):
+    id: str
+    organization_id: str = Field(alias="organizationId")
+    member_id: str = Field(alias="memberId")
+    leave_type_id: str = Field(alias="leaveTypeId")
     year: int
     allocated: float
     used: float
     remaining: float
-    carried_forward: float = 0
-    lapsed: float = 0
+    carried_forward: float = Field(alias="carriedForward")
+    lapsed: float
+    created_at: dt.datetime = Field(alias="createdAt")
+    updated_at: dt.datetime = Field(alias="updatedAt")
+    member: MemberSummaryResponse
+    leave_type: LeaveTypeResponse = Field(alias="leaveType")
+
+    model_config = {"populate_by_name": True}
 
 
-# ── Holiday Schemas ──────────────────────────────────────────────────────────
-
-class HolidayCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
-    holiday_date: date
-    is_recurring: bool = False
-    description: Optional[str] = None
+class LeaveBalanceListResponse(BaseModel):
+    items: list[LeaveBalanceResponse]
+    total: int
 
 
-class HolidayUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=200)
-    holiday_date: Optional[date] = None
-    is_recurring: Optional[bool] = None
-    description: Optional[str] = None
+class LeaveCalendarResponse(BaseModel):
+    holidays: list[HolidayResponse]
+    leave_requests: list[LeaveRequestResponse] = Field(alias="leaveRequests")
 
-
-class HolidayRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    organization_id: uuid.UUID
-    name: str
-    holiday_date: date
-    is_recurring: bool
-    description: Optional[str]
-
-
-# ── Calendar Schemas ───────────────────────────────────────────────────────────
-
-class CalendarEvent(BaseModel):
-    """Leave event for calendar visualization"""
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    employee_id: str
-    employee_name: Optional[str] = None
-    leave_type_id: str
-    leave_type_name: Optional[str] = None
-    leave_type_color: Optional[str] = None
-    start_date: date
-    end_date: date
-    days: float
-    status: LeaveStatus
-
-
-# ── Summary Schemas ──────────────────────────────────────────────────────────
-
-class LeaveSummary(BaseModel):
-    """Summary of leave statistics for dashboard"""
-    total_requests: int
-    pending_requests: int
-    approved_requests: int
-    rejected_requests: int
-    total_days_taken: float
-    by_type: Dict[str, float]
+    model_config = {"populate_by_name": True}
