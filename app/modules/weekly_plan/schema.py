@@ -1,36 +1,69 @@
 """Weekly plan request/response schemas."""
+
+from __future__ import annotations
+
 import uuid
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.shared.utils.enums import WorkLocationType
+from app.modules.weekly_plan.locations import PLAN_LOCATION_OPTIONS, PlanLocationValue
 
 
-class WeeklyPlanCreate(BaseModel):
-    work_location: WorkLocationType
+def validate_weekday(value: date) -> date:
+    if value.weekday() >= 5:
+        raise ValueError("Weekly plans are only supported for weekdays (Monday-Friday)")
+    return value
+
+
+class PlanLocationOptionRead(BaseModel):
+    value: PlanLocationValue
+    label: str
+    short_label: str
+    color: str
+
+
+class WeeklyPlanDayWrite(BaseModel):
+    date: date
+    work_location: PlanLocationValue | None = None
+    project: str | None = Field(default=None, max_length=200)
+
+    @field_validator("date")
+    @classmethod
+    def validate_date(cls, value: date) -> date:
+        return validate_weekday(value)
+
+    @field_validator("project")
+    @classmethod
+    def strip_project(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+
+class WeeklyPlanDayCreate(BaseModel):
+    work_location: PlanLocationValue
     project: str | None = Field(default=None, max_length=200)
 
     @field_validator("project")
     @classmethod
-    def strip_project(cls, v: str | None) -> str | None:
-        if v is None:
+    def strip_project(cls, value: str | None) -> str | None:
+        if value is None:
             return None
-        if not isinstance(v, str):
-            raise ValueError("project must be a string")
-        return v.strip()
+        stripped = value.strip()
+        return stripped or None
 
 
-class WeeklyPlanDayCreate(WeeklyPlanCreate):
-    """Used for PUT /weekly-plans/{date} — date comes from the path."""
+class WeeklyPlanBulkSaveRequest(BaseModel):
+    days: list[WeeklyPlanDayWrite] = Field(default_factory=list)
 
-    @staticmethod
-    def validate_weekday(d: date) -> date:
-        if d.weekday() >= 5:
-            raise ValueError(
-                "Weekly plans are only supported for weekdays (Monday–Friday)"
-            )
-        return d
+    @model_validator(mode="after")
+    def validate_unique_dates(self) -> "WeeklyPlanBulkSaveRequest":
+        dates = [day.date for day in self.days]
+        if len(dates) != len(set(dates)):
+            raise ValueError("Each plan date may only be submitted once per request")
+        return self
 
 
 class WeeklyPlanRead(BaseModel):
@@ -41,5 +74,9 @@ class WeeklyPlanRead(BaseModel):
     user_id: str
     user_name: str | None = None
     date: date
-    work_location: WorkLocationType
+    work_location: PlanLocationValue
     project: str | None
+
+
+def build_location_options() -> list[PlanLocationOptionRead]:
+    return [PlanLocationOptionRead(**option) for option in PLAN_LOCATION_OPTIONS]

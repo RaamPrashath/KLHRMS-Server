@@ -10,6 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.modules.attendance.route import router as attendance_router
 from app.modules.leave.route import router as leave_router
 from app.modules.role.route import router as role_router
+from app.modules.weekly_plan.router import router as weekly_plan_router
+from app.shared.config import get_settings
+
+settings = get_settings()
 
 app = FastAPI(
     title="KL HRMS API",
@@ -29,9 +33,10 @@ app.add_middleware(
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 
-app.include_router(role_router)
-app.include_router(attendance_router)
-app.include_router(leave_router)
+app.include_router(role_router, prefix=settings.api_v1_prefix)
+app.include_router(attendance_router, prefix=settings.api_v1_prefix)
+app.include_router(leave_router, prefix=settings.api_v1_prefix)
+app.include_router(weekly_plan_router, prefix=settings.api_v1_prefix)
 
 
 @app.get("/", tags=["root"], include_in_schema=False)

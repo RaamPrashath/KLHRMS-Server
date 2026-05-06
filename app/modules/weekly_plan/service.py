@@ -1,51 +1,81 @@
 """Weekly plan business logic."""
-from datetime import date
 
-from app.modules.weekly_plan.repository import WeeklyPlanRepository
-from app.modules.weekly_plan.schema import WeeklyPlanDayCreate, WeeklyPlanRead
-from app.shared.auth_context import AuthContext
-from app.shared.exceptions import BusinessRuleError
-from app.shared.utils.enums import WorkLocationType
+from __future__ import annotations
+
+from datetime import date
+from collections import defaultdict
+
+from fastapi import HTTPException
+
+from app.modules.weekly_plan.locations import PlanLocationValue
+from app.modules.weekly_plan.permissions import WeeklyPlanAccessContext
+from app.modules.weekly_plan.repository import MonthlyPlanRepository, WeeklyPlanRepository
+from app.modules.weekly_plan.schema import (
+    WeeklyPlanBulkSaveRequest,
+    WeeklyPlanRead,
+    validate_weekday,
+)
+
+
+def _month_end(year: int, month: int) -> date:
+    if month == 12:
+        return date(year, 12, 31)
+    next_month = date(year, month + 1, 1)
+    return date.fromordinal(next_month.toordinal() - 1)
+
+
+def _month_start(year: int, month: int) -> date:
+    return date(year, month, 1)
 
 
 class WeeklyPlanService:
-    def __init__(self, repo: WeeklyPlanRepository, auth: AuthContext) -> None:
-        self.repo = repo
+    def __init__(
+        self,
+        weekly_repo: WeeklyPlanRepository,
+        monthly_repo: MonthlyPlanRepository,
+        auth: WeeklyPlanAccessContext,
+    ) -> None:
+        self.weekly_repo = weekly_repo
+        self.monthly_repo = monthly_repo
         self.auth = auth
 
+    async def _sync_weekly_days_to_monthly(self, days: list[dict]) -> None:
+        days_by_month: dict[tuple[int, int], list[dict]] = defaultdict(list)
+        for day in days:
+            month_key = (day["date"].year, day["date"].month)
+            days_by_month[month_key].append(day)
+
+        for (year, month), month_days in days_by_month.items():
+            await self.monthly_repo.replace_range(
+                user_id=self.auth.user.id,
+                start_date=_month_start(year, month),
+                end_date=_month_end(year, month),
+                days=month_days,
+            )
+
     async def get_my_week(self, year: int, week: int) -> list[WeeklyPlanRead]:
-        """Return the current user's plan entries for the given ISO week."""
-        entries = await self.repo.list_by_week(
-            user_id=self.auth.user_id, year=year, week=week
+        entries = await self.weekly_repo.list_by_week(
+            user_id=self.auth.user.id,
+            year=year,
+            week=week,
         )
-        return [WeeklyPlanRead.model_validate(e) for e in entries]
+        return [WeeklyPlanRead.model_validate(entry) for entry in entries]
 
-    async def set_day(
-        self,
-        target_date: date,
-        work_location: WorkLocationType,
-        project: str | None,
-    ) -> WeeklyPlanRead:
-        """Upsert a day entry for the current user. Rejects weekends."""
-        try:
-            WeeklyPlanDayCreate.validate_weekday(target_date)
-        except ValueError as exc:
-            raise BusinessRuleError(str(exc)) from exc
-
-        entry = await self.repo.upsert(
-            user_id=self.auth.user_id,
-            target_date=target_date,
-            work_location=work_location,
-            project=project,
+    async def get_my_month(self, year: int, month: int) -> list[WeeklyPlanRead]:
+        entries = await self.monthly_repo.list_by_month(
+            user_id=self.auth.user.id,
+            year=year,
+            month=month,
         )
-        return WeeklyPlanRead.model_validate(entry)
+        return [WeeklyPlanRead.model_validate(entry) for entry in entries]
 
     async def get_team_week(self, year: int, week: int) -> list[WeeklyPlanRead]:
-        """Return all org members' plan entries for the given ISO week."""
-        entries = await self.repo.list_team_by_week(year=year, week=week)
-        result = []
-        for entry in entries:
-            read = WeeklyPlanRead(
+        if self.auth.permission_scope != "organization":
+            raise HTTPException(status_code=403, detail="Organization scope is required for team plans")
+
+        entries = await self.weekly_repo.list_team_by_week(year=year, week=week)
+        return [
+            WeeklyPlanRead(
                 id=entry["id"],
                 organization_id=entry["organization_id"],
                 user_id=entry["user_id"],
@@ -54,5 +84,79 @@ class WeeklyPlanService:
                 work_location=entry["work_location"],
                 project=entry.get("project"),
             )
-            result.append(read)
-        return result
+            for entry in entries
+        ]
+
+    async def set_day(
+        self,
+        target_date: date,
+        work_location: PlanLocationValue,
+        project: str | None,
+    ) -> WeeklyPlanRead:
+        try:
+            validate_weekday(target_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        entry = await self.weekly_repo.set_day(
+            user_id=self.auth.user.id,
+            target_date=target_date,
+            work_location=work_location.value,
+            project=project,
+        )
+        await self._sync_weekly_days_to_monthly(
+            [
+                {
+                    "date": target_date,
+                    "work_location": work_location.value,
+                    "project": project,
+                }
+            ]
+        )
+        return WeeklyPlanRead.model_validate(entry)
+
+    async def save_week(self, year: int, week: int, body: WeeklyPlanBulkSaveRequest) -> list[WeeklyPlanRead]:
+        for day in body.days:
+            iso = day.date.isocalendar()
+            if iso.year != year or iso.week != week:
+                raise HTTPException(status_code=422, detail="All submitted dates must belong to the requested week")
+
+        monday = date.fromisocalendar(year, week, 1)
+        friday = date.fromisocalendar(year, week, 5)
+        weekly_days = [
+            {
+                "date": day.date,
+                "work_location": day.work_location.value if day.work_location is not None else None,
+                "project": day.project,
+            }
+            for day in body.days
+        ]
+
+        saved = await self.weekly_repo.replace_range(
+            user_id=self.auth.user.id,
+            start_date=monday,
+            end_date=friday,
+            days=weekly_days,
+        )
+        await self._sync_weekly_days_to_monthly(weekly_days)
+        return [WeeklyPlanRead.model_validate(entry) for entry in saved]
+
+    async def save_month(self, year: int, month: int, body: WeeklyPlanBulkSaveRequest) -> list[WeeklyPlanRead]:
+        for day in body.days:
+            if day.date.year != year or day.date.month != month:
+                raise HTTPException(status_code=422, detail="All submitted dates must belong to the requested month")
+
+        saved = await self.monthly_repo.replace_range(
+            user_id=self.auth.user.id,
+            start_date=date(year, month, 1),
+            end_date=_month_end(year, month),
+            days=[
+                {
+                    "date": day.date,
+                    "work_location": day.work_location.value if day.work_location is not None else None,
+                    "project": day.project,
+                }
+                for day in body.days
+            ],
+        )
+        return [WeeklyPlanRead.model_validate(entry) for entry in saved]
