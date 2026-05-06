@@ -22,6 +22,7 @@ import datetime as dt
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.modules.attendance.controller import (
@@ -51,6 +52,15 @@ from app.modules.attendance.schema import (
     ClockOutRequest,
     DeleteDayEntryRequest,
     ManualDayEntryRequest,
+)
+from app.modules.attendance.export_schema import AttendanceExportRequest
+from app.modules.attendance.export_service import (
+    generate_csv,
+    generate_csv_pivot,
+    generate_pdf,
+    generate_pdf_pivot,
+    generate_xlsx,
+    generate_xlsx_pivot,
 )
 from app.shared.database import get_db
 from app.shared.deps.attendance_permissions import (
@@ -219,7 +229,7 @@ def get_my_attendance(
     description=(
         "Return paginated attendance records. "
         "Self-scope callers only see their own records. "
-        "Organization-scope callers may filter by target_member_id. "
+        "Organization-scope callers may filter by target_member_id or employee_name. "
         "Requires attendance.view permission."
     ),
 )
@@ -230,6 +240,7 @@ def list_attendance(
     ],
     db: Session = Depends(get_db),
     target_member_id: str | None = Query(default=None),
+    employee_name: str | None = Query(default=None),
     date_from: dt.date | None = Query(default=None),
     date_to: dt.date | None = Query(default=None),
     status_filter: AttendanceStatus | None = Query(default=None, alias="status"),
@@ -238,6 +249,7 @@ def list_attendance(
 ) -> AttendanceListResponse:
     filters = AttendanceListFilters(
         target_member_id=target_member_id,
+        employee_name=employee_name,
         date_from=date_from,
         date_to=date_to,
         status=status_filter,
@@ -387,3 +399,73 @@ def delete_bulk_work_logs_day(
     day: dt.date = Query(..., description="Calendar date to delete (YYYY-MM-DD)."),
 ) -> BulkDeleteDayResponse:
     return handle_delete_bulk_work_logs_day(access, db, day)
+
+
+# ---------------------------------------------------------------------------
+# 12. Export attendance  POST /attendance/export
+# ---------------------------------------------------------------------------
+
+_MIME_TYPES: dict[str, str] = {
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pdf": "application/pdf",
+    "csv": "text/csv; charset=utf-8",
+}
+
+_FILE_EXTENSIONS: dict[str, str] = {
+    "xlsx": "xlsx",
+    "pdf": "pdf",
+    "csv": "csv",
+}
+
+
+@router.post(
+    "/export",
+    status_code=status.HTTP_200_OK,
+    summary="Export attendance records",
+    description=(
+        "Generate an Excel, PDF, or CSV file from the currently visible "
+        "attendance records sent by the frontend. "
+        "Requires attendance.view permission."
+    ),
+)
+def export_attendance(
+    body: AttendanceExportRequest,
+    access: Annotated[
+        AttendanceAccessContext,
+        Depends(require_attendance_permission("view")),
+    ],
+) -> StreamingResponse:
+    fmt = body.format
+
+    if body.exportMode == "pivot":
+        if body.pivotData is None:
+            from fastapi import HTTPException as _HTTPException
+            raise _HTTPException(status_code=422, detail="pivotData is required for pivot export")
+        if fmt == "xlsx":
+            content = generate_xlsx_pivot(body.pivotData, body.title)
+        elif fmt == "pdf":
+            content = generate_pdf_pivot(body.pivotData, body.title)
+        else:
+            content = generate_csv_pivot(body.pivotData)
+    else:
+        if not body.records:
+            from fastapi import HTTPException as _HTTPException
+            raise _HTTPException(status_code=422, detail="records is required for list export")
+        if fmt == "xlsx":
+            content = generate_xlsx(body.records, body.showEmployeeColumn, body.title)
+        elif fmt == "pdf":
+            content = generate_pdf(body.records, body.showEmployeeColumn, body.title)
+        else:
+            content = generate_csv(body.records, body.showEmployeeColumn)
+
+    import io
+    filename = f"attendance.{_FILE_EXTENSIONS[fmt]}"
+
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=_MIME_TYPES[fmt],
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(content)),
+        },
+    )

@@ -109,6 +109,10 @@ class AttendanceListFilters(BaseModel):
         default=None,
         description=_MEMBER_ID_DESC + " Only valid for organization-scope callers.",
     )
+    employee_name: str | None = Field(
+        default=None,
+        description="Partial name search against user.name. Only valid for organization-scope callers.",
+    )
     date_from: dt.date | None = Field(default=None, description="Inclusive start date.")
     date_to: dt.date | None = Field(default=None, description="Inclusive end date.")
     status: AttendanceStatus | None = Field(default=None)
@@ -133,6 +137,7 @@ class AttendanceRecordResponse(BaseModel):
     Response DTO for a single AttendanceRecord row.
 
     employee_id maps to AttendanceRecord.employeeId which is Member.id.
+    employee_name is populated for org-scope list queries (joined from Member → User).
     """
 
     id: str
@@ -146,6 +151,8 @@ class AttendanceRecordResponse(BaseModel):
     status: str
     entered_by_manager_id: str | None = Field(alias="enteredByManagerId")
     created_at: dt.datetime = Field(alias="createdAt")
+    # Populated for org-scope list queries; null for self-scope responses.
+    employee_name: str | None = Field(default=None, alias="employeeName")
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 

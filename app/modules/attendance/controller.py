@@ -27,8 +27,11 @@ from app.modules.attendance import service
 from app.shared.deps.attendance_permissions import AttendanceAccessContext
 
 
-def _to_response(record: object) -> AttendanceRecordResponse:
-    return AttendanceRecordResponse.model_validate(record)
+def _to_response(record: object, employee_name: str | None = None) -> AttendanceRecordResponse:
+    resp = AttendanceRecordResponse.model_validate(record)
+    if employee_name is not None:
+        resp.employee_name = employee_name
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +150,7 @@ def handle_get_my_attendance(
     db: Session,
     filters: AttendanceListFilters,
 ) -> AttendanceListResponse:
-    items, total = service.get_my_attendance(
+    rows, total = service.get_my_attendance(
         db=db,
         organization_id=access.organization.id,
         member_id=access.member.id,
@@ -158,7 +161,7 @@ def handle_get_my_attendance(
         page_size=filters.page_size,
     )
     return AttendanceListResponse(
-        items=[_to_response(r) for r in items],
+        items=[_to_response(record, name) for record, name in rows],
         total=total,
         page=filters.page,
         page_size=filters.page_size,
@@ -175,12 +178,13 @@ def handle_list_attendance(
     db: Session,
     filters: AttendanceListFilters,
 ) -> AttendanceListResponse:
-    items, total = service.list_attendance(
+    rows, total = service.list_attendance(
         db=db,
         organization_id=access.organization.id,
         actor_member_id=access.member.id,
         scope=access.permission_scope,
         target_member_id=filters.target_member_id,
+        employee_name=filters.employee_name,
         date_from=filters.date_from,
         date_to=filters.date_to,
         status_filter=filters.status,
@@ -188,7 +192,7 @@ def handle_list_attendance(
         page_size=filters.page_size,
     )
     return AttendanceListResponse(
-        items=[_to_response(r) for r in items],
+        items=[_to_response(record, name) for record, name in rows],
         total=total,
         page=filters.page,
         page_size=filters.page_size,
