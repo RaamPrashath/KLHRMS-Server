@@ -1,4 +1,4 @@
-"""Weekly plan model - one row per employee per weekday."""
+"""Monthly plan model - one row per employee per weekday in a month view."""
 
 from datetime import date
 
@@ -8,8 +8,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import HRMSBase
 
 
-class WeeklyPlan(HRMSBase):
-    __tablename__ = "weekly_plans"
+class MonthlyPlan(HRMSBase):
+    __tablename__ = "monthly_plans"
 
     user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -21,6 +21,6 @@ class WeeklyPlan(HRMSBase):
             "organization_id",
             "user_id",
             "date",
-            name="uq_weekly_plan_org_user_date",
+            name="uq_monthly_plan_org_user_date",
         ),
     )

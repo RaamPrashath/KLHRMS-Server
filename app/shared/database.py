@@ -1,31 +1,49 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-from app.models.base import Base
 import os
+
 from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.shared.config import normalize_database_url
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", ""))
+SYNC_DATABASE_URL = DATABASE_URL.replace("+asyncpg", "")
 
-# Engine (connection pool)
 engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True
+    SYNC_DATABASE_URL,
+    pool_pre_ping=True,
 )
 
-# Session factory
+async_engine = create_async_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+)
+
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
-    bind=engine
+    bind=engine,
+)
+
+AsyncSessionLocal = async_sessionmaker(
+    bind=async_engine,
+    autoflush=False,
+    expire_on_commit=False,
+    class_=AsyncSession,
 )
 
 
-# Dependency (THIS is your prisma-like entrypoint)
 def get_db() -> Session:
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+async def get_async_db() -> AsyncSession:
+    async with AsyncSessionLocal() as session:
+        yield session

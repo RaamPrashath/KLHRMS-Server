@@ -1,18 +1,28 @@
 from logging.config import fileConfig
 import os
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 from dotenv import load_dotenv
 
 from app.models import Base  # noqa: F401
 from app.models import *  # noqa: F401, F403
+from app.shared.config import normalize_database_url
 
 load_dotenv()
 
 config = context.config
 
-# Read from .env and strip +asyncpg for sync engine
-db_url = os.environ["DATABASE_URL"].replace("+asyncpg", "")
+# Read from .env, normalize it, and convert asyncpg-specific ssl query params
+# back to psycopg2-compatible ones for Alembic's sync engine.
+db_url = normalize_database_url(os.environ["DATABASE_URL"]).replace("+asyncpg", "")
+parsed = urlparse(db_url)
+query_params = dict(parse_qsl(parsed.query))
+if "ssl" in query_params:
+    ssl_value = query_params.pop("ssl")
+    if ssl_value:
+        query_params["sslmode"] = ssl_value
+db_url = urlunparse(parsed._replace(query=urlencode(query_params)))
 config.set_main_option("sqlalchemy.url", db_url)
 
 if config.config_file_name is not None:
