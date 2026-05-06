@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.modules.attendance.route import router as attendance_router
+from app.modules.employee.route import router as employee_router
 from app.modules.leave.route import router as leave_router
 from app.modules.role.route import router as role_router
 
@@ -32,6 +33,7 @@ app.add_middleware(
 app.include_router(role_router)
 app.include_router(attendance_router)
 app.include_router(leave_router)
+app.include_router(employee_router)
 
 
 @app.get("/", tags=["root"], include_in_schema=False)
