@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.leave import Holiday, LeaveBalance, LeaveRequest, LeaveType
 from app.models.member import Member
@@ -91,16 +91,16 @@ def _leave_balance_response(balance: LeaveBalance) -> LeaveBalanceResponse:
     )
 
 
-def handle_list_leave_types(ctx: MemberContext, db: Session) -> list[LeaveTypeResponse]:
-    return [_leave_type_response(item) for item in service.list_leave_types(db, ctx.organization.id)]
+async def handle_list_leave_types(ctx: MemberContext, db: AsyncSession) -> list[LeaveTypeResponse]:
+    return [_leave_type_response(item) for item in await service.list_leave_types(db, ctx.organization.id)]
 
 
-def handle_create_leave_type(
+async def handle_create_leave_type(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     body: LeaveTypeCreateRequest,
 ) -> LeaveTypeResponse:
-    leave_type = service.create_leave_type(
+    leave_type = await service.create_leave_type(
         db,
         access.organization.id,
         name=body.name,
@@ -112,13 +112,13 @@ def handle_create_leave_type(
     return _leave_type_response(leave_type)
 
 
-def handle_update_leave_type(
+async def handle_update_leave_type(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     leave_type_id: str,
     body: LeaveTypeUpdateRequest,
 ) -> LeaveTypeResponse:
-    leave_type = service.update_leave_type(
+    leave_type = await service.update_leave_type(
         db,
         access.organization.id,
         leave_type_id,
@@ -131,23 +131,23 @@ def handle_update_leave_type(
     return _leave_type_response(leave_type)
 
 
-def handle_list_holidays(
+async def handle_list_holidays(
     ctx: MemberContext,
-    db: Session,
+    db: AsyncSession,
     *,
     year: int | None,
     month: int | None,
 ) -> list[HolidayResponse]:
-    items = service.list_holidays(db, ctx.organization.id, year=year, month=month)
+    items = await service.list_holidays(db, ctx.organization.id, year=year, month=month)
     return [_holiday_response(item) for item in items]
 
 
-def handle_create_holiday(
+async def handle_create_holiday(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     body: HolidayCreateRequest,
 ) -> HolidayResponse:
-    holiday = service.create_holiday(
+    holiday = await service.create_holiday(
         db,
         access.organization.id,
         name=body.name,
@@ -158,13 +158,13 @@ def handle_create_holiday(
     return _holiday_response(holiday)
 
 
-def handle_update_holiday(
+async def handle_update_holiday(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     holiday_id: str,
     body: HolidayUpdateRequest,
 ) -> HolidayResponse:
-    holiday = service.update_holiday(
+    holiday = await service.update_holiday(
         db,
         access.organization.id,
         holiday_id,
@@ -176,20 +176,20 @@ def handle_update_holiday(
     return _holiday_response(holiday)
 
 
-def handle_delete_holiday(
+async def handle_delete_holiday(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     holiday_id: str,
 ) -> None:
-    service.delete_holiday(db, access.organization.id, holiday_id)
+    await service.delete_holiday(db, access.organization.id, holiday_id)
 
 
-def handle_list_leave_requests(
+async def handle_list_leave_requests(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     filters: LeaveRequestFilters,
 ) -> LeaveRequestListResponse:
-    items, total = service.list_leave_requests(
+    items, total = await service.list_leave_requests(
         db,
         access.organization.id,
         access.member.id,
@@ -204,12 +204,12 @@ def handle_list_leave_requests(
     )
 
 
-def handle_get_leave_request(
+async def handle_get_leave_request(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     leave_request_id: str,
 ) -> LeaveRequestResponse:
-    item = service.get_leave_request_detail(
+    item = await service.get_leave_request_detail(
         db,
         access.organization.id,
         access.member.id,
@@ -219,12 +219,12 @@ def handle_get_leave_request(
     return _leave_request_response(item)
 
 
-def handle_create_leave_request(
+async def handle_create_leave_request(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     body: LeaveRequestCreateRequest,
 ) -> LeaveRequestResponse:
-    item = service.create_leave_request(
+    item = await service.create_leave_request(
         db,
         access.organization.id,
         access.member.id,
@@ -239,13 +239,13 @@ def handle_create_leave_request(
     return _leave_request_response(item)
 
 
-def handle_approve_leave_request(
+async def handle_approve_leave_request(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     leave_request_id: str,
     body: LeaveRequestDecisionRequest,
 ) -> LeaveRequestResponse:
-    item = service.approve_leave_request(
+    item = await service.approve_leave_request(
         db,
         access.organization.id,
         access.member.id,
@@ -255,13 +255,13 @@ def handle_approve_leave_request(
     return _leave_request_response(item)
 
 
-def handle_reject_leave_request(
+async def handle_reject_leave_request(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     leave_request_id: str,
     body: LeaveRequestDecisionRequest,
 ) -> LeaveRequestResponse:
-    item = service.reject_leave_request(
+    item = await service.reject_leave_request(
         db,
         access.organization.id,
         access.member.id,
@@ -271,9 +271,9 @@ def handle_reject_leave_request(
     return _leave_request_response(item)
 
 
-def handle_cancel_leave_request(
+async def handle_cancel_leave_request(
     ctx: MemberContext,
-    db: Session,
+    db: AsyncSession,
     leave_request_id: str,
 ) -> LeaveRequestResponse:
     permissions = ctx.role.permissions if ctx.role is not None else {}
@@ -284,7 +284,7 @@ def handle_cancel_leave_request(
         raise HTTPException(status_code=403, detail="No leaves.create or leaves.approve permission")
 
     can_cancel_any = create_scope == "organization" or approve_scope == "organization"
-    item = service.cancel_leave_request(
+    item = await service.cancel_leave_request(
         db,
         ctx.organization.id,
         ctx.member.id,
@@ -294,12 +294,12 @@ def handle_cancel_leave_request(
     return _leave_request_response(item)
 
 
-def handle_list_leave_balances(
+async def handle_list_leave_balances(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     filters: LeaveBalanceFilters,
 ) -> LeaveBalanceListResponse:
-    items, total = service.list_leave_balances(
+    items, total = await service.list_leave_balances(
         db,
         access.organization.id,
         access.member.id,
@@ -312,12 +312,12 @@ def handle_list_leave_balances(
     )
 
 
-def handle_get_leave_calendar(
+async def handle_get_leave_calendar(
     access: LeaveAccessContext,
-    db: Session,
+    db: AsyncSession,
     filters: LeaveCalendarFilters,
 ) -> LeaveCalendarResponse:
-    holidays, leave_requests = service.get_leave_calendar(
+    holidays, leave_requests = await service.get_leave_calendar(
         db,
         access.organization.id,
         access.member.id,

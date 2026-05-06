@@ -23,7 +23,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.attendance.controller import (
     handle_clock_in,
@@ -87,15 +87,15 @@ router = APIRouter(prefix="/attendance", tags=["attendance"])
         "Requires attendance.create permission."
     ),
 )
-def clock_in(
+async def clock_in(
     body: ClockInRequest,
     access: Annotated[
         AttendanceAccessContext,
         Depends(require_attendance_permission("create")),
     ],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> AttendanceRecordResponse:
-    return handle_clock_in(access, db, body)
+    return await handle_clock_in(access, db, body)
 
 
 # ---------------------------------------------------------------------------
@@ -114,15 +114,15 @@ def clock_in(
         "Requires attendance.create permission."
     ),
 )
-def clock_out(
+async def clock_out(
     body: ClockOutRequest,
     access: Annotated[
         AttendanceAccessContext,
         Depends(require_attendance_permission("create")),
     ],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[AttendanceRecordResponse]:
-    return handle_clock_out(access, db, body)
+    return await handle_clock_out(access, db, body)
 
 
 # ---------------------------------------------------------------------------
@@ -141,15 +141,15 @@ def clock_out(
         "Requires attendance.edit permission."
     ),
 )
-def upsert_day_entry(
+async def upsert_day_entry(
     body: ManualDayEntryRequest,
     access: Annotated[
         AttendanceAccessContext,
         Depends(require_attendance_permission("edit")),
     ],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> AttendanceRecordResponse:
-    return handle_upsert_manual_day(access, db, body)
+    return await handle_upsert_manual_day(access, db, body)
 
 
 # ---------------------------------------------------------------------------
@@ -166,15 +166,15 @@ def upsert_day_entry(
         "Requires attendance.delete permission."
     ),
 )
-def delete_day_entry(
+async def delete_day_entry(
     body: DeleteDayEntryRequest,
     access: Annotated[
         AttendanceAccessContext,
         Depends(require_attendance_permission("delete")),
     ],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> Response:
-    handle_delete_day_entry(access, db, body)
+    await handle_delete_day_entry(access, db, body)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -194,12 +194,12 @@ def delete_day_entry(
         "Requires attendance.view permission."
     ),
 )
-def get_my_attendance(
+async def get_my_attendance(
     access: Annotated[
         AttendanceAccessContext,
         Depends(require_attendance_permission("view")),
     ],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     date_from: dt.date | None = Query(default=None),
     date_to: dt.date | None = Query(default=None),
     status_filter: AttendanceStatus | None = Query(default=None, alias="status"),
@@ -213,7 +213,7 @@ def get_my_attendance(
         page=page,
         page_size=page_size,
     )
-    return handle_get_my_attendance(access, db, filters)
+    return await handle_get_my_attendance(access, db, filters)
 
 
 # ---------------------------------------------------------------------------
@@ -233,12 +233,12 @@ def get_my_attendance(
         "Requires attendance.view permission."
     ),
 )
-def list_attendance(
+async def list_attendance(
     access: Annotated[
         AttendanceAccessContext,
         Depends(require_attendance_permission("view")),
     ],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     target_member_id: str | None = Query(default=None),
     employee_name: str | None = Query(default=None),
     date_from: dt.date | None = Query(default=None),
@@ -256,7 +256,7 @@ def list_attendance(
         page=page,
         page_size=page_size,
     )
-    return handle_list_attendance(access, db, filters)
+    return await handle_list_attendance(access, db, filters)
 
 
 # ---------------------------------------------------------------------------
@@ -275,16 +275,16 @@ def list_attendance(
         "Requires attendance.view permission."
     ),
 )
-def get_attendance_day(
+async def get_attendance_day(
     access: Annotated[
         AttendanceAccessContext,
         Depends(require_attendance_permission("view")),
     ],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     target_member_id: str = Query(...),
     day: dt.date = Query(...),
 ) -> AttendanceRecordResponse:
-    return handle_get_attendance_day(access, db, target_member_id, day)
+    return await handle_get_attendance_day(access, db, target_member_id, day)
 
 
 # ---------------------------------------------------------------------------
@@ -304,15 +304,15 @@ def get_attendance_day(
         "Requires attendance.create permission."
     ),
 )
-def upsert_bulk_work_logs(
+async def upsert_bulk_work_logs(
     body: BulkUpsertRequest,
     access: Annotated[
         AttendanceAccessContext,
         Depends(require_attendance_permission("create")),
     ],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> BulkUpsertResponse:
-    return handle_upsert_bulk_work_logs(access, db, body)
+    return await handle_upsert_bulk_work_logs(access, db, body)
 
 
 # ---------------------------------------------------------------------------
@@ -332,19 +332,19 @@ def upsert_bulk_work_logs(
         "Requires attendance.view permission."
     ),
 )
-def get_bulk_work_logs_range(
+async def get_bulk_work_logs_range(
     access: Annotated[
         AttendanceAccessContext,
         Depends(require_attendance_permission("view")),
     ],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     date_from: dt.date = Query(..., alias="from", description="Inclusive start date (YYYY-MM-DD)."),
     date_to: dt.date = Query(..., alias="to", description="Inclusive end date (YYYY-MM-DD)."),
 ) -> BulkRangeResponse:
     if date_to < date_from:
         from fastapi import HTTPException as _HTTPException
         raise _HTTPException(status_code=422, detail="'to' must be >= 'from'")
-    return handle_get_bulk_work_logs_range(access, db, date_from, date_to)
+    return await handle_get_bulk_work_logs_range(access, db, date_from, date_to)
 
 
 # ---------------------------------------------------------------------------
@@ -363,15 +363,15 @@ def get_bulk_work_logs_range(
         "Requires attendance.view permission."
     ),
 )
-def get_bulk_work_logs_day(
+async def get_bulk_work_logs_day(
     access: Annotated[
         AttendanceAccessContext,
         Depends(require_attendance_permission("view")),
     ],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     day: dt.date = Query(..., description="Calendar date to fetch (YYYY-MM-DD)."),
 ) -> BulkDaySingleResponse:
-    return handle_get_bulk_work_logs_day(access, db, day)
+    return await handle_get_bulk_work_logs_day(access, db, day)
 
 
 # ---------------------------------------------------------------------------
@@ -390,15 +390,15 @@ def get_bulk_work_logs_day(
         "Requires attendance.delete permission."
     ),
 )
-def delete_bulk_work_logs_day(
+async def delete_bulk_work_logs_day(
     access: Annotated[
         AttendanceAccessContext,
         Depends(require_attendance_permission("delete")),
     ],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     day: dt.date = Query(..., description="Calendar date to delete (YYYY-MM-DD)."),
 ) -> BulkDeleteDayResponse:
-    return handle_delete_bulk_work_logs_day(access, db, day)
+    return await handle_delete_bulk_work_logs_day(access, db, day)
 
 
 # ---------------------------------------------------------------------------

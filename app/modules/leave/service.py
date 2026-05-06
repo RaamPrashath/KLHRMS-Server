@@ -5,9 +5,10 @@ from __future__ import annotations
 import datetime as dt
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.models.base import generate_uuid
 from app.models.leave import Holiday, LeaveBalance, LeaveRequest, LeaveType
@@ -20,102 +21,100 @@ def _utcnow() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
 
-def resolve_target_member(db: Session, organization_id: str, member_id: str) -> Member:
-    member = (
-        db.query(Member)
+async def resolve_target_member(db: AsyncSession, organization_id: str, member_id: str) -> Member:
+    result = await db.execute(
+        select(Member)
         .options(joinedload(Member.user), joinedload(Member.role))
-        .filter(
+        .where(
             Member.id == member_id,
             Member.organizationId == organization_id,
         )
-        .first()
     )
+    member = result.unique().scalar_one_or_none()
     if member is None:
         raise HTTPException(status_code=404, detail="Member not found")
     return member
 
 
-def get_leave_type_or_404(db: Session, organization_id: str, leave_type_id: str) -> LeaveType:
-    leave_type = (
-        db.query(LeaveType)
-        .filter(
+async def get_leave_type_or_404(db: AsyncSession, organization_id: str, leave_type_id: str) -> LeaveType:
+    result = await db.execute(
+        select(LeaveType).where(
             LeaveType.id == leave_type_id,
             LeaveType.organizationId == organization_id,
             LeaveType.deletedAt.is_(None),
         )
-        .first()
     )
+    leave_type = result.scalar_one_or_none()
     if leave_type is None:
         raise HTTPException(status_code=404, detail="Leave type not found")
     return leave_type
 
 
-def get_holiday_or_404(db: Session, organization_id: str, holiday_id: str) -> Holiday:
-    holiday = (
-        db.query(Holiday)
-        .filter(
+async def get_holiday_or_404(db: AsyncSession, organization_id: str, holiday_id: str) -> Holiday:
+    result = await db.execute(
+        select(Holiday).where(
             Holiday.id == holiday_id,
             Holiday.organizationId == organization_id,
             Holiday.deletedAt.is_(None),
         )
-        .first()
     )
+    holiday = result.scalar_one_or_none()
     if holiday is None:
         raise HTTPException(status_code=404, detail="Holiday not found")
     return holiday
 
 
-def get_leave_request_or_404(db: Session, organization_id: str, leave_request_id: str) -> LeaveRequest:
-    leave_request = (
-        db.query(LeaveRequest)
+async def get_leave_request_or_404(db: AsyncSession, organization_id: str, leave_request_id: str) -> LeaveRequest:
+    result = await db.execute(
+        select(LeaveRequest)
         .options(
             joinedload(LeaveRequest.member).joinedload(Member.user),
             joinedload(LeaveRequest.approved_by).joinedload(Member.user),
             joinedload(LeaveRequest.leave_type),
         )
-        .filter(
+        .where(
             LeaveRequest.id == leave_request_id,
             LeaveRequest.organizationId == organization_id,
             LeaveRequest.deletedAt.is_(None),
         )
-        .first()
     )
+    leave_request = result.unique().scalar_one_or_none()
     if leave_request is None:
         raise HTTPException(status_code=404, detail="Leave request not found")
     return leave_request
 
 
-def _ensure_leave_type_name_available(
-    db: Session,
+async def _ensure_leave_type_name_available(
+    db: AsyncSession,
     organization_id: str,
     name: str,
     exclude_id: str | None = None,
 ) -> None:
-    q = db.query(LeaveType).filter(
+    query = select(LeaveType).where(
         LeaveType.organizationId == organization_id,
         LeaveType.deletedAt.is_(None),
         func.lower(LeaveType.name) == name.strip().lower(),
     )
     if exclude_id is not None:
-        q = q.filter(LeaveType.id != exclude_id)
-    if q.first() is not None:
+        query = query.where(LeaveType.id != exclude_id)
+    result = await db.execute(query)
+    if result.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail="A leave type with this name already exists")
 
 
-def list_leave_types(db: Session, organization_id: str) -> list[LeaveType]:
-    return (
-        db.query(LeaveType)
-        .filter(
+async def list_leave_types(db: AsyncSession, organization_id: str) -> list[LeaveType]:
+    result = await db.execute(
+        select(LeaveType).where(
             LeaveType.organizationId == organization_id,
             LeaveType.deletedAt.is_(None),
         )
         .order_by(LeaveType.name.asc())
-        .all()
     )
+    return result.scalars().all()
 
 
-def create_leave_type(
-    db: Session,
+async def create_leave_type(
+    db: AsyncSession,
     organization_id: str,
     *,
     name: str,
@@ -124,7 +123,7 @@ def create_leave_type(
     is_paid: bool,
     color: str | None,
 ) -> LeaveType:
-    _ensure_leave_type_name_available(db, organization_id, name)
+    await _ensure_leave_type_name_available(db, organization_id, name)
 
     leave_type = LeaveType(
         id=generate_uuid(),
@@ -138,16 +137,16 @@ def create_leave_type(
     db.add(leave_type)
 
     try:
-        db.commit()
-        db.refresh(leave_type)
+        await db.commit()
+        await db.refresh(leave_type)
     except IntegrityError as exc:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(status_code=409, detail="Failed to create leave type") from exc
     return leave_type
 
 
-def update_leave_type(
-    db: Session,
+async def update_leave_type(
+    db: AsyncSession,
     organization_id: str,
     leave_type_id: str,
     *,
@@ -157,8 +156,8 @@ def update_leave_type(
     is_paid: bool,
     color: str | None,
 ) -> LeaveType:
-    leave_type = get_leave_type_or_404(db, organization_id, leave_type_id)
-    _ensure_leave_type_name_available(db, organization_id, name, exclude_id=leave_type_id)
+    leave_type = await get_leave_type_or_404(db, organization_id, leave_type_id)
+    await _ensure_leave_type_name_available(db, organization_id, name, exclude_id=leave_type_id)
 
     leave_type.name = name.strip()
     leave_type.quota = quota
@@ -167,34 +166,35 @@ def update_leave_type(
     leave_type.color = color
 
     try:
-        db.commit()
-        db.refresh(leave_type)
+        await db.commit()
+        await db.refresh(leave_type)
     except IntegrityError as exc:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(status_code=409, detail="Failed to update leave type") from exc
     return leave_type
 
 
-def list_holidays(
-    db: Session,
+async def list_holidays(
+    db: AsyncSession,
     organization_id: str,
     *,
     year: int | None = None,
     month: int | None = None,
 ) -> list[Holiday]:
-    q = db.query(Holiday).filter(
+    query = select(Holiday).where(
         Holiday.organizationId == organization_id,
         Holiday.deletedAt.is_(None),
     )
     if year is not None:
-        q = q.filter(func.extract("year", Holiday.holidayDate) == year)
+        query = query.where(func.extract("year", Holiday.holidayDate) == year)
     if month is not None:
-        q = q.filter(func.extract("month", Holiday.holidayDate) == month)
-    return q.order_by(Holiday.holidayDate.asc()).all()
+        query = query.where(func.extract("month", Holiday.holidayDate) == month)
+    result = await db.execute(query.order_by(Holiday.holidayDate.asc()))
+    return result.scalars().all()
 
 
-def create_holiday(
-    db: Session,
+async def create_holiday(
+    db: AsyncSession,
     organization_id: str,
     *,
     name: str,
@@ -211,13 +211,13 @@ def create_holiday(
         description=description,
     )
     db.add(holiday)
-    db.commit()
-    db.refresh(holiday)
+    await db.commit()
+    await db.refresh(holiday)
     return holiday
 
 
-def update_holiday(
-    db: Session,
+async def update_holiday(
+    db: AsyncSession,
     organization_id: str,
     holiday_id: str,
     *,
@@ -226,20 +226,20 @@ def update_holiday(
     is_recurring: bool,
     description: str | None,
 ) -> Holiday:
-    holiday = get_holiday_or_404(db, organization_id, holiday_id)
+    holiday = await get_holiday_or_404(db, organization_id, holiday_id)
     holiday.name = name.strip()
     holiday.holidayDate = holiday_date
     holiday.isRecurring = is_recurring
     holiday.description = description
-    db.commit()
-    db.refresh(holiday)
+    await db.commit()
+    await db.refresh(holiday)
     return holiday
 
 
-def delete_holiday(db: Session, organization_id: str, holiday_id: str) -> None:
-    holiday = get_holiday_or_404(db, organization_id, holiday_id)
+async def delete_holiday(db: AsyncSession, organization_id: str, holiday_id: str) -> None:
+    holiday = await get_holiday_or_404(db, organization_id, holiday_id)
     holiday.deletedAt = _utcnow()
-    db.commit()
+    await db.commit()
 
 
 def _apply_leave_request_filters(
@@ -262,66 +262,68 @@ def _apply_leave_request_filters(
     return query
 
 
-def list_leave_requests(
-    db: Session,
+async def list_leave_requests(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     permission_scope: str,
     filters: LeaveRequestFilters,
 ) -> tuple[list[LeaveRequest], int]:
-    q = (
-        db.query(LeaveRequest)
+    query = (
+        select(LeaveRequest)
         .options(
             joinedload(LeaveRequest.member).joinedload(Member.user),
             joinedload(LeaveRequest.approved_by).joinedload(Member.user),
             joinedload(LeaveRequest.leave_type),
         )
-        .filter(
+        .where(
             LeaveRequest.organizationId == organization_id,
             LeaveRequest.deletedAt.is_(None),
         )
     )
 
     if permission_scope == "self":
-        q = q.filter(LeaveRequest.memberId == actor_member_id)
+        query = query.where(LeaveRequest.memberId == actor_member_id)
         organization_scope = False
     else:
         organization_scope = True
 
-    q = _apply_leave_request_filters(q, filters, organization_scope)
-    total = q.count()
-    items = (
-        q.order_by(LeaveRequest.createdAt.desc())
+    query = _apply_leave_request_filters(query, filters, organization_scope)
+    total_result = await db.execute(
+        select(func.count()).select_from(query.order_by(None).subquery())
+    )
+    total = total_result.scalar_one()
+    items_result = await db.execute(
+        query.order_by(LeaveRequest.createdAt.desc())
         .offset((filters.page - 1) * filters.page_size)
         .limit(filters.page_size)
-        .all()
     )
+    items = items_result.unique().scalars().all()
     return items, total
 
 
-def get_leave_request_detail(
-    db: Session,
+async def get_leave_request_detail(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     permission_scope: str,
     leave_request_id: str,
 ) -> LeaveRequest:
-    leave_request = get_leave_request_or_404(db, organization_id, leave_request_id)
+    leave_request = await get_leave_request_or_404(db, organization_id, leave_request_id)
     if permission_scope == "self" and leave_request.memberId != actor_member_id:
         raise HTTPException(status_code=403, detail="You can only view your own leave requests")
     return leave_request
 
 
-def _ensure_no_overlapping_request(
-    db: Session,
+async def _ensure_no_overlapping_request(
+    db: AsyncSession,
     organization_id: str,
     member_id: str,
     start_date: dt.date,
     end_date: dt.date,
 ) -> None:
-    overlap = (
-        db.query(LeaveRequest)
-        .filter(
+    result = await db.execute(
+        select(LeaveRequest).where(
             LeaveRequest.organizationId == organization_id,
             LeaveRequest.memberId == member_id,
             LeaveRequest.deletedAt.is_(None),
@@ -329,29 +331,28 @@ def _ensure_no_overlapping_request(
             LeaveRequest.startDate <= end_date,
             LeaveRequest.endDate >= start_date,
         )
-        .first()
     )
+    overlap = result.scalar_one_or_none()
     if overlap is not None:
         raise HTTPException(status_code=409, detail="An overlapping leave request already exists")
 
 
-def _get_or_create_leave_balance(
-    db: Session,
+async def _get_or_create_leave_balance(
+    db: AsyncSession,
     organization_id: str,
     member_id: str,
     leave_type: LeaveType,
     year: int,
 ) -> LeaveBalance:
-    balance = (
-        db.query(LeaveBalance)
-        .filter(
+    result = await db.execute(
+        select(LeaveBalance).where(
             LeaveBalance.organizationId == organization_id,
             LeaveBalance.memberId == member_id,
             LeaveBalance.leaveTypeId == leave_type.id,
             LeaveBalance.year == year,
         )
-        .first()
     )
+    balance = result.scalar_one_or_none()
     if balance is not None:
         return balance
 
@@ -368,13 +369,13 @@ def _get_or_create_leave_balance(
         lapsed=0,
     )
     db.add(balance)
-    db.flush()
-    db.refresh(balance)
+    await db.flush()
+    await db.refresh(balance)
     return balance
 
 
-def create_leave_request(
-    db: Session,
+async def create_leave_request(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     create_scope: str,
@@ -386,17 +387,17 @@ def create_leave_request(
     days: float,
     reason: str | None,
 ) -> LeaveRequest:
-    leave_type = get_leave_type_or_404(db, organization_id, leave_type_id)
+    leave_type = await get_leave_type_or_404(db, organization_id, leave_type_id)
 
     target_member_id = actor_member_id if create_scope == "self" else (member_id or actor_member_id)
     if create_scope == "self" and target_member_id != actor_member_id:
         raise HTTPException(status_code=403, detail="You can only create leave requests for yourself")
 
-    resolve_target_member(db, organization_id, target_member_id)
-    _ensure_no_overlapping_request(db, organization_id, target_member_id, start_date, end_date)
+    await resolve_target_member(db, organization_id, target_member_id)
+    await _ensure_no_overlapping_request(db, organization_id, target_member_id, start_date, end_date)
 
     if leave_type.isPaid:
-        balance = _get_or_create_leave_balance(
+        balance = await _get_or_create_leave_balance(
             db,
             organization_id,
             target_member_id,
@@ -423,24 +424,24 @@ def create_leave_request(
         approverComment=None,
     )
     db.add(leave_request)
-    db.commit()
-    return get_leave_request_or_404(db, organization_id, leave_request.id)
+    await db.commit()
+    return await get_leave_request_or_404(db, organization_id, leave_request.id)
 
 
-def approve_leave_request(
-    db: Session,
+async def approve_leave_request(
+    db: AsyncSession,
     organization_id: str,
     approver_member_id: str,
     leave_request_id: str,
     approver_comment: str | None,
 ) -> LeaveRequest:
-    leave_request = get_leave_request_or_404(db, organization_id, leave_request_id)
+    leave_request = await get_leave_request_or_404(db, organization_id, leave_request_id)
     if leave_request.status != LeaveRequestStatus.PENDING:
         raise HTTPException(status_code=400, detail="Only pending leave requests can be approved")
 
-    leave_type = get_leave_type_or_404(db, organization_id, leave_request.leaveTypeId)
+    leave_type = await get_leave_type_or_404(db, organization_id, leave_request.leaveTypeId)
     if leave_type.isPaid:
-        balance = _get_or_create_leave_balance(
+        balance = await _get_or_create_leave_balance(
             db,
             organization_id,
             leave_request.memberId,
@@ -458,37 +459,37 @@ def approve_leave_request(
     leave_request.approvedById = approver_member_id
     leave_request.approverComment = approver_comment
     leave_request.cancelledAt = None
-    db.commit()
-    return get_leave_request_or_404(db, organization_id, leave_request_id)
+    await db.commit()
+    return await get_leave_request_or_404(db, organization_id, leave_request_id)
 
 
-def reject_leave_request(
-    db: Session,
+async def reject_leave_request(
+    db: AsyncSession,
     organization_id: str,
     approver_member_id: str,
     leave_request_id: str,
     approver_comment: str | None,
 ) -> LeaveRequest:
-    leave_request = get_leave_request_or_404(db, organization_id, leave_request_id)
+    leave_request = await get_leave_request_or_404(db, organization_id, leave_request_id)
     if leave_request.status != LeaveRequestStatus.PENDING:
         raise HTTPException(status_code=400, detail="Only pending leave requests can be rejected")
 
     leave_request.status = LeaveRequestStatus.REJECTED
     leave_request.approvedById = approver_member_id
     leave_request.approverComment = approver_comment
-    db.commit()
-    return get_leave_request_or_404(db, organization_id, leave_request_id)
+    await db.commit()
+    return await get_leave_request_or_404(db, organization_id, leave_request_id)
 
 
-def cancel_leave_request(
-    db: Session,
+async def cancel_leave_request(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     *,
     leave_request_id: str,
     can_cancel_any: bool,
 ) -> LeaveRequest:
-    leave_request = get_leave_request_or_404(db, organization_id, leave_request_id)
+    leave_request = await get_leave_request_or_404(db, organization_id, leave_request_id)
     if leave_request.status != LeaveRequestStatus.PENDING:
         raise HTTPException(status_code=400, detail="Only pending leave requests can be cancelled")
     if not can_cancel_any and leave_request.memberId != actor_member_id:
@@ -496,41 +497,44 @@ def cancel_leave_request(
 
     leave_request.status = LeaveRequestStatus.CANCELLED
     leave_request.cancelledAt = _utcnow()
-    db.commit()
-    return get_leave_request_or_404(db, organization_id, leave_request_id)
+    await db.commit()
+    return await get_leave_request_or_404(db, organization_id, leave_request_id)
 
 
-def list_leave_balances(
-    db: Session,
+async def list_leave_balances(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     permission_scope: str,
     filters: LeaveBalanceFilters,
 ) -> tuple[list[LeaveBalance], int]:
-    q = (
-        db.query(LeaveBalance)
+    query = (
+        select(LeaveBalance)
         .options(
             joinedload(LeaveBalance.member).joinedload(Member.user),
             joinedload(LeaveBalance.leave_type),
         )
-        .filter(LeaveBalance.organizationId == organization_id)
+        .where(LeaveBalance.organizationId == organization_id)
     )
     if permission_scope == "self":
-        q = q.filter(LeaveBalance.memberId == actor_member_id)
+        query = query.where(LeaveBalance.memberId == actor_member_id)
     elif filters.member_id is not None:
-        q = q.filter(LeaveBalance.memberId == filters.member_id)
+        query = query.where(LeaveBalance.memberId == filters.member_id)
 
     if filters.year is not None:
-        q = q.filter(LeaveBalance.year == filters.year)
+        query = query.where(LeaveBalance.year == filters.year)
     if filters.leave_type_id is not None:
-        q = q.filter(LeaveBalance.leaveTypeId == filters.leave_type_id)
+        query = query.where(LeaveBalance.leaveTypeId == filters.leave_type_id)
 
-    total = q.count()
-    items = (
-        q.join(LeaveType, LeaveType.id == LeaveBalance.leaveTypeId)
-        .order_by(LeaveBalance.year.desc(), LeaveType.name.asc())
-        .all()
+    total_result = await db.execute(
+        select(func.count()).select_from(query.order_by(None).subquery())
     )
+    total = total_result.scalar_one()
+    items_result = await db.execute(
+        query.join(LeaveType, LeaveType.id == LeaveBalance.leaveTypeId)
+        .order_by(LeaveBalance.year.desc(), LeaveType.name.asc())
+    )
+    items = items_result.unique().scalars().all()
     return items, total
 
 
@@ -551,8 +555,8 @@ def _resolve_calendar_range(filters: LeaveCalendarFilters) -> tuple[dt.date, dt.
     return start, end
 
 
-def get_leave_calendar(
-    db: Session,
+async def get_leave_calendar(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     permission_scope: str,
@@ -560,26 +564,25 @@ def get_leave_calendar(
 ) -> tuple[list[Holiday], list[LeaveRequest]]:
     range_start, range_end = _resolve_calendar_range(filters)
 
-    holidays = (
-        db.query(Holiday)
-        .filter(
+    holidays_result = await db.execute(
+        select(Holiday).where(
             Holiday.organizationId == organization_id,
             Holiday.deletedAt.is_(None),
             Holiday.holidayDate >= range_start,
             Holiday.holidayDate <= range_end,
         )
         .order_by(Holiday.holidayDate.asc())
-        .all()
     )
+    holidays = holidays_result.scalars().all()
 
-    q = (
-        db.query(LeaveRequest)
+    query = (
+        select(LeaveRequest)
         .options(
             joinedload(LeaveRequest.member).joinedload(Member.user),
             joinedload(LeaveRequest.approved_by).joinedload(Member.user),
             joinedload(LeaveRequest.leave_type),
         )
-        .filter(
+        .where(
             LeaveRequest.organizationId == organization_id,
             LeaveRequest.deletedAt.is_(None),
             LeaveRequest.startDate <= range_end,
@@ -587,7 +590,10 @@ def get_leave_calendar(
         )
     )
     if permission_scope == "self":
-        q = q.filter(LeaveRequest.memberId == actor_member_id)
+        query = query.where(LeaveRequest.memberId == actor_member_id)
 
-    leave_requests = q.order_by(LeaveRequest.startDate.asc(), LeaveRequest.createdAt.desc()).all()
+    leave_requests_result = await db.execute(
+        query.order_by(LeaveRequest.startDate.asc(), LeaveRequest.createdAt.desc())
+    )
+    leave_requests = leave_requests_result.unique().scalars().all()
     return holidays, leave_requests

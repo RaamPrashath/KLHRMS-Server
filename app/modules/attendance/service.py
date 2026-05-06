@@ -18,8 +18,9 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.attendance_record import AttendanceRecord
 from app.models.base import generate_uuid
@@ -64,7 +65,7 @@ class DaySegment:
 # ---------------------------------------------------------------------------
 
 
-def load_policy(db: Session, organization_id: str) -> PolicyDefaults:
+async def load_policy(db: AsyncSession, organization_id: str) -> PolicyDefaults:
     """
     Load WorkHourPolicy for the organization.
     Falls back to safe defaults if no policy row exists.
@@ -73,11 +74,10 @@ def load_policy(db: Session, organization_id: str) -> PolicyDefaults:
       - overtimeThreshold
       - halfDayMaxHours
     """
-    policy: WorkHourPolicy | None = (
-        db.query(WorkHourPolicy)
-        .filter(WorkHourPolicy.organizationId == organization_id)
-        .first()
+    result = await db.execute(
+        select(WorkHourPolicy).where(WorkHourPolicy.organizationId == organization_id)
     )
+    policy: WorkHourPolicy | None = result.scalar_one_or_none()
     if policy is None:
         return PolicyDefaults(
             standard_hours_per_day=_DEFAULT_STANDARD_HOURS,
@@ -188,8 +188,8 @@ def _split_into_day_segments(clock_in: datetime, clock_out: datetime) -> list[Da
 # ---------------------------------------------------------------------------
 
 
-def resolve_target_member(
-    db: Session,
+async def resolve_target_member(
+    db: AsyncSession,
     organization_id: str,
     target_member_id: str,
 ) -> Member:
@@ -197,11 +197,10 @@ def resolve_target_member(
     Verify that a Member exists and belongs to the given organization.
     Raises 404 if not found, 403 if outside the organization.
     """
-    member: Member | None = (
-        db.query(Member)
-        .filter(Member.id == target_member_id)
-        .first()
+    result = await db.execute(
+        select(Member).where(Member.id == target_member_id)
     )
+    member: Member | None = result.scalar_one_or_none()
     if member is None:
         raise HTTPException(status_code=404, detail="Target member not found")
     if member.organizationId != organization_id:
@@ -243,8 +242,8 @@ def enforce_scope(
 # ---------------------------------------------------------------------------
 
 
-def get_active_session(
-    db: Session,
+async def get_active_session(
+    db: AsyncSession,
     organization_id: str,
     employee_id: str,
 ) -> AttendanceRecord | None:
@@ -252,16 +251,15 @@ def get_active_session(
     Return the open attendance row for the given member (clockIn set, clockOut null).
     Returns None if no active session exists.
     """
-    return (
-        db.query(AttendanceRecord)
-        .filter(
+    result = await db.execute(
+        select(AttendanceRecord).where(
             AttendanceRecord.organizationId == organization_id,
             AttendanceRecord.employeeId == employee_id,
             AttendanceRecord.clockIn.isnot(None),
             AttendanceRecord.clockOut.is_(None),
         )
-        .first()
     )
+    return result.scalar_one_or_none()
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +267,8 @@ def get_active_session(
 # ---------------------------------------------------------------------------
 
 
-def _upsert_day_row(
-    db: Session,
+async def _upsert_day_row(
+    db: AsyncSession,
     organization_id: str,
     employee_id: str,
     day: date,
@@ -285,15 +283,14 @@ def _upsert_day_row(
     Create or replace the attendance row for (employeeId, date).
     This is the single write path for all attendance mutations.
     """
-    existing: AttendanceRecord | None = (
-        db.query(AttendanceRecord)
-        .filter(
+    existing_result = await db.execute(
+        select(AttendanceRecord).where(
             AttendanceRecord.organizationId == organization_id,
             AttendanceRecord.employeeId == employee_id,
             AttendanceRecord.date == day,
         )
-        .first()
     )
+    existing: AttendanceRecord | None = existing_result.scalar_one_or_none()
 
     if existing is not None:
         existing.clockIn = clock_in
@@ -319,10 +316,10 @@ def _upsert_day_row(
         db.add(record)
 
     try:
-        db.commit()
-        db.refresh(record)
+        await db.commit()
+        await db.refresh(record)
     except IntegrityError:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(
             status_code=409,
             detail="Attendance record conflict for this member/date",
@@ -335,8 +332,8 @@ def _upsert_day_row(
 # ---------------------------------------------------------------------------
 
 
-def clock_in(
-    db: Session,
+async def clock_in(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     target_member_id: str,
@@ -353,7 +350,7 @@ def clock_in(
     enforce_scope(actor_member_id, target_member_id, scope)
 
     # Reject if there is already an open session.
-    active = get_active_session(db, organization_id, target_member_id)
+    active = await get_active_session(db, organization_id, target_member_id)
     if active is not None:
         raise HTTPException(
             status_code=400,
@@ -363,7 +360,7 @@ def clock_in(
     now = clock_in_time or datetime.now(tz=timezone.utc)
     today = now.date()
 
-    return _upsert_day_row(
+    return await _upsert_day_row(
         db=db,
         organization_id=organization_id,
         employee_id=target_member_id,
@@ -382,8 +379,8 @@ def clock_in(
 # ---------------------------------------------------------------------------
 
 
-def clock_out(
-    db: Session,
+async def clock_out(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     target_member_id: str,
@@ -406,7 +403,7 @@ def clock_out(
     """
     enforce_scope(actor_member_id, target_member_id, scope)
 
-    active = get_active_session(db, organization_id, target_member_id)
+    active = await get_active_session(db, organization_id, target_member_id)
     if active is None:
         raise HTTPException(
             status_code=400,
@@ -434,7 +431,7 @@ def clock_out(
         overtime = _compute_overtime(total, policy.overtime_threshold)
         status = _derive_status(total, policy.half_day_max_hours)
 
-        record = _upsert_day_row(
+        record = await _upsert_day_row(
             db=db,
             organization_id=organization_id,
             employee_id=target_member_id,
@@ -456,8 +453,8 @@ def clock_out(
 # ---------------------------------------------------------------------------
 
 
-def upsert_manual_day(
-    db: Session,
+async def upsert_manual_day(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     target_member_id: str,
@@ -499,7 +496,7 @@ def upsert_manual_day(
         # Open session — mark PRESENT, no totals yet.
         status = "PRESENT"
 
-    return _upsert_day_row(
+    return await _upsert_day_row(
         db=db,
         organization_id=organization_id,
         employee_id=target_member_id,
@@ -518,8 +515,8 @@ def upsert_manual_day(
 # ---------------------------------------------------------------------------
 
 
-def delete_day_entry(
-    db: Session,
+async def delete_day_entry(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     target_member_id: str,
@@ -532,20 +529,19 @@ def delete_day_entry(
     """
     enforce_scope(actor_member_id, target_member_id, scope)
 
-    record: AttendanceRecord | None = (
-        db.query(AttendanceRecord)
-        .filter(
+    result = await db.execute(
+        select(AttendanceRecord).where(
             AttendanceRecord.organizationId == organization_id,
             AttendanceRecord.employeeId == target_member_id,
             AttendanceRecord.date == day,
         )
-        .first()
     )
+    record: AttendanceRecord | None = result.scalar_one_or_none()
     if record is None:
         raise HTTPException(status_code=404, detail="Attendance record not found")
 
-    db.delete(record)
-    db.commit()
+    await db.delete(record)
+    await db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -553,8 +549,8 @@ def delete_day_entry(
 # ---------------------------------------------------------------------------
 
 
-def get_my_attendance(
-    db: Session,
+async def get_my_attendance(
+    db: AsyncSession,
     organization_id: str,
     member_id: str,
     date_from: date | None = None,
@@ -571,34 +567,37 @@ def get_my_attendance(
     from app.models.member import Member
     from app.models.user import User
 
-    q = (
-        db.query(AttendanceRecord, User.name)
+    query = (
+        select(AttendanceRecord, User.name)
         .join(Member, Member.id == AttendanceRecord.employeeId)
         .join(User, User.id == Member.userId)
-        .filter(
+        .where(
             AttendanceRecord.organizationId == organization_id,
             AttendanceRecord.employeeId == member_id,
         )
     )
     if date_from is not None:
-        q = q.filter(AttendanceRecord.date >= date_from)
+        query = query.where(AttendanceRecord.date >= date_from)
     if date_to is not None:
-        q = q.filter(AttendanceRecord.date <= date_to)
+        query = query.where(AttendanceRecord.date <= date_to)
     if status_filter is not None:
-        q = q.filter(AttendanceRecord.status == status_filter)
+        query = query.where(AttendanceRecord.status == status_filter)
 
-    total = q.count()
-    rows = (
-        q.order_by(AttendanceRecord.date.desc())
+    total_result = await db.execute(
+        select(func.count()).select_from(query.order_by(None).subquery())
+    )
+    total = total_result.scalar_one()
+    rows_result = await db.execute(
+        query.order_by(AttendanceRecord.date.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
-        .all()
     )
+    rows = rows_result.all()
     return [(record, name) for record, name in rows], total
 
 
-def list_attendance(
-    db: Session,
+async def list_attendance(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     scope: str,
@@ -621,43 +620,46 @@ def list_attendance(
     from app.models.member import Member
     from app.models.user import User
 
-    q = (
-        db.query(AttendanceRecord, User.name)
+    query = (
+        select(AttendanceRecord, User.name)
         .join(Member, Member.id == AttendanceRecord.employeeId)
         .join(User, User.id == Member.userId)
-        .filter(
+        .where(
             AttendanceRecord.organizationId == organization_id,
         )
     )
 
     if scope == "self":
-        q = q.filter(AttendanceRecord.employeeId == actor_member_id)
+        query = query.where(AttendanceRecord.employeeId == actor_member_id)
     elif scope == "organization":
         if target_member_id is not None:
-            q = q.filter(AttendanceRecord.employeeId == target_member_id)
+            query = query.where(AttendanceRecord.employeeId == target_member_id)
         elif employee_name is not None and employee_name.strip():
-            q = q.filter(User.name.ilike(f"%{employee_name.strip()}%"))
+            query = query.where(User.name.ilike(f"%{employee_name.strip()}%"))
     # No team/department filtering — not supported in current schema.
 
     if date_from is not None:
-        q = q.filter(AttendanceRecord.date >= date_from)
+        query = query.where(AttendanceRecord.date >= date_from)
     if date_to is not None:
-        q = q.filter(AttendanceRecord.date <= date_to)
+        query = query.where(AttendanceRecord.date <= date_to)
     if status_filter is not None:
-        q = q.filter(AttendanceRecord.status == status_filter)
+        query = query.where(AttendanceRecord.status == status_filter)
 
-    total = q.count()
-    rows = (
-        q.order_by(AttendanceRecord.date.desc())
+    total_result = await db.execute(
+        select(func.count()).select_from(query.order_by(None).subquery())
+    )
+    total = total_result.scalar_one()
+    rows_result = await db.execute(
+        query.order_by(AttendanceRecord.date.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
-        .all()
     )
+    rows = rows_result.all()
     return [(record, name) for record, name in rows], total
 
 
-def get_attendance_day(
-    db: Session,
+async def get_attendance_day(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     target_member_id: str,
@@ -670,15 +672,14 @@ def get_attendance_day(
     """
     enforce_scope(actor_member_id, target_member_id, scope)
 
-    record: AttendanceRecord | None = (
-        db.query(AttendanceRecord)
-        .filter(
+    result = await db.execute(
+        select(AttendanceRecord).where(
             AttendanceRecord.organizationId == organization_id,
             AttendanceRecord.employeeId == target_member_id,
             AttendanceRecord.date == day,
         )
-        .first()
     )
+    record: AttendanceRecord | None = result.scalar_one_or_none()
     if record is None:
         raise HTTPException(status_code=404, detail="Attendance record not found")
     return record
@@ -689,8 +690,8 @@ def get_attendance_day(
 # ---------------------------------------------------------------------------
 
 
-def auto_stop_open_sessions(
-    db: Session,
+async def auto_stop_open_sessions(
+    db: AsyncSession,
     organization_id: str,
     policy: PolicyDefaults,
 ) -> list[AttendanceRecord]:
@@ -706,16 +707,15 @@ def auto_stop_open_sessions(
     now = datetime.now(tz=timezone.utc)
     cutoff = now - timedelta(hours=MAX_SESSION_HOURS)
 
-    open_sessions: list[AttendanceRecord] = (
-        db.query(AttendanceRecord)
-        .filter(
+    result = await db.execute(
+        select(AttendanceRecord).where(
             AttendanceRecord.organizationId == organization_id,
             AttendanceRecord.clockIn.isnot(None),
             AttendanceRecord.clockOut.is_(None),
             AttendanceRecord.clockIn <= cutoff,
         )
-        .all()
     )
+    open_sessions: list[AttendanceRecord] = result.scalars().all()
 
     written: list[AttendanceRecord] = []
     for session in open_sessions:
@@ -731,7 +731,7 @@ def auto_stop_open_sessions(
             overtime = _compute_overtime(total, policy.overtime_threshold)
             status = _derive_status(total, policy.half_day_max_hours)
 
-            record = _upsert_day_row(
+            record = await _upsert_day_row(
                 db=db,
                 organization_id=organization_id,
                 employee_id=session.employeeId,
@@ -852,8 +852,8 @@ def _derive_day_from_logs(
     )
 
 
-def _delete_work_logs_for_day(
-    db: Session,
+async def _delete_work_logs_for_day(
+    db: AsyncSession,
     organization_id: str,
     employee_id: str,
     day: date,
@@ -864,15 +864,17 @@ def _delete_work_logs_for_day(
     """
     from app.models.attendance_work_log import AttendanceWorkLog
 
-    db.query(AttendanceWorkLog).filter(
-        AttendanceWorkLog.organizationId == organization_id,
-        AttendanceWorkLog.employeeId == employee_id,
-        AttendanceWorkLog.date == day,
-    ).delete(synchronize_session=False)
+    await db.execute(
+        delete(AttendanceWorkLog).where(
+            AttendanceWorkLog.organizationId == organization_id,
+            AttendanceWorkLog.employeeId == employee_id,
+            AttendanceWorkLog.date == day,
+        )
+    )
 
 
-def _insert_work_logs(
-    db: Session,
+async def _insert_work_logs(
+    db: AsyncSession,
     attendance_record_id: str,
     organization_id: str,
     employee_id: str,
@@ -901,9 +903,9 @@ def _insert_work_logs(
         db.add(row)
         inserted.append(row)
 
-    db.flush()  # assign DB state without committing the outer transaction
+    await db.flush()  # assign DB state without committing the outer transaction
     for row in inserted:
-        db.refresh(row)
+        await db.refresh(row)
 
     return inserted
 
@@ -921,8 +923,8 @@ class BulkDayResult:
     logs: list[object]  # list[AttendanceWorkLog]
 
 
-def upsert_bulk_work_logs(
-    db: Session,
+async def upsert_bulk_work_logs(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     target_member_id: str,
@@ -952,18 +954,17 @@ def upsert_bulk_work_logs(
 
             if not raw_logs:
                 # Empty logs → treat as deletion of that day.
-                _delete_work_logs_for_day(db, organization_id, target_member_id, day)
-                existing_record: AttendanceRecord | None = (
-                    db.query(AttendanceRecord)
-                    .filter(
+                await _delete_work_logs_for_day(db, organization_id, target_member_id, day)
+                existing_record_result = await db.execute(
+                    select(AttendanceRecord).where(
                         AttendanceRecord.organizationId == organization_id,
                         AttendanceRecord.employeeId == target_member_id,
                         AttendanceRecord.date == day,
                     )
-                    .first()
                 )
+                existing_record: AttendanceRecord | None = existing_record_result.scalar_one_or_none()
                 if existing_record is not None:
-                    db.delete(existing_record)
+                    await db.delete(existing_record)
                 # No result entry for deleted days — skip.
                 continue
 
@@ -987,18 +988,17 @@ def upsert_bulk_work_logs(
             derivation = _derive_day_from_logs(normalized, policy)
 
             # Delete existing child logs for this day.
-            _delete_work_logs_for_day(db, organization_id, target_member_id, day)
+            await _delete_work_logs_for_day(db, organization_id, target_member_id, day)
 
             # Upsert the parent attendance record.
-            existing_parent: AttendanceRecord | None = (
-                db.query(AttendanceRecord)
-                .filter(
+            existing_parent_result = await db.execute(
+                select(AttendanceRecord).where(
                     AttendanceRecord.organizationId == organization_id,
                     AttendanceRecord.employeeId == target_member_id,
                     AttendanceRecord.date == day,
                 )
-                .first()
             )
+            existing_parent: AttendanceRecord | None = existing_parent_result.scalar_one_or_none()
 
             if existing_parent is not None:
                 existing_parent.clockIn = derivation.clock_in
@@ -1023,11 +1023,11 @@ def upsert_bulk_work_logs(
                 )
                 db.add(record)
 
-            db.flush()
-            db.refresh(record)
+            await db.flush()
+            await db.refresh(record)
 
             # Insert new child work logs.
-            inserted_logs = _insert_work_logs(
+            inserted_logs = await _insert_work_logs(
                 db=db,
                 attendance_record_id=record.id,
                 organization_id=organization_id,
@@ -1038,13 +1038,13 @@ def upsert_bulk_work_logs(
 
             results.append(BulkDayResult(record=record, logs=inserted_logs))
 
-        db.commit()
+        await db.commit()
 
     except HTTPException:
-        db.rollback()
+        await db.rollback()
         raise
     except Exception as exc:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(
             status_code=500,
             detail="Failed to save bulk attendance data",
@@ -1058,8 +1058,8 @@ def upsert_bulk_work_logs(
 # ---------------------------------------------------------------------------
 
 
-def get_bulk_work_logs_range(
-    db: Session,
+async def get_bulk_work_logs_range(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     target_member_id: str,
@@ -1076,29 +1076,27 @@ def get_bulk_work_logs_range(
 
     enforce_scope(actor_member_id, target_member_id, scope)
 
-    records: list[AttendanceRecord] = (
-        db.query(AttendanceRecord)
-        .filter(
+    records_result = await db.execute(
+        select(AttendanceRecord).where(
             AttendanceRecord.organizationId == organization_id,
             AttendanceRecord.employeeId == target_member_id,
             AttendanceRecord.date >= date_from,
             AttendanceRecord.date <= date_to,
         )
         .order_by(AttendanceRecord.date.asc())
-        .all()
     )
+    records: list[AttendanceRecord] = records_result.scalars().all()
 
     if not records:
         return []
 
     record_ids = [r.id for r in records]
 
-    all_logs: list[AttendanceWorkLog] = (
-        db.query(AttendanceWorkLog)
-        .filter(AttendanceWorkLog.attendanceRecordId.in_(record_ids))
+    all_logs_result = await db.execute(
+        select(AttendanceWorkLog).where(AttendanceWorkLog.attendanceRecordId.in_(record_ids))
         .order_by(AttendanceWorkLog.startTime.asc())
-        .all()
     )
+    all_logs: list[AttendanceWorkLog] = all_logs_result.scalars().all()
 
     # Group logs by attendanceRecordId for O(n) assembly.
     logs_by_record: dict[str, list[AttendanceWorkLog]] = {}
@@ -1116,8 +1114,8 @@ def get_bulk_work_logs_range(
 # ---------------------------------------------------------------------------
 
 
-def get_bulk_work_logs_day(
-    db: Session,
+async def get_bulk_work_logs_day(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     target_member_id: str,
@@ -1133,25 +1131,23 @@ def get_bulk_work_logs_day(
 
     enforce_scope(actor_member_id, target_member_id, scope)
 
-    record: AttendanceRecord | None = (
-        db.query(AttendanceRecord)
-        .filter(
+    record_result = await db.execute(
+        select(AttendanceRecord).where(
             AttendanceRecord.organizationId == organization_id,
             AttendanceRecord.employeeId == target_member_id,
             AttendanceRecord.date == day,
         )
-        .first()
     )
+    record: AttendanceRecord | None = record_result.scalar_one_or_none()
 
     if record is None:
         return None
 
-    logs: list[AttendanceWorkLog] = (
-        db.query(AttendanceWorkLog)
-        .filter(AttendanceWorkLog.attendanceRecordId == record.id)
+    logs_result = await db.execute(
+        select(AttendanceWorkLog).where(AttendanceWorkLog.attendanceRecordId == record.id)
         .order_by(AttendanceWorkLog.startTime.asc())
-        .all()
     )
+    logs: list[AttendanceWorkLog] = logs_result.scalars().all()
 
     return BulkDayResult(record=record, logs=logs)
 
@@ -1161,8 +1157,8 @@ def get_bulk_work_logs_day(
 # ---------------------------------------------------------------------------
 
 
-def delete_bulk_work_logs_day(
-    db: Session,
+async def delete_bulk_work_logs_day(
+    db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
     target_member_id: str,
@@ -1177,15 +1173,14 @@ def delete_bulk_work_logs_day(
     """
     enforce_scope(actor_member_id, target_member_id, scope)
 
-    record: AttendanceRecord | None = (
-        db.query(AttendanceRecord)
-        .filter(
+    record_result = await db.execute(
+        select(AttendanceRecord).where(
             AttendanceRecord.organizationId == organization_id,
             AttendanceRecord.employeeId == target_member_id,
             AttendanceRecord.date == day,
         )
-        .first()
     )
+    record: AttendanceRecord | None = record_result.scalar_one_or_none()
 
     if record is None:
         raise HTTPException(
@@ -1195,7 +1190,7 @@ def delete_bulk_work_logs_day(
 
     # Delete child logs explicitly before the parent to be safe,
     # even though the FK has ondelete="CASCADE".
-    _delete_work_logs_for_day(db, organization_id, target_member_id, day)
+    await _delete_work_logs_for_day(db, organization_id, target_member_id, day)
 
-    db.delete(record)
-    db.commit()
+    await db.delete(record)
+    await db.commit()

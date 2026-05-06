@@ -1,5 +1,36 @@
 """
 Pydantic schemas for the Role module.
+
+Permission JSON structure:
+{
+  "<module>": {
+    "<action>": "<scope>"
+  }
+}
+
+Example:
+{
+  "attendance": {
+    "view": "organization",
+    "create": "self",
+    "edit": "self",
+    "delete": "none"
+  },
+  "leaves": {
+    "view": "department",
+    "create": "self",
+    "approve": "organization"
+  }
+}
+
+Valid scopes (ordered hierarchy):
+  none < self < team < department < organization
+
+Standard actions:
+  view, create, edit, delete
+
+Domain-specific actions (per module):
+  leaves.approve
 """
 
 from __future__ import annotations
@@ -15,7 +46,7 @@ from pydantic import BaseModel, Field, model_validator
 
 # The permissions dict has the shape:
 #   { module: { action: scope } }
-# e.g. { "permission": { "create": "organization", "edit": "organization" } }
+# e.g. { "attendance": { "view": "organization", "create": "self", "edit": "self", "delete": "none" } }
 PermissionsDict = dict[str, dict[str, str]]
 
 

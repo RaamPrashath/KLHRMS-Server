@@ -34,15 +34,11 @@ app.add_middleware(
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 
-app.include_router(role_router, prefix=settings.api_v1_prefix)
-app.include_router(attendance_router, prefix=settings.api_v1_prefix)
-app.include_router(leave_router, prefix=settings.api_v1_prefix)
+app.include_router(role_router)
+app.include_router(attendance_router)
+app.include_router(leave_router)
 app.include_router(weekly_plan_router, prefix=settings.api_v1_prefix)
-
-# app.include_router(role_router)
-# app.include_router(attendance_router)
-# app.include_router(leave_router)
-# app.include_router(employee_router)
+app.include_router(employee_router)
 
 
 @app.get("/", tags=["root"], include_in_schema=False)

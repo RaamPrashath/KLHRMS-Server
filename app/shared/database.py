@@ -1,31 +1,23 @@
 import os
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import Session, sessionmaker
 
 from app.shared.config import normalize_database_url
 
 load_dotenv()
 
 DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", ""))
-SYNC_DATABASE_URL = DATABASE_URL.replace("+asyncpg", "")
-
-engine = create_engine(
-    SYNC_DATABASE_URL,
-    pool_pre_ping=True,
-)
+if DATABASE_URL.startswith("postgresql+psycopg2://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+elif DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 
 async_engine = create_async_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-)
-
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine,
 )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -36,12 +28,9 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
-def get_db() -> Session:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+async def get_db() -> AsyncSession:
+    async with AsyncSessionLocal() as session:
+        yield session
 
 
 async def get_async_db() -> AsyncSession:

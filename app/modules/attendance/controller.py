@@ -12,7 +12,7 @@ from __future__ import annotations
 import datetime as dt
 from datetime import datetime, timezone
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.attendance.schema import (
     AttendanceListFilters,
@@ -39,18 +39,18 @@ def _to_response(record: object, employee_name: str | None = None) -> Attendance
 # ---------------------------------------------------------------------------
 
 
-def handle_clock_in(
+async def handle_clock_in(
     access: AttendanceAccessContext,
-    db: Session,
+    db: AsyncSession,
     body: ClockInRequest,
 ) -> AttendanceRecordResponse:
     target_id = body.target_member_id or access.member.id
 
     # Validate target member belongs to the organization (unless self).
     if target_id != access.member.id:
-        service.resolve_target_member(db, access.organization.id, target_id)
+        await service.resolve_target_member(db, access.organization.id, target_id)
 
-    record = service.clock_in(
+    record = await service.clock_in(
         db=db,
         organization_id=access.organization.id,
         actor_member_id=access.member.id,
@@ -66,19 +66,19 @@ def handle_clock_in(
 # ---------------------------------------------------------------------------
 
 
-def handle_clock_out(
+async def handle_clock_out(
     access: AttendanceAccessContext,
-    db: Session,
+    db: AsyncSession,
     body: ClockOutRequest,
 ) -> list[AttendanceRecordResponse]:
     target_id = body.target_member_id or access.member.id
 
     if target_id != access.member.id:
-        service.resolve_target_member(db, access.organization.id, target_id)
+        await service.resolve_target_member(db, access.organization.id, target_id)
 
-    policy = service.load_policy(db, access.organization.id)
+    policy = await service.load_policy(db, access.organization.id)
 
-    records = service.clock_out(
+    records = await service.clock_out(
         db=db,
         organization_id=access.organization.id,
         actor_member_id=access.member.id,
@@ -95,16 +95,16 @@ def handle_clock_out(
 # ---------------------------------------------------------------------------
 
 
-def handle_upsert_manual_day(
+async def handle_upsert_manual_day(
     access: AttendanceAccessContext,
-    db: Session,
+    db: AsyncSession,
     body: ManualDayEntryRequest,
 ) -> AttendanceRecordResponse:
-    service.resolve_target_member(db, access.organization.id, body.target_member_id)
+    await service.resolve_target_member(db, access.organization.id, body.target_member_id)
 
-    policy = service.load_policy(db, access.organization.id)
+    policy = await service.load_policy(db, access.organization.id)
 
-    record = service.upsert_manual_day(
+    record = await service.upsert_manual_day(
         db=db,
         organization_id=access.organization.id,
         actor_member_id=access.member.id,
@@ -123,14 +123,14 @@ def handle_upsert_manual_day(
 # ---------------------------------------------------------------------------
 
 
-def handle_delete_day_entry(
+async def handle_delete_day_entry(
     access: AttendanceAccessContext,
-    db: Session,
+    db: AsyncSession,
     body: DeleteDayEntryRequest,
 ) -> None:
-    service.resolve_target_member(db, access.organization.id, body.target_member_id)
+    await service.resolve_target_member(db, access.organization.id, body.target_member_id)
 
-    service.delete_day_entry(
+    await service.delete_day_entry(
         db=db,
         organization_id=access.organization.id,
         actor_member_id=access.member.id,
@@ -145,12 +145,12 @@ def handle_delete_day_entry(
 # ---------------------------------------------------------------------------
 
 
-def handle_get_my_attendance(
+async def handle_get_my_attendance(
     access: AttendanceAccessContext,
-    db: Session,
+    db: AsyncSession,
     filters: AttendanceListFilters,
 ) -> AttendanceListResponse:
-    rows, total = service.get_my_attendance(
+    rows, total = await service.get_my_attendance(
         db=db,
         organization_id=access.organization.id,
         member_id=access.member.id,
@@ -173,12 +173,12 @@ def handle_get_my_attendance(
 # ---------------------------------------------------------------------------
 
 
-def handle_list_attendance(
+async def handle_list_attendance(
     access: AttendanceAccessContext,
-    db: Session,
+    db: AsyncSession,
     filters: AttendanceListFilters,
 ) -> AttendanceListResponse:
-    rows, total = service.list_attendance(
+    rows, total = await service.list_attendance(
         db=db,
         organization_id=access.organization.id,
         actor_member_id=access.member.id,
@@ -204,15 +204,15 @@ def handle_list_attendance(
 # ---------------------------------------------------------------------------
 
 
-def handle_get_attendance_day(
+async def handle_get_attendance_day(
     access: AttendanceAccessContext,
-    db: Session,
+    db: AsyncSession,
     target_member_id: str,
     day: dt.date,
 ) -> AttendanceRecordResponse:
-    service.resolve_target_member(db, access.organization.id, target_member_id)
+    await service.resolve_target_member(db, access.organization.id, target_member_id)
 
-    record = service.get_attendance_day(
+    record = await service.get_attendance_day(
         db=db,
         organization_id=access.organization.id,
         actor_member_id=access.member.id,
@@ -228,9 +228,9 @@ def handle_get_attendance_day(
 # ---------------------------------------------------------------------------
 
 
-def handle_upsert_bulk_work_logs(
+async def handle_upsert_bulk_work_logs(
     access: AttendanceAccessContext,
-    db: Session,
+    db: AsyncSession,
     body: object,  # BulkUpsertRequest — imported at call site to avoid circular
 ) -> object:  # BulkUpsertResponse
     from app.modules.attendance.schema import (
@@ -244,11 +244,11 @@ def handle_upsert_bulk_work_logs(
 
     # For non-self targets, verify the member exists in the org.
     if target_id != access.member.id:
-        service.resolve_target_member(db, access.organization.id, target_id)
+        await service.resolve_target_member(db, access.organization.id, target_id)
 
-    policy = service.load_policy(db, access.organization.id)
+    policy = await service.load_policy(db, access.organization.id)
 
-    results = service.upsert_bulk_work_logs(
+    results = await service.upsert_bulk_work_logs(
         db=db,
         organization_id=access.organization.id,
         actor_member_id=access.member.id,
@@ -285,9 +285,9 @@ def handle_upsert_bulk_work_logs(
     return BulkUpsertResponse(days=day_responses)
 
 
-def handle_get_bulk_work_logs_range(
+async def handle_get_bulk_work_logs_range(
     access: AttendanceAccessContext,
-    db: Session,
+    db: AsyncSession,
     date_from: dt.date,
     date_to: dt.date,
 ) -> object:  # BulkRangeResponse
@@ -297,7 +297,7 @@ def handle_get_bulk_work_logs_range(
         WorkLogResponse,
     )
 
-    results = service.get_bulk_work_logs_range(
+    results = await service.get_bulk_work_logs_range(
         db=db,
         organization_id=access.organization.id,
         actor_member_id=access.member.id,
@@ -333,9 +333,9 @@ def handle_get_bulk_work_logs_range(
     return BulkRangeResponse(days=day_responses)
 
 
-def handle_get_bulk_work_logs_day(
+async def handle_get_bulk_work_logs_day(
     access: AttendanceAccessContext,
-    db: Session,
+    db: AsyncSession,
     day: dt.date,
 ) -> object:  # BulkDaySingleResponse
     from app.modules.attendance.schema import (
@@ -344,7 +344,7 @@ def handle_get_bulk_work_logs_day(
         WorkLogResponse,
     )
 
-    result = service.get_bulk_work_logs_day(
+    result = await service.get_bulk_work_logs_day(
         db=db,
         organization_id=access.organization.id,
         actor_member_id=access.member.id,
@@ -379,14 +379,14 @@ def handle_get_bulk_work_logs_day(
     )
 
 
-def handle_delete_bulk_work_logs_day(
+async def handle_delete_bulk_work_logs_day(
     access: AttendanceAccessContext,
-    db: Session,
+    db: AsyncSession,
     day: dt.date,
 ) -> object:  # BulkDeleteDayResponse
     from app.modules.attendance.schema import BulkDeleteDayResponse
 
-    service.delete_bulk_work_logs_day(
+    await service.delete_bulk_work_logs_day(
         db=db,
         organization_id=access.organization.id,
         actor_member_id=access.member.id,

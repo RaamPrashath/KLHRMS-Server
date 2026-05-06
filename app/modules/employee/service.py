@@ -12,7 +12,8 @@ import datetime as dt
 from typing import Optional
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.models.attendance_record import AttendanceRecord
 from app.models.department import Department
@@ -48,7 +49,7 @@ def _attendance_status_for_record(record: AttendanceRecord | None) -> Attendance
 async def list_employees(
     organization_id: str,
     filters: EmployeeListFilters,
-    db: Session,
+    db: AsyncSession,
 ) -> EmployeeListResponse:
     """
     Return a paginated list of employees for the given organization.
@@ -103,20 +104,19 @@ async def list_employees(
 
     # ── Count total (before pagination) ───────────────────────────────────────
     count_q = select(func.count()).select_from(base_q.subquery())
-    total: int = db.execute(count_q).scalar_one()
+    total_result = await db.execute(count_q)
+    total: int = total_result.scalar_one()
 
     # ── Pagination ─────────────────────────────────────────────────────────────
     page = max(1, filters.page)
     page_size = max(1, min(100, filters.page_size))
     offset = (page - 1) * page_size
 
+    members_result = await db.execute(
+        base_q.order_by(User.name.asc()).offset(offset).limit(page_size)
+    )
     members: list[Member] = list(
-        db.execute(
-            base_q.order_by(User.name.asc()).offset(offset).limit(page_size)
-        )
-        .scalars()
-        .unique()
-        .all()
+        members_result.scalars().unique().all()
     )
 
     if not members:
@@ -130,16 +130,15 @@ async def list_employees(
 
     # ── Fetch today's attendance for all returned members in one query ─────────
     member_ids = [m.id for m in members]
-    attendance_rows: list[AttendanceRecord] = list(
-        db.execute(
-            select(AttendanceRecord).where(
-                AttendanceRecord.organizationId == organization_id,
-                AttendanceRecord.employeeId.in_(member_ids),
-                AttendanceRecord.date == today,
-            )
+    attendance_result = await db.execute(
+        select(AttendanceRecord).where(
+            AttendanceRecord.organizationId == organization_id,
+            AttendanceRecord.employeeId.in_(member_ids),
+            AttendanceRecord.date == today,
         )
-        .scalars()
-        .all()
+    )
+    attendance_rows: list[AttendanceRecord] = list(
+        attendance_result.scalars().all()
     )
     attendance_map: dict[str, AttendanceRecord] = {r.employeeId: r for r in attendance_rows}
 
@@ -195,26 +194,28 @@ async def list_employees(
     )
 
 
-async def list_departments_for_org(organization_id: str, db: Session) -> list[dict]:
+async def list_departments_for_org(organization_id: str, db: AsyncSession) -> list[dict]:
     """Return all active departments for filter dropdown."""
-    rows = db.execute(
+    result = await db.execute(
         select(Department)
         .where(
             Department.organizationId == organization_id,
             Department.status == "ACTIVE",
         )
         .order_by(Department.name.asc())
-    ).scalars().all()
+    )
+    rows = result.scalars().all()
 
     return [{"id": r.id, "name": r.name} for r in rows]
 
 
-async def list_roles_for_org(organization_id: str, db: Session) -> list[dict]:
+async def list_roles_for_org(organization_id: str, db: AsyncSession) -> list[dict]:
     """Return all roles for filter dropdown."""
-    rows = db.execute(
+    result = await db.execute(
         select(Role)
         .where(Role.organizationId == organization_id)
         .order_by(Role.name.asc())
-    ).scalars().all()
+    )
+    rows = result.scalars().all()
 
     return [{"id": r.id, "name": r.name} for r in rows]

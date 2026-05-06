@@ -14,7 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from fastapi import Depends, Header, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.models.member import Member
 from app.models.organization import Organization
@@ -31,10 +33,10 @@ class MemberContext:
     role: Role
 
 
-def get_member_context(
+async def get_member_context(
     x_organization_slug: str = Header(..., alias="x-organization-slug"),
     x_membership_id: str = Header(..., alias="x-membership-id"),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> MemberContext:
     """
     Resolve and validate organization + member context from headers.
@@ -45,23 +47,23 @@ def get_member_context(
                             or member has no role assigned.
     """
     # 1. Load organization by slug
-    organization: Organization | None = (
-        db.query(Organization)
-        .filter(Organization.slug == x_organization_slug)
-        .first()
+    organization_result = await db.execute(
+        select(Organization).where(Organization.slug == x_organization_slug)
     )
+    organization: Organization | None = organization_result.scalar_one_or_none()
     if organization is None:
         raise HTTPException(status_code=404, detail="Organization not found")
 
     # 2. Load member by id, scoped to the resolved organization
-    member: Member | None = (
-        db.query(Member)
-        .filter(
+    member_result = await db.execute(
+        select(Member)
+        .options(joinedload(Member.role))
+        .where(
             Member.id == x_membership_id,
             Member.organizationId == organization.id,
         )
-        .first()
     )
+    member: Member | None = member_result.unique().scalar_one_or_none()
     if member is None:
         raise HTTPException(status_code=404, detail="Member not found")
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.employee.controller import (
     handle_list_departments,
@@ -40,7 +40,7 @@ router = APIRouter(prefix="/employees", tags=["employees"])
 @router.get("", response_model=EmployeeListResponse)
 async def list_employees(
     ctx: Annotated[MemberContext, Depends(require_permission("employees", "view"))],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     search: Optional[str] = Query(None, description="Search by name or email"),
     department_id: Optional[str] = Query(None, description="Filter by department ID"),
     role_id: Optional[str] = Query(None, description="Filter by role ID"),
@@ -65,7 +65,7 @@ async def list_employees(
 @router.get("/departments", response_model=list[dict])
 async def list_departments(
     ctx: Annotated[MemberContext, Depends(require_permission("employees", "view"))],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     return await handle_list_departments(ctx, db)
 
@@ -73,6 +73,6 @@ async def list_departments(
 @router.get("/roles", response_model=list[dict])
 async def list_roles(
     ctx: Annotated[MemberContext, Depends(require_permission("employees", "view"))],
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     return await handle_list_roles(ctx, db)
