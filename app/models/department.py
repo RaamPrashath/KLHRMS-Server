@@ -1,6 +1,8 @@
+from datetime import datetime
+
 from sqlalchemy import DateTime, ForeignKey, Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime
+
 from app.models.base import Base, generate_uuid
 
 
@@ -13,8 +15,10 @@ class Department(Base):
 
     organizationId: Mapped[str] = mapped_column(String(36), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    parentDepartmentId: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    headMemberId: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    parentDepartmentId: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("department.id", ondelete="SET NULL"), nullable=True
+    )
+    headMemberId: Mapped[str | None] = mapped_column(String(36), ForeignKey("member.id", ondelete="SET NULL"), nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="ACTIVE")
 
     createdAt: Mapped[datetime] = mapped_column(
@@ -39,6 +43,12 @@ class Department(Base):
         back_populates="parent",
     )
     members = relationship("DepartmentMember", back_populates="department")
+    teams = relationship("Team", back_populates="department")
+    head_member = relationship(
+        "Member",
+        foreign_keys="[Department.headMemberId]",
+        primaryjoin="Department.headMemberId == Member.id",
+    )
 
     __table_args__ = (
         Index("department_organizationId_idx", "organizationId"),

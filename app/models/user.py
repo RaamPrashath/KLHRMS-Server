@@ -23,6 +23,7 @@ class User(Base, TimestampMixin):
     sessions = relationship("Session", back_populates="user")
     accounts = relationship("Account", back_populates="user")
     members = relationship("Member", back_populates="user")
+    candidateProfiles = relationship("Candidate", back_populates="user")
 
     __table_args__ = (
         UniqueConstraint("email", name="user_email_key"),

@@ -36,6 +36,10 @@ class Member(Base):
     approved_leave_requests = relationship("LeaveRequest", foreign_keys="[LeaveRequest.approvedById]", back_populates="approved_by")
     leave_balances = relationship("LeaveBalance", foreign_keys="[LeaveBalance.memberId]", back_populates="member")
 
+    movedApplicationHistories = relationship(
+        "ApplicationStageHistory",
+        back_populates="moved_by",
+    )
     __table_args__ = (
         UniqueConstraint("organizationId", "userId", name="member_organizationId_userId_key"),
         ForeignKeyConstraint(["organizationId", "roleId"], ["role.organizationId", "role.id"]),

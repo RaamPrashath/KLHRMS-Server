@@ -14,3 +14,18 @@ from app.models.leave import LeaveType, LeaveRequest, LeaveBalance, Holiday
 from app.models.monthly_plan import MonthlyPlan
 from app.models.weekly_plan import WeeklyPlan
 from app.models.base import Base
+from app.models.recruitment import (
+    Candidate,
+    JobPosting,
+    PipelineStage,
+    CandidateApplication,
+    ApplicationStageHistory,
+)
+from app.models.project import Project
+from app.models.project_member import ProjectMember
+from app.models.project_task import ProjectTask
+
+from app.models.team import Team
+from app.models.team_member import TeamMember
+from app.models.department import Department
+from app.models.department_member import DepartmentMember
