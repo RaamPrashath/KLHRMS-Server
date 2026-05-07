@@ -28,6 +28,8 @@ from app.modules.leave.controller import (
 from app.modules.leave.permissions import LeaveAccessContext, require_leave_permission
 from app.modules.leave.schema import (
     HolidayCreateRequest,
+    HolidayListFilters,
+    HolidayListResponse,
     HolidayResponse,
     HolidayUpdateRequest,
     LeaveBalanceFilters,
@@ -76,14 +78,24 @@ async def update_leave_type(
     return await handle_update_leave_type(access, db, leave_type_id, body)
 
 
-@router.get("/holidays", response_model=list[HolidayResponse], status_code=status.HTTP_200_OK)
+@router.get("/holidays", response_model=HolidayListResponse, status_code=status.HTTP_200_OK)
 async def list_holidays(
     ctx: Annotated[MemberContext, Depends(get_member_context)],
     db: AsyncSession = Depends(get_db),
     year: int | None = Query(default=None),
     month: int | None = Query(default=None, ge=1, le=12),
-) -> list[HolidayResponse]:
-    return await handle_list_holidays(ctx, db, year=year, month=month)
+    search: str | None = Query(default=None, max_length=255),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200, alias="pageSize"),
+) -> HolidayListResponse:
+    filters = HolidayListFilters(
+        year=year,
+        month=month,
+        search=search,
+        page=page,
+        page_size=page_size,
+    )
+    return await handle_list_holidays(ctx, db, filters=filters)
 
 
 @router.post("/holidays", response_model=HolidayResponse, status_code=status.HTTP_201_CREATED)

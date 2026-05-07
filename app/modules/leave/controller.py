@@ -11,6 +11,8 @@ from app.modules.leave import service
 from app.modules.leave.permissions import LeaveAccessContext, get_permission_scope
 from app.modules.leave.schema import (
     HolidayCreateRequest,
+    HolidayListFilters,
+    HolidayListResponse,
     HolidayResponse,
     HolidayUpdateRequest,
     LeaveBalanceFilters,
@@ -135,11 +137,23 @@ async def handle_list_holidays(
     ctx: MemberContext,
     db: AsyncSession,
     *,
-    year: int | None,
-    month: int | None,
-) -> list[HolidayResponse]:
-    items = await service.list_holidays(db, ctx.organization.id, year=year, month=month)
-    return [_holiday_response(item) for item in items]
+    filters: HolidayListFilters,
+) -> HolidayListResponse:
+    items, total = await service.list_holidays(
+        db,
+        ctx.organization.id,
+        year=filters.year,
+        month=filters.month,
+        search=filters.search,
+        page=filters.page,
+        page_size=filters.page_size,
+    )
+    return HolidayListResponse(
+        items=[_holiday_response(item) for item in items],
+        total=total,
+        page=filters.page,
+        page_size=filters.page_size,
+    )
 
 
 async def handle_create_holiday(

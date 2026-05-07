@@ -85,6 +85,12 @@ class Settings(BaseSettings):
         alias="BETTER_AUTH_URL",
     )
 
+    # ── External APIs ─────────────────────────────────────
+    calendarific_api_key: str = Field(
+        default="",
+        alias="CALENDARIFIC_API_KEY",
+    )
+
     @field_validator("database_url", mode="before")
     @classmethod
     def validate_database_url(cls, value: str) -> str:

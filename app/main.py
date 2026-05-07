@@ -4,22 +4,43 @@ KL HRMS API — FastAPI application entry point.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.modules.attendance.route import router as attendance_router
 from app.modules.employee.route import router as employee_router
+from app.modules.holiday_sync.route import router as holiday_sync_router
 from app.modules.leave.route import router as leave_router
 from app.modules.role.route import router as role_router
 from app.modules.weekly_plan.router import router as weekly_plan_router
 from app.shared.config import get_settings
+from app.shared.scheduler import register_jobs, scheduler
 
 settings = get_settings()
+
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Start the APScheduler on startup and shut it down on exit."""
+    register_jobs()
+    scheduler.start()
+    yield
+    scheduler.shutdown(wait=False)
+
+
+# ── Application ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="KL HRMS API",
     version="1.0.0",
     description="KL HRMS — multi-tenant SaaS HRMS backend",
+    lifespan=lifespan,
 )
 
 # ── Middleware ────────────────────────────────────────────────────────────────
@@ -37,6 +58,7 @@ app.add_middleware(
 app.include_router(role_router)
 app.include_router(attendance_router)
 app.include_router(leave_router)
+app.include_router(holiday_sync_router)
 app.include_router(weekly_plan_router, prefix=settings.api_v1_prefix)
 app.include_router(employee_router)
 

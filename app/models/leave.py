@@ -118,7 +118,7 @@ class Holiday(Base):
     organizationId: Mapped[str] = mapped_column(String(36), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     holidayDate: Mapped[date] = mapped_column(Date, nullable=False)
-    isHoliday: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    isHoliday: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     isRecurring: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -127,7 +127,6 @@ class Holiday(Base):
     deletedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("organizationId", "holidayDate", "name", name="holiday_org_date_name_key"),
         Index("holiday_organizationId_idx", "organizationId"),
         Index("holiday_organizationId_holidayDate_idx", "organizationId", "holidayDate"),
         Index("holiday_organizationId_deletedAt_idx", "organizationId", "deletedAt"),
@@ -141,7 +140,8 @@ class PublicHolidayMaster(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     date: Mapped[date] = mapped_column(Date, nullable=False)
     year: Mapped[int] = mapped_column(Integer, nullable=False)
-    location: Mapped[str] = mapped_column(String(50), nullable=False, default="IN-TN")
+    location: Mapped[str] = mapped_column(String(50), nullable=False, server_default="IN-TN")
+    isHoliday: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
