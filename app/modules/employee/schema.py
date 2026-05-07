@@ -21,13 +21,6 @@ class AttendanceTodayResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class DepartmentBriefResponse(BaseModel):
-    id: str
-    name: str
-
-    model_config = {"from_attributes": True}
-
-
 class RoleBriefResponse(BaseModel):
     id: str
     name: str
@@ -50,7 +43,6 @@ class EmployeeListItem(BaseModel):
     email: str
     image: Optional[str] = None
     role: Optional[RoleBriefResponse] = None
-    department: Optional[DepartmentBriefResponse] = None
     joined_at: str  # ISO datetime string
     attendance_today: AttendanceTodayResponse
 
