@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+import uuid
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
@@ -25,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.attendance_record import AttendanceRecord
 from app.models.base import generate_uuid
 from app.models.member import Member
+from app.models.weekly_plan import WeeklyPlan
 from app.models.work_hour_policy import WorkHourPolicy
 
 # ---------------------------------------------------------------------------
@@ -37,6 +39,8 @@ MAX_SESSION_HOURS: float = 16.0
 _DEFAULT_STANDARD_HOURS: float = 8.0
 _DEFAULT_OVERTIME_THRESHOLD: float = 8.0
 _DEFAULT_HALF_DAY_MAX_HOURS: float = 4.0
+_REMOTE_PLAN_LOCATIONS: frozenset[str] = frozenset({"WFH"})
+_NON_WORKING_PLAN_LOCATIONS: frozenset[str] = frozenset({"LEAVE", "HOLIDAY"})
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +62,12 @@ class DaySegment:
     day: date
     clock_in: datetime
     clock_out: datetime
+
+
+@dataclass(frozen=True)
+class LocationValidationResult:
+    actual_location: str
+    distance_meters: float | None
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +115,101 @@ def _compute_hours(clock_in: datetime, clock_out: datetime) -> float:
 def _compute_overtime(total_hours: float, threshold: float) -> float:
     """Return overtime hours (0 if under threshold)."""
     return round(max(0.0, total_hours - threshold), 4)
+
+
+def _to_radians(value: float) -> float:
+    from math import pi
+
+    return value * pi / 180.0
+
+
+def _haversine_distance_meters(
+    latitude_a: float,
+    longitude_a: float,
+    latitude_b: float,
+    longitude_b: float,
+) -> float:
+    from math import asin, cos, sin, sqrt
+
+    earth_radius_meters = 6_371_000.0
+    lat_a = _to_radians(latitude_a)
+    lat_b = _to_radians(latitude_b)
+    delta_lat = _to_radians(latitude_b - latitude_a)
+    delta_lng = _to_radians(longitude_b - longitude_a)
+
+    a = (
+        sin(delta_lat / 2) ** 2
+        + cos(lat_a) * cos(lat_b) * sin(delta_lng / 2) ** 2
+    )
+    c = 2 * asin(sqrt(a))
+    return earth_radius_meters * c
+
+
+def _validate_clock_in_location(
+    declared_location: str,
+    latitude: float,
+    longitude: float,
+    office_latitude: float | None,
+    office_longitude: float | None,
+    office_radius_meters: float,
+) -> LocationValidationResult:
+    if office_latitude is None or office_longitude is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Office coordinates are not configured for this organization",
+        )
+
+    distance_meters = _haversine_distance_meters(
+        latitude,
+        longitude,
+        office_latitude,
+        office_longitude,
+    )
+    actual_location = "OFFICE" if distance_meters <= office_radius_meters else "REMOTE"
+
+    if declared_location != actual_location:
+        expected_label = "office" if actual_location == "OFFICE" else "remote"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Clock-in location mismatch. Your coordinates indicate {expected_label} "
+                f"attendance, so select {expected_label.title()} to continue."
+            ),
+        )
+
+    return LocationValidationResult(
+        actual_location=actual_location,
+        distance_meters=round(distance_meters, 2),
+    )
+
+
+async def _get_weekly_plan_location_for_day(
+    db: AsyncSession,
+    organization_id: str,
+    user_id: str,
+    day: date,
+) -> str | None:
+    result = await db.execute(
+        select(WeeklyPlan.work_location).where(
+            WeeklyPlan.organization_id == uuid.UUID(organization_id),
+            WeeklyPlan.user_id == user_id,
+            WeeklyPlan.date == day,
+            WeeklyPlan.deleted_at.is_(None),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+def _plan_matches_actual_location(plan_location: str | None, actual_location: str) -> bool:
+    if plan_location is None:
+        return True
+    if plan_location == "OFFICE":
+        return actual_location == "OFFICE"
+    if plan_location in _REMOTE_PLAN_LOCATIONS:
+        return actual_location == "REMOTE"
+    if plan_location in _NON_WORKING_PLAN_LOCATIONS:
+        return False
+    return False
 
 
 def _derive_status(total_hours: float, half_day_max: float) -> str:
@@ -339,6 +444,13 @@ async def clock_in(
     target_member_id: str,
     scope: str,
     clock_in_time: datetime | None = None,
+    work_location: str = "OFFICE",
+    latitude: float = 0,
+    longitude: float = 0,
+    accuracy_meters: float | None = None,
+    office_latitude: float | None = None,
+    office_longitude: float | None = None,
+    office_radius_meters: float = 200.0,
 ) -> AttendanceRecord:
     """
     Open an attendance session for the target member.
@@ -359,6 +471,31 @@ async def clock_in(
 
     now = clock_in_time or datetime.now(tz=timezone.utc)
     today = now.date()
+    target_member = await resolve_target_member(db, organization_id, target_member_id)
+    validation_result = _validate_clock_in_location(
+        declared_location=work_location,
+        latitude=latitude,
+        longitude=longitude,
+        office_latitude=office_latitude,
+        office_longitude=office_longitude,
+        office_radius_meters=office_radius_meters,
+    )
+    planned_location = await _get_weekly_plan_location_for_day(
+        db=db,
+        organization_id=organization_id,
+        user_id=target_member.userId,
+        day=today,
+    )
+    if not _plan_matches_actual_location(planned_location, validation_result.actual_location):
+        planned_label = "remote" if planned_location in _REMOTE_PLAN_LOCATIONS else "office"
+        actual_label = "remote" if validation_result.actual_location == "REMOTE" else "office"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Today's weekly plan is set to {planned_label}, but your actual clock-in "
+                f"location is {actual_label}. Update the plan or choose the matching location."
+            ),
+        )
 
     return await _upsert_day_row(
         db=db,

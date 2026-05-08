@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 AttendanceStatus = Literal["PRESENT", "HALF_DAY", "ABSENT"]
+AttendanceWorkLocation = Literal["OFFICE", "REMOTE"]
 
 _MEMBER_ID_DESC = "Member.id of the attendance owner."
 
@@ -41,6 +42,13 @@ class ClockInRequest(BaseModel):
         default=None,
         description="Explicit clock-in timestamp (UTC). Defaults to now.",
     )
+    work_location: AttendanceWorkLocation = Field(
+        ...,
+        description="Declared work location for this clock-in.",
+    )
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
+    accuracy_meters: float | None = Field(default=None, ge=0)
 
 
 class ClockOutRequest(BaseModel):

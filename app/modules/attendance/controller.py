@@ -25,6 +25,7 @@ from app.modules.attendance.schema import (
 )
 from app.modules.attendance import service
 from app.shared.deps.attendance_permissions import AttendanceAccessContext
+from app.shared.config import get_settings
 
 
 def _to_response(record: object, employee_name: str | None = None) -> AttendanceRecordResponse:
@@ -57,6 +58,13 @@ async def handle_clock_in(
         target_member_id=target_id,
         scope=access.permission_scope,
         clock_in_time=body.clock_in,
+        work_location=body.work_location,
+        latitude=body.latitude,
+        longitude=body.longitude,
+        accuracy_meters=body.accuracy_meters,
+        office_latitude=access.organization.latitude,
+        office_longitude=access.organization.longitude,
+        office_radius_meters=get_settings().attendance_office_radius_meters,
     )
     return _to_response(record)
 
