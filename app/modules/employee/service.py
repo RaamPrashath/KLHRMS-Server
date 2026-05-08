@@ -1,8 +1,7 @@
 """
 Employee service — business logic for the employee list.
 
-Queries Members joined with User, Role, DepartmentMember/Department,
-and today's AttendanceRecord in a single efficient query.
+Queries Members joined with User, Role, and today's AttendanceRecord.
 All queries are scoped by organizationId.
 """
 
@@ -16,14 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.models.attendance_record import AttendanceRecord
-from app.models.department import Department
-from app.models.department_member import DepartmentMember
 from app.models.member import Member
 from app.models.role import Role
 from app.models.user import User
 from app.modules.employee.schema import (
     AttendanceTodayResponse,
-    DepartmentBriefResponse,
     EmployeeListFilters,
     EmployeeListItem,
     EmployeeListResponse,
@@ -75,7 +71,6 @@ async def list_employees(
         .options(
             joinedload(Member.user),
             joinedload(Member.role),
-            joinedload(Member.departmentMembers).joinedload(DepartmentMember.department),
         )
     )
 
@@ -93,10 +88,7 @@ async def list_employees(
         base_q = base_q.join(User, Member.userId == User.id)
 
     # ── Department filter ──────────────────────────────────────────────────────
-    if filters.department_id:
-        base_q = base_q.join(
-            DepartmentMember, Member.id == DepartmentMember.memberId
-        ).where(DepartmentMember.departmentId == filters.department_id)
+    # (department table not yet migrated — filter skipped)
 
     # ── Role filter ────────────────────────────────────────────────────────────
     if filters.role_id:
@@ -161,12 +153,6 @@ async def list_employees(
         user: User = member.user
         role: Role | None = member.role
 
-        # Pick the first department membership (most orgs have one per member)
-        dept_membership: DepartmentMember | None = (
-            member.departmentMembers[0] if member.departmentMembers else None
-        )
-        dept: Department | None = dept_membership.department if dept_membership else None
-
         attendance_today = _attendance_status_for_record(attendance_map.get(member.id))
 
         items.append(
@@ -177,7 +163,6 @@ async def list_employees(
                 email=user.email,
                 image=user.image,
                 role=RoleBriefResponse(id=role.id, name=role.name) if role else None,
-                department=DepartmentBriefResponse(id=dept.id, name=dept.name) if dept else None,
                 joined_at=member.createdAt.isoformat(),
                 attendance_today=attendance_today,
             )
@@ -192,21 +177,6 @@ async def list_employees(
         page_size=page_size,
         total_pages=total_pages,
     )
-
-
-async def list_departments_for_org(organization_id: str, db: AsyncSession) -> list[dict]:
-    """Return all active departments for filter dropdown."""
-    result = await db.execute(
-        select(Department)
-        .where(
-            Department.organizationId == organization_id,
-            Department.status == "ACTIVE",
-        )
-        .order_by(Department.name.asc())
-    )
-    rows = result.scalars().all()
-
-    return [{"id": r.id, "name": r.name} for r in rows]
 
 
 async def list_roles_for_org(organization_id: str, db: AsyncSession) -> list[dict]:

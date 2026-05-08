@@ -24,6 +24,55 @@ class Organization(Base):
 
     members = relationship("Member", back_populates="organization", overlaps="role,members")
     roles = relationship("Role", back_populates="organization")
+    candidates = relationship(
+        "Candidate",
+        back_populates="organization",
+    )
+
+    candidateApplications = relationship(
+        "CandidateApplication",
+        back_populates="organization",
+    )
+
+    pipelineStages = relationship(
+        "PipelineStage",
+        back_populates="organization",
+    )
+
+    jobPostings = relationship(
+        "JobPosting",
+        back_populates="organization",
+    )
+
+    applicationStageHistories = relationship(
+        "ApplicationStageHistory",
+        back_populates="organization",
+    )
+
+    jobRequisitions = relationship(
+        "JobRequisition",
+        back_populates="organization",
+    )
+
+    requisitionApprovals = relationship(
+        "RequisitionApproval",
+        back_populates="organization",
+    )
+
+    stageEvents = relationship(
+        "StageEvent",
+        back_populates="organization",
+    )
+
+    interviewFeedbacks = relationship(
+        "InterviewFeedback",
+        back_populates="organization",
+    )
+
+    offerLetters = relationship(
+        "OfferLetter",
+        back_populates="organization",
+    )
 
     __table_args__ = (
         UniqueConstraint("slug", name="organization_slug_key"),

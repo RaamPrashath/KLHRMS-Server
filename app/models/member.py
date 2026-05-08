@@ -37,6 +37,47 @@ class Member(Base):
     approved_leave_requests = relationship("LeaveRequest", foreign_keys="[LeaveRequest.approvedById]", back_populates="approved_by")
     leave_balances = relationship("LeaveBalance", foreign_keys="[LeaveBalance.memberId]", back_populates="member")
 
+    movedApplicationHistories = relationship(
+        "ApplicationStageHistory",
+        back_populates="movedBy",
+    )
+
+    raisedJobRequisitions = relationship(
+        "JobRequisition",
+        foreign_keys="JobRequisition.raisedById",
+        back_populates="raisedBy",
+    )
+
+    requisitionApprovals = relationship(
+        "RequisitionApproval",
+        foreign_keys="RequisitionApproval.approverId",
+        back_populates="approver",
+    )
+
+    createdStageEvents = relationship(
+        "StageEvent",
+        foreign_keys="StageEvent.createdByMemberId",
+        back_populates="createdBy",
+    )
+
+    stageEventParticipations = relationship(
+        "StageEventParticipant",
+        foreign_keys="StageEventParticipant.memberId",
+        back_populates="member",
+    )
+
+    interviewFeedbacks = relationship(
+        "InterviewFeedback",
+        foreign_keys="InterviewFeedback.memberId",
+        back_populates="member",
+    )
+
+    createdOfferLetters = relationship(
+        "OfferLetter",
+        foreign_keys="OfferLetter.createdByMemberId",
+        back_populates="createdBy",
+    )
+
     __table_args__ = (
         UniqueConstraint("organizationId", "userId", name="member_organizationId_userId_key"),
         ForeignKeyConstraint(["organizationId", "roleId"], ["role.organizationId", "role.id"]),
