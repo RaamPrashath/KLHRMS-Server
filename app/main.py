@@ -11,8 +11,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.modules.attendance.route import router as attendance_router
+from app.modules.candidates.route import router as candidates_router
 from app.modules.employee.route import router as employee_router
 from app.modules.holiday_sync.route import router as holiday_sync_router
+from app.modules.jobs.route import router as jobs_router
 from app.modules.leave.route import router as leave_router
 from app.modules.role.route import router as role_router
 from app.modules.weekly_plan.router import router as weekly_plan_router
@@ -57,6 +59,8 @@ app.add_middleware(
 
 app.include_router(role_router)
 app.include_router(attendance_router)
+app.include_router(candidates_router)
+app.include_router(jobs_router)
 app.include_router(leave_router)
 app.include_router(holiday_sync_router)
 app.include_router(weekly_plan_router, prefix=settings.api_v1_prefix)

@@ -48,6 +48,32 @@ class Organization(Base):
         "ApplicationStageHistory",
         back_populates="organization",
     )
+
+    jobRequisitions = relationship(
+        "JobRequisition",
+        back_populates="organization",
+    )
+
+    requisitionApprovals = relationship(
+        "RequisitionApproval",
+        back_populates="organization",
+    )
+
+    stageEvents = relationship(
+        "StageEvent",
+        back_populates="organization",
+    )
+
+    interviewFeedbacks = relationship(
+        "InterviewFeedback",
+        back_populates="organization",
+    )
+
+    offerLetters = relationship(
+        "OfferLetter",
+        back_populates="organization",
+    )
+
     __table_args__ = (
         UniqueConstraint("slug", name="organization_slug_key"),
     )

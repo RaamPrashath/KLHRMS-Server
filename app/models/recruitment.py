@@ -1,8 +1,10 @@
 from sqlalchemy import (
+    ARRAY,
     Boolean,
     DateTime,
     Enum,
     ForeignKey,
+    Float,
     Integer,
     String,
     Text,
@@ -34,6 +36,270 @@ class ApplicationSource(str, enum.Enum):
     JOB_BOARD = "JOB_BOARD"
     DIRECT = "DIRECT"
     OTHER = "OTHER"
+
+
+class EmploymentType(str, enum.Enum):
+    FULL_TIME = "FULL_TIME"
+    PART_TIME = "PART_TIME"
+    CONTRACT = "CONTRACT"
+    INTERNSHIP = "INTERNSHIP"
+
+
+class JobRequisitionStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    CLOSED = "CLOSED"
+
+class RequisitionApprovalDecision(str, enum.Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+class StageType(str, enum.Enum):
+    DEFAULT = "DEFAULT"
+    INTERVIEW = "INTERVIEW"
+    OFFER = "OFFER"
+    HIRED = "HIRED"
+    REJECTED = "REJECTED"
+
+
+class InterviewType(str, enum.Enum):
+    SCREENING = "SCREENING"
+    TECHNICAL = "TECHNICAL"
+    CULTURAL = "CULTURAL"
+    MANAGERIAL = "MANAGERIAL"
+    HR = "HR"
+    FINAL = "FINAL"
+    OTHER = "OTHER"
+
+
+class EventStatus(str, enum.Enum):
+    SCHEDULED = "SCHEDULED"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+    RESCHEDULED = "RESCHEDULED"
+
+
+class InterviewOutcome(str, enum.Enum):
+    PENDING = "PENDING"
+    STRONG_YES = "STRONG_YES"
+    YES = "YES"
+    NEUTRAL = "NEUTRAL"
+    NO = "NO"
+    STRONG_NO = "STRONG_NO"
+
+
+class OfferStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    SENT = "SENT"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+    WITHDRAWN = "WITHDRAWN"
+
+# =========================================================
+# JOB REQUISITION
+# =========================================================
+
+
+class JobRequisition(Base):
+    __tablename__ = "job_requisition"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    title: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+    )
+
+    departmentId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("department.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    employmentType: Mapped[EmploymentType] = mapped_column(
+        Enum(EmploymentType),
+        nullable=False,
+        default=EmploymentType.FULL_TIME,
+    )
+
+    openings: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+
+    salaryMin: Mapped[float | None] = mapped_column(Float)
+
+    salaryMax: Mapped[float | None] = mapped_column(Float)
+
+    currency: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="INR",
+    )
+
+    description: Mapped[str | None] = mapped_column(Text)
+
+    requirements: Mapped[str | None] = mapped_column(Text)
+
+    skills: Mapped[list[str]] = mapped_column(
+        ARRAY(String),
+        nullable=False,
+        default=list,
+    )
+
+    location: Mapped[str | None] = mapped_column(String)
+
+    isRemote: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    raisedById: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    targetDate: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
+    status: Mapped[JobRequisitionStatus] = mapped_column(
+        Enum(JobRequisitionStatus),
+        nullable=False,
+        default=JobRequisitionStatus.DRAFT,
+        index=True,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    closedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
+    organization = relationship(
+        "Organization",
+        back_populates="jobRequisitions",
+    )
+
+    department = relationship("Department")
+
+    raisedBy = relationship(
+        "Member",
+        foreign_keys=[raisedById],
+        back_populates="raisedJobRequisitions",
+    )
+
+    approvals = relationship(
+        "RequisitionApproval",
+        back_populates="requisition",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("ix_job_requisition_org_status", "organizationId", "status"),
+        Index("ix_job_requisition_org_raised_by", "organizationId", "raisedById"),
+    )
+
+
+# =========================================================
+# REQUISITION APPROVAL
+# =========================================================
+
+
+class RequisitionApproval(Base):
+    __tablename__ = "requisition_approval"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    requisitionId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("job_requisition.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    approverId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    decision: Mapped[RequisitionApprovalDecision] = mapped_column(
+        Enum(RequisitionApprovalDecision),
+        nullable=False,
+        default=RequisitionApprovalDecision.PENDING,
+        index=True,
+    )
+
+    comment: Mapped[str | None] = mapped_column(Text)
+
+    decidedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    organization = relationship(
+        "Organization",
+        back_populates="requisitionApprovals",
+    )
+
+    requisition = relationship(
+        "JobRequisition",
+        back_populates="approvals",
+    )
+
+    approver = relationship(
+        "Member",
+        foreign_keys=[approverId],
+        back_populates="requisitionApprovals",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "requisitionId",
+            "approverId",
+            name="uq_requisition_approval_requisition_approver",
+        ),
+    )
 
 
 # =========================================================
@@ -247,6 +513,12 @@ class PipelineStage(Base):
         default=False,
     )
 
+    stageType: Mapped[StageType] = mapped_column(
+        Enum(StageType),
+        nullable=False,
+        default=StageType.DEFAULT,
+    )
+
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -258,7 +530,14 @@ class PipelineStage(Base):
         onupdate=func.now(),
     )
 
+
     # RELATIONSHIPS
+
+    stageEvents = relationship(
+        "StageEvent",
+        back_populates="stage",
+        cascade="all, delete-orphan",
+    )
 
     organization = relationship(
         "Organization",
@@ -385,6 +664,19 @@ class CandidateApplication(Base):
         cascade="all, delete-orphan",
     )
 
+    stageEvents = relationship(
+        "StageEvent",
+        back_populates="application",
+        cascade="all, delete-orphan",
+    )
+
+    offerLetter = relationship(
+        "OfferLetter",
+        back_populates="application",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
     __table_args__ = (
         UniqueConstraint(
             "candidateId",
@@ -481,4 +773,374 @@ class ApplicationStageHistory(Base):
     movedBy = relationship(
         "Member",
         back_populates="movedApplicationHistories",
+    )
+
+# =========================================================
+# STAGE EVENT
+# =========================================================
+
+
+class StageEvent(Base):
+    __tablename__ = "stage_event"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    applicationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("candidate_application.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    stageId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("pipeline_stage.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    createdByMemberId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    title: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+    )
+
+    description: Mapped[str | None] = mapped_column(Text)
+
+    interviewType: Mapped[InterviewType | None] = mapped_column(
+        Enum(InterviewType),
+        nullable=True,
+    )
+
+    status: Mapped[EventStatus] = mapped_column(
+        Enum(EventStatus),
+        nullable=False,
+        default=EventStatus.SCHEDULED,
+        index=True,
+    )
+
+    scheduledStartAt: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    scheduledEndAt: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    meetingUrl: Mapped[str | None] = mapped_column(String)
+
+    location: Mapped[str | None] = mapped_column(String)
+
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # RELATIONSHIPS
+
+    organization = relationship(
+        "Organization",
+        back_populates="stageEvents",
+    )
+
+    application = relationship(
+        "CandidateApplication",
+        back_populates="stageEvents",
+    )
+
+    stage = relationship(
+        "PipelineStage",
+        back_populates="stageEvents",
+    )
+
+    createdBy = relationship(
+        "Member",
+        foreign_keys=[createdByMemberId],
+        back_populates="createdStageEvents",
+    )
+
+    participants = relationship(
+        "StageEventParticipant",
+        back_populates="event",
+        cascade="all, delete-orphan",
+    )
+
+    feedbacks = relationship(
+        "InterviewFeedback",
+        back_populates="event",
+        cascade="all, delete-orphan",
+    )
+
+
+# =========================================================
+# STAGE EVENT PARTICIPANT
+# =========================================================
+
+
+class StageEventParticipant(Base):
+    __tablename__ = "stage_event_participant"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    eventId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stage_event.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    memberId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    role: Mapped[str | None] = mapped_column(String)
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    # RELATIONSHIPS
+
+    event = relationship(
+        "StageEvent",
+        back_populates="participants",
+    )
+
+    member = relationship(
+        "Member",
+        back_populates="stageEventParticipations",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "eventId",
+            "memberId",
+            name="uq_stage_event_participant",
+        ),
+    )
+
+
+# =========================================================
+# INTERVIEW FEEDBACK
+# =========================================================
+
+
+class InterviewFeedback(Base):
+    __tablename__ = "interview_feedback"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    eventId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stage_event.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    memberId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    outcome: Mapped[InterviewOutcome] = mapped_column(
+        Enum(InterviewOutcome),
+        nullable=False,
+        default=InterviewOutcome.PENDING,
+    )
+
+    score: Mapped[int | None] = mapped_column(Integer)
+
+    strengths: Mapped[str | None] = mapped_column(Text)
+
+    weaknesses: Mapped[str | None] = mapped_column(Text)
+
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    # RELATIONSHIPS
+
+    organization = relationship(
+        "Organization",
+        back_populates="interviewFeedbacks",
+    )
+
+    event = relationship(
+        "StageEvent",
+        back_populates="feedbacks",
+    )
+
+    member = relationship(
+        "Member",
+        back_populates="interviewFeedbacks",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "eventId",
+            "memberId",
+            name="uq_interview_feedback_event_member",
+        ),
+    )
+
+
+# =========================================================
+# OFFER LETTER
+# =========================================================
+
+
+class OfferLetter(Base):
+    __tablename__ = "offer_letter"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    applicationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("candidate_application.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    createdByMemberId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    status: Mapped[OfferStatus] = mapped_column(
+        Enum(OfferStatus),
+        nullable=False,
+        default=OfferStatus.DRAFT,
+        index=True,
+    )
+
+    title: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+    )
+
+    message: Mapped[str | None] = mapped_column(Text)
+
+    salary: Mapped[float | None] = mapped_column(Float)
+
+    currency: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="INR",
+    )
+
+    joiningDate: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True),
+    )
+
+    expiresAt: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True),
+    )
+
+    sentAt: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True),
+    )
+
+    respondedAt: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True),
+    )
+
+    candidateToken: Mapped[str | None] = mapped_column(
+        String,
+        unique=True,
+    )
+
+    pdfUrl: Mapped[str | None] = mapped_column(Text)
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # RELATIONSHIPS
+
+    organization = relationship(
+        "Organization",
+        back_populates="offerLetters",
+    )
+
+    application = relationship(
+        "CandidateApplication",
+        back_populates="offerLetter",
+    )
+
+    createdBy = relationship(
+        "Member",
+        foreign_keys=[createdByMemberId],
+        back_populates="createdOfferLetters",
     )

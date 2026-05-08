@@ -17,9 +17,11 @@ from app.models.base import Base
 from app.models.recruitment import (
     Candidate,
     JobPosting,
+    JobRequisition,
     PipelineStage,
     CandidateApplication,
     ApplicationStageHistory,
+    RequisitionApproval,
 )
 from app.models.project import Project
 from app.models.project_member import ProjectMember
