@@ -85,6 +85,11 @@ class Settings(BaseSettings):
         alias="BETTER_AUTH_URL",
     )
 
+    attendance_office_radius_meters: float = Field(
+        default=200.0,
+        alias="ATTENDANCE_OFFICE_RADIUS_METERS",
+    )
+
     @field_validator("database_url", mode="before")
     @classmethod
     def validate_database_url(cls, value: str) -> str:
