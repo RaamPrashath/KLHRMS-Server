@@ -74,7 +74,7 @@ def _holiday_response(holiday: Holiday) -> HolidayResponse:
     return HolidayResponse.model_validate(holiday)
 
 
-def _leave_balance_response(balance: LeaveBalance) -> LeaveBalanceResponse:
+def _leave_balance_response(balance: LeaveBalance | service.LeaveBalanceRow) -> LeaveBalanceResponse:
     return LeaveBalanceResponse(
         id=balance.id,
         organizationId=balance.organizationId,

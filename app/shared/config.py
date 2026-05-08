@@ -88,6 +88,8 @@ class Settings(BaseSettings):
     attendance_office_radius_meters: float = Field(
         default=200.0,
         alias="ATTENDANCE_OFFICE_RADIUS_METERS",
+    )
+
     # ── External APIs ─────────────────────────────────────
     calendarific_api_key: str = Field(
         default="",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import dataclass
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -15,6 +16,25 @@ from app.models.leave import Holiday, LeaveBalance, LeaveRequest, LeaveType
 from app.models.member import Member
 from app.modules.leave.schema import LeaveBalanceFilters, LeaveCalendarFilters, LeaveRequestFilters
 from app.shared.utils.enums import LeaveRequestStatus
+
+
+@dataclass
+class LeaveBalanceRow:
+    """Synthetic balance row — covers leave types with no existing balance record."""
+    id: str
+    organizationId: str
+    memberId: str
+    leaveTypeId: str
+    year: int
+    allocated: float
+    used: float
+    remaining: float
+    carriedForward: float
+    lapsed: float
+    createdAt: dt.datetime
+    updatedAt: dt.datetime
+    member: Member
+    leave_type: LeaveType
 
 
 def _utcnow() -> dt.datetime:
@@ -544,35 +564,110 @@ async def list_leave_balances(
     actor_member_id: str,
     permission_scope: str,
     filters: LeaveBalanceFilters,
-) -> tuple[list[LeaveBalance], int]:
-    query = (
-        select(LeaveBalance)
-        .options(
-            joinedload(LeaveBalance.member).joinedload(Member.user),
-            joinedload(LeaveBalance.leave_type),
-        )
-        .where(LeaveBalance.organizationId == organization_id)
+) -> tuple[list[LeaveBalanceRow], int]:
+    """
+    Return a balance row for every (member, leave_type) combination in the org.
+    Leave types that have never been used still appear with zero values.
+    """
+    year = filters.year or dt.date.today().year
+    _now = dt.datetime.now(dt.timezone.utc)
+
+    # ── 1. Resolve which members to include ──────────────────────────────────
+    member_query = (
+        select(Member)
+        .options(joinedload(Member.user))
+        .where(Member.organizationId == organization_id)
     )
     if permission_scope == "self":
-        query = query.where(LeaveBalance.memberId == actor_member_id)
+        member_query = member_query.where(Member.id == actor_member_id)
     elif filters.member_id is not None:
-        query = query.where(LeaveBalance.memberId == filters.member_id)
+        member_query = member_query.where(Member.id == filters.member_id)
 
-    if filters.year is not None:
-        query = query.where(LeaveBalance.year == filters.year)
+    members_result = await db.execute(member_query)
+    members = members_result.unique().scalars().all()
+
+    # ── 2. Resolve which leave types to include ───────────────────────────────
+    lt_query = (
+        select(LeaveType)
+        .where(
+            LeaveType.organizationId == organization_id,
+            LeaveType.deletedAt.is_(None),
+        )
+        .order_by(LeaveType.name.asc())
+    )
     if filters.leave_type_id is not None:
-        query = query.where(LeaveBalance.leaveTypeId == filters.leave_type_id)
+        lt_query = lt_query.where(LeaveType.id == filters.leave_type_id)
 
-    total_result = await db.execute(
-        select(func.count()).select_from(query.order_by(None).subquery())
+    lt_result = await db.execute(lt_query)
+    leave_types = lt_result.scalars().all()
+
+    # ── 3. Fetch existing balance records for this year ───────────────────────
+    member_ids = [m.id for m in members]
+    lt_ids = [lt.id for lt in leave_types]
+
+    existing_query = select(LeaveBalance).where(
+        LeaveBalance.organizationId == organization_id,
+        LeaveBalance.year == year,
+        LeaveBalance.memberId.in_(member_ids),
+        LeaveBalance.leaveTypeId.in_(lt_ids),
     )
-    total = total_result.scalar_one()
-    items_result = await db.execute(
-        query.join(LeaveType, LeaveType.id == LeaveBalance.leaveTypeId)
-        .order_by(LeaveBalance.year.desc(), LeaveType.name.asc())
-    )
-    items = items_result.unique().scalars().all()
-    return items, total
+    existing_result = await db.execute(existing_query)
+    existing_balances: dict[tuple[str, str], LeaveBalance] = {
+        (b.memberId, b.leaveTypeId): b for b in existing_result.scalars().all()
+    }
+
+    # ── 4. Build synthetic rows for every (member × leave_type) ──────────────
+    rows: list[LeaveBalanceRow] = []
+    for member in members:
+        for lt in leave_types:
+            balance = existing_balances.get((member.id, lt.id))
+            if balance is not None:
+                rows.append(
+                    LeaveBalanceRow(
+                        id=balance.id,
+                        organizationId=balance.organizationId,
+                        memberId=balance.memberId,
+                        leaveTypeId=balance.leaveTypeId,
+                        year=balance.year,
+                        allocated=balance.allocated,
+                        used=balance.used,
+                        remaining=balance.remaining,
+                        carriedForward=balance.carriedForward,
+                        lapsed=balance.lapsed,
+                        createdAt=balance.createdAt,
+                        updatedAt=balance.updatedAt,
+                        member=member,
+                        leave_type=lt,
+                    )
+                )
+            else:
+                rows.append(
+                    LeaveBalanceRow(
+                        id=f"virtual-{member.id}-{lt.id}",
+                        organizationId=organization_id,
+                        memberId=member.id,
+                        leaveTypeId=lt.id,
+                        year=year,
+                        allocated=lt.quota,
+                        used=0.0,
+                        remaining=lt.quota,
+                        carriedForward=0.0,
+                        lapsed=0.0,
+                        createdAt=_now,
+                        updatedAt=_now,
+                        member=member,
+                        leave_type=lt,
+                    )
+                )
+
+    # Sort: by member name then leave type name
+    rows.sort(key=lambda r: (
+        (r.member.user.name or r.member.user.email or r.memberId).lower()
+        if r.member.user else r.memberId,
+        r.leave_type.name.lower(),
+    ))
+
+    return rows, len(rows)
 
 
 def _resolve_calendar_range(filters: LeaveCalendarFilters) -> tuple[dt.date, dt.date]:
