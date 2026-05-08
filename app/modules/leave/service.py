@@ -180,17 +180,54 @@ async def list_holidays(
     *,
     year: int | None = None,
     month: int | None = None,
-) -> list[Holiday]:
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[Holiday], int]:
     query = select(Holiday).where(
         Holiday.organizationId == organization_id,
         Holiday.deletedAt.is_(None),
+        Holiday.isHoliday.is_(True),
+    )
+    if year is not None:
+        query = query.where(func.extract("year", Holiday.holidayDate) == year)
+    if month is not None:
+        query = query.where(func.extract("month", Holiday.holidayDate) == month)
+    if search is not None and search.strip():
+        query = query.where(Holiday.name.ilike(f"%{search.strip()}%"))
+
+    count_result = await db.execute(
+        select(func.count()).select_from(query.order_by(None).subquery())
+    )
+    total = count_result.scalar_one()
+
+    items_result = await db.execute(
+        query.order_by(Holiday.holidayDate.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    return list(items_result.scalars().all()), total
+
+
+async def list_holidays_for_calendar(
+    db: AsyncSession,
+    organization_id: str,
+    *,
+    year: int | None = None,
+    month: int | None = None,
+) -> list[Holiday]:
+    """Lightweight fetch used by the sidebar calendar — no pagination."""
+    query = select(Holiday).where(
+        Holiday.organizationId == organization_id,
+        Holiday.deletedAt.is_(None),
+        Holiday.isHoliday.is_(True),
     )
     if year is not None:
         query = query.where(func.extract("year", Holiday.holidayDate) == year)
     if month is not None:
         query = query.where(func.extract("month", Holiday.holidayDate) == month)
     result = await db.execute(query.order_by(Holiday.holidayDate.asc()))
-    return result.scalars().all()
+    return list(result.scalars().all())
 
 
 async def create_holiday(
@@ -574,7 +611,6 @@ async def get_leave_calendar(
         .order_by(Holiday.holidayDate.asc())
     )
     holidays = holidays_result.scalars().all()
-
     query = (
         select(LeaveRequest)
         .options(

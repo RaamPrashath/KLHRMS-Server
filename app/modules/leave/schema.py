@@ -137,6 +137,23 @@ class LeaveBalanceFilters(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class HolidayListFilters(BaseModel):
+    year: int | None = None
+    month: int | None = Field(default=None, ge=1, le=12)
+    search: str | None = Field(default=None, max_length=255)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=200)
+
+    model_config = {"populate_by_name": True}
+
+
+class HolidayListResponse(BaseModel):
+    items: list[HolidayResponse]
+    total: int
+    page: int
+    page_size: int
+
+
 class LeaveCalendarFilters(BaseModel):
     year: int | None = None
     month: int | None = Field(default=None, ge=1, le=12)
@@ -203,6 +220,7 @@ class HolidayResponse(BaseModel):
     organization_id: str = Field(alias="organizationId")
     name: str
     holiday_date: dt.date = Field(alias="holidayDate")
+    is_holiday: bool = Field(alias="isHoliday")
     is_recurring: bool = Field(alias="isRecurring")
     description: str | None
     created_at: dt.datetime = Field(alias="createdAt")
