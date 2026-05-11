@@ -1,23 +1,22 @@
+import enum
+
 from sqlalchemy import (
     ARRAY,
     Boolean,
     DateTime,
     Enum,
-    ForeignKey,
     Float,
+    ForeignKey,
+    Index,
     Integer,
     String,
     Text,
-    func,
     UniqueConstraint,
-    Index,
+    func,
 )
-from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, generate_uuid
-
-import enum
-
 
 # =========================================================
 # ENUMS
@@ -494,6 +493,11 @@ class PipelineStage(Base):
         nullable=False,
     )
 
+    slug: Mapped[str] = mapped_column(
+        String(160),
+        nullable=False,
+    )
+
     order: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -625,6 +629,11 @@ class PipelineStage(Base):
             "jobPostingId",
             "order",
             name="uq_pipeline_stage_order",
+        ),
+        UniqueConstraint(
+            "organizationId",
+            "slug",
+            name="uq_pipeline_stage_org_slug",
         ),
     )
 

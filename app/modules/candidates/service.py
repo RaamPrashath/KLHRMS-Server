@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,7 @@ from app.integrations.google.sheets_service import (
     make_unique_sheet_titles,
     sanitize_sheet_title,
 )
+from app.models.member import Member
 from app.models.recruitment import (
     ApplicationStageHistory,
     Candidate,
@@ -25,12 +27,14 @@ from app.models.recruitment import (
     StageEvaluationCategory,
     StageEvaluationWorkspace,
     StageEvent,
+    StageEventParticipant,
 )
 from app.modules.candidates.repository import CandidatePipelineRepository
 from app.modules.candidates.schema import (
     ApplicationInterviewMeetingRead,
     CandidateApplicationDetailRead,
     CandidateSummaryRead,
+    InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
     MoveApplicationStageRequest,
@@ -44,6 +48,16 @@ from app.modules.candidates.schema import (
     StageEvaluationCategoryInput,
     StageEvaluationCategoryRead,
     StageEvaluationWorkspaceRead,
+    StageInterviewAssignmentInput,
+    StageInterviewAssignmentRequest,
+    StageInterviewAssignmentResponse,
+    StageInterviewWarningRead,
+    StageInterviewWarningRequest,
+    StageInterviewWarningResponse,
+    StageWorkspaceAssignmentRead,
+    StageWorkspaceCandidateRead,
+    StageWorkspaceInterviewerRead,
+    StageWorkspaceRead,
 )
 
 DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
@@ -66,6 +80,31 @@ class AnalysisSheetData:
 
 def _is_protected_stage(stage: PipelineStage) -> bool:
     return stage.name.strip().lower() == "applied" and stage.order == 1
+
+
+def _slugify_stage_name(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or "stage"
+
+
+async def _generate_stage_slug(
+    repository: CandidatePipelineRepository,
+    organization_id: str,
+    name: str,
+    excluded_stage_id: str | None = None,
+) -> str:
+    used_slugs = set(await repository.list_stage_slugs(organization_id))
+    if excluded_stage_id is not None:
+        excluded_stage = await repository.get_stage(organization_id, excluded_stage_id)
+        if excluded_stage is not None:
+            used_slugs.discard(excluded_stage.slug)
+    base_slug = _slugify_stage_name(name)
+    candidate = base_slug
+    suffix = 2
+    while candidate in used_slugs:
+        candidate = f"{base_slug}-{suffix}"
+        suffix += 1
+    return candidate
 
 
 def _next_working_day_from_stage(stage: PipelineStage) -> None:
@@ -143,6 +182,7 @@ def _serialize_stage(stage: PipelineStage) -> PipelineStageRead:
         id=stage.id,
         jobPostingId=stage.jobPostingId,
         name=stage.name,
+        slug=stage.slug,
         order=stage.order,
         color=stage.color,
         isDefault=stage.isDefault,
@@ -275,6 +315,83 @@ def _serialize_detail(application: CandidateApplication) -> CandidateApplication
     )
 
 
+def _serialize_interviewer(member: Member, department: str | None = None) -> StageWorkspaceInterviewerRead:
+    user = member.user
+    email = getattr(user, "email", None) or ""
+    name = getattr(user, "name", None) or email
+    return StageWorkspaceInterviewerRead(
+        memberId=member.id,
+        name=name,
+        email=email,
+        department=department,
+    )
+
+
+def _latest_assignment_event(application: CandidateApplication, stage_id: str) -> StageEvent | None:
+    events = [
+        event
+        for event in application.__dict__.get("stageEvents", [])
+        if event.stageId == stage_id
+        and event.scheduledStartAt is not None
+        and event.scheduledEndAt is not None
+        and event.participants
+    ]
+    if not events:
+        return None
+    return max(events, key=lambda event: event.createdAt or event.scheduledStartAt)
+
+
+def _serialize_workspace_assignment(event: StageEvent | None) -> StageWorkspaceAssignmentRead | None:
+    if event is None or event.scheduledStartAt is None or event.scheduledEndAt is None:
+        return None
+    participant = (event.participants or [None])[0]
+    interviewer = None
+    if participant is not None and participant.member is not None:
+        interviewer = _serialize_interviewer(participant.member)
+    return StageWorkspaceAssignmentRead(
+        eventId=event.id,
+        interviewer=interviewer,
+        scheduledStartAt=event.scheduledStartAt,
+        scheduledEndAt=event.scheduledEndAt,
+        emailSentAt=event.emailSentAt,
+    )
+
+
+def _serialize_workspace_candidate(
+    application: CandidateApplication,
+    stage: PipelineStage,
+) -> StageWorkspaceCandidateRead:
+    return StageWorkspaceCandidateRead(
+        applicationId=application.id,
+        candidate=_serialize_candidate(application.candidate),
+        jobTitle=application.jobPosting.title,
+        source=application.source,
+        score=application.score,
+        appliedAt=application.appliedAt,
+        currentAssignment=_serialize_workspace_assignment(
+            _latest_assignment_event(application, stage.id)
+        ),
+    )
+
+
+def _serialize_stage_workspace(stage: PipelineStage) -> StageWorkspaceRead:
+    applications = sorted(
+        stage.applications or [],
+        key=lambda application: application.appliedAt,
+        reverse=True,
+    )
+    return StageWorkspaceRead(
+        stage=_serialize_stage(stage),
+        jobPosting=PipelineJobPostingRead(
+            id=stage.jobPosting.id,
+            title=stage.jobPosting.title,
+            status=stage.jobPosting.status.value,
+        ),
+        candidateCount=len(applications),
+        candidates=[_serialize_workspace_candidate(application, stage) for application in applications],
+    )
+
+
 async def _ensure_default_stages(
     db: AsyncSession,
     repository: CandidatePipelineRepository,
@@ -290,6 +407,7 @@ async def _ensure_default_stages(
             organizationId=organization_id,
             jobPostingId=job_posting_id,
             name=str(stage["name"]),
+            slug=await _generate_stage_slug(repository, organization_id, str(stage["name"])),
             order=int(stage["order"]),
             color=str(stage["color"]),
             isDefault=bool(stage["isDefault"]),
@@ -536,6 +654,7 @@ async def create_stage(
         jobPostingId=body.jobPostingId,
         jobPosting=posting,
         name=body.name.strip(),
+        slug=await _generate_stage_slug(repository, organization_id, body.name),
         order=10_000,
         color=None,
         isDefault=False,
@@ -577,6 +696,7 @@ async def update_stage(
 
     if body.name is not None:
         stage.name = body.name.strip()
+        stage.slug = await _generate_stage_slug(repository, organization_id, stage.name, stage.id)
     await _apply_stage_config(db, organization_id, stage, body)
     if body.order is not None:
         stages = await repository.list_stages_for_job(organization_id, stage.jobPostingId)
@@ -657,6 +777,184 @@ async def get_application_detail(
     if application is None:
         raise HTTPException(status_code=404, detail="Application not found")
     return _serialize_detail(application)
+
+
+async def get_stage_workspace(
+    db: AsyncSession,
+    organization_id: str,
+    stage_slug: str,
+) -> StageWorkspaceRead:
+    repository = CandidatePipelineRepository(db)
+    stage = await repository.get_stage_by_slug(organization_id, stage_slug)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    return _serialize_stage_workspace(stage)
+
+
+async def search_interviewers(
+    db: AsyncSession,
+    organization_id: str,
+    search: str | None,
+) -> InterviewerSearchResponse:
+    repository = CandidatePipelineRepository(db)
+    rows = await repository.search_interviewers(organization_id, search, limit=20)
+    return InterviewerSearchResponse(
+        items=[_serialize_interviewer(member, department) for member, department in rows]
+    )
+
+
+def _assignment_date(value: datetime) -> date:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    ist = value.astimezone(UTC) + timedelta(hours=5, minutes=30)
+    return ist.date()
+
+
+async def _build_assignment_warnings(
+    repository: CandidatePipelineRepository,
+    organization_id: str,
+    assignments: list[StageInterviewAssignmentInput],
+) -> list[StageInterviewWarningRead]:
+    member_ids = list({assignment.interviewerMemberId for assignment in assignments})
+    target_dates = list({_assignment_date(assignment.scheduledStartAt) for assignment in assignments})
+    leave_requests = await repository.list_approved_leave_for_members(
+        organization_id,
+        member_ids,
+        target_dates,
+    )
+    holidays = await repository.list_holidays(organization_id, target_dates)
+
+    leave_pairs = {
+        (leave.memberId, target_date)
+        for leave in leave_requests
+        for target_date in target_dates
+        if leave.startDate <= target_date <= leave.endDate
+    }
+    holidays_by_date = {holiday.holidayDate: holiday for holiday in holidays}
+
+    warnings: list[StageInterviewWarningRead] = []
+    for assignment in assignments:
+        target_date = _assignment_date(assignment.scheduledStartAt)
+        messages: list[str] = []
+        if target_date.weekday() == 6:
+            messages.append("Selected date is a Sunday.")
+        if target_date in holidays_by_date:
+            messages.append(f"{holidays_by_date[target_date].name} is marked as a holiday.")
+        if (assignment.interviewerMemberId, target_date) in leave_pairs:
+            messages.append("Interviewer is on approved leave on this date.")
+        if messages:
+            warnings.append(
+                StageInterviewWarningRead(
+                    applicationId=assignment.applicationId,
+                    interviewerMemberId=assignment.interviewerMemberId,
+                    messages=messages,
+                )
+            )
+    return warnings
+
+
+async def preview_stage_interview_warnings(
+    db: AsyncSession,
+    organization_id: str,
+    stage_slug: str,
+    body: StageInterviewWarningRequest,
+) -> StageInterviewWarningResponse:
+    repository = CandidatePipelineRepository(db)
+    stage = await repository.get_stage_by_slug(organization_id, stage_slug)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    warnings = await _build_assignment_warnings(repository, organization_id, body.assignments)
+    return StageInterviewWarningResponse(warnings=warnings)
+
+
+async def assign_stage_interviews(
+    db: AsyncSession,
+    organization_id: str,
+    organization_name: str,
+    actor_member_id: str,
+    stage_slug: str,
+    body: StageInterviewAssignmentRequest,
+) -> StageInterviewAssignmentResponse:
+    repository = CandidatePipelineRepository(db)
+    stage = await repository.get_stage_by_slug(organization_id, stage_slug)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+
+    applications_by_id = {application.id: application for application in stage.applications}
+    member_ids = list({assignment.interviewerMemberId for assignment in body.assignments})
+    members = await repository.get_members_by_ids(organization_id, member_ids)
+    members_by_id = {member.id: member for member in members}
+    missing_member_ids = [member_id for member_id in member_ids if member_id not in members_by_id]
+    if missing_member_ids:
+        raise HTTPException(status_code=400, detail="One or more interviewers were not found")
+
+    warnings = await _build_assignment_warnings(repository, organization_id, body.assignments)
+    email_service = ResendEmailService()
+
+    for assignment in body.assignments:
+        application = applications_by_id.get(assignment.applicationId)
+        if application is None:
+            raise HTTPException(status_code=400, detail="One or more candidates are not in this stage")
+
+        interviewer = members_by_id[assignment.interviewerMemberId]
+        interviewer_email = interviewer.user.email if interviewer.user is not None else None
+        if not interviewer_email:
+            raise HTTPException(status_code=400, detail="Interviewer email is missing")
+
+        starts_at = assignment.scheduledStartAt
+        if starts_at.tzinfo is None:
+            starts_at = starts_at.replace(tzinfo=UTC)
+        starts_at = starts_at.astimezone(UTC)
+        ends_at = starts_at + timedelta(minutes=assignment.durationMinutes)
+        candidate_name = _candidate_display_name(application)
+        interviewer_name = interviewer.user.name or interviewer.user.email
+
+        event = StageEvent(
+            organizationId=organization_id,
+            applicationId=application.id,
+            stageId=stage.id,
+            createdByMemberId=actor_member_id,
+            title=f"{stage.name} interview - {candidate_name}",
+            description=f"Interview for {application.jobPosting.title}",
+            interviewType=InterviewType.OTHER,
+            status=EventStatus.SCHEDULED,
+            scheduledStartAt=starts_at,
+            scheduledEndAt=ends_at,
+        )
+        await repository.add_stage_event(event)
+        await repository.add_stage_event_participant(
+            StageEventParticipant(
+                eventId=event.id,
+                memberId=interviewer.id,
+                role="INTERVIEWER",
+            )
+        )
+
+        starts_at_text = _meeting_time_text(starts_at)
+        await email_service.send_stage_interview_assignment_to_interviewer(
+            to_email=interviewer_email,
+            interviewer_name=interviewer_name,
+            candidate_name=candidate_name,
+            candidate_email=application.candidate.email,
+            stage_name=stage.name,
+            organization_name=organization_name,
+            starts_at_text=starts_at_text,
+        )
+        await email_service.send_stage_interview_assignment_to_candidate(
+            to_email=application.candidate.email,
+            candidate_name=candidate_name,
+            interviewer_name=interviewer_name,
+            organization_name=organization_name,
+            starts_at_text=starts_at_text,
+        )
+        event.emailSentAt = datetime.now(UTC)
+        db.add(event)
+
+    await db.commit()
+    return StageInterviewAssignmentResponse(
+        assignedCount=len(body.assignments),
+        warnings=warnings,
+    )
 
 
 def _candidate_display_name(application: CandidateApplication) -> str:

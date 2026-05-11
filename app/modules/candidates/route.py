@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.candidates.controller import (
+    handle_assign_stage_interviews,
     handle_complete_interview_meeting,
     handle_create_interview_meeting,
     handle_create_stage,
@@ -15,12 +16,16 @@ from app.modules.candidates.controller import (
     handle_get_application_detail,
     handle_get_evaluation_workspace,
     handle_get_pipeline_board,
+    handle_get_stage_workspace,
+    handle_list_interviewers,
     handle_list_job_postings,
     handle_move_application_stage,
+    handle_preview_stage_interview_warnings,
     handle_update_stage,
 )
 from app.modules.candidates.schema import (
     CandidateApplicationDetailRead,
+    InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
     MoveApplicationStageRequest,
@@ -31,6 +36,11 @@ from app.modules.candidates.schema import (
     PipelineStageRead,
     PipelineStageUpdateRequest,
     StageEvaluationWorkspaceRead,
+    StageInterviewAssignmentRequest,
+    StageInterviewAssignmentResponse,
+    StageInterviewWarningRequest,
+    StageInterviewWarningResponse,
+    StageWorkspaceRead,
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
@@ -54,6 +64,50 @@ async def get_pipeline_board(
     jobPostingId: str = Query(min_length=1),
 ) -> PipelineBoardRead:
     return await handle_get_pipeline_board(ctx, db, jobPostingId)
+
+
+@router.get("/pipeline/interviewers", response_model=InterviewerSearchResponse)
+async def list_interviewers(
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    db: AsyncSession = Depends(get_db),
+    search: str | None = Query(default=None, max_length=120),
+) -> InterviewerSearchResponse:
+    return await handle_list_interviewers(ctx, db, search)
+
+
+@router.get("/pipeline/stages/by-slug/{stage_slug}/workspace", response_model=StageWorkspaceRead)
+async def get_stage_workspace(
+    stage_slug: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    db: AsyncSession = Depends(get_db),
+) -> StageWorkspaceRead:
+    return await handle_get_stage_workspace(ctx, db, stage_slug)
+
+
+@router.post(
+    "/pipeline/stages/by-slug/{stage_slug}/assignments/warnings",
+    response_model=StageInterviewWarningResponse,
+)
+async def preview_stage_interview_warnings(
+    stage_slug: str,
+    body: StageInterviewWarningRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    db: AsyncSession = Depends(get_db),
+) -> StageInterviewWarningResponse:
+    return await handle_preview_stage_interview_warnings(ctx, db, stage_slug, body)
+
+
+@router.post(
+    "/pipeline/stages/by-slug/{stage_slug}/assignments",
+    response_model=StageInterviewAssignmentResponse,
+)
+async def assign_stage_interviews(
+    stage_slug: str,
+    body: StageInterviewAssignmentRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> StageInterviewAssignmentResponse:
+    return await handle_assign_stage_interviews(ctx, db, stage_slug, body)
 
 
 @router.patch("/applications/{application_id}/stage", response_model=PipelineApplicationRead)

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, selectinload
+from datetime import date
 
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import contains_eager, joinedload, selectinload
+
+from app.models.department import Department
+from app.models.department_member import DepartmentMember
+from app.models.leave import Holiday, LeaveRequest
 from app.models.member import Member
 from app.models.recruitment import (
     ApplicationStageHistory,
@@ -13,7 +18,9 @@ from app.models.recruitment import (
     StageEvaluationCategory,
     StageEvaluationWorkspace,
     StageEvent,
+    StageEventParticipant,
 )
+from app.models.user import User
 
 
 class CandidatePipelineRepository:
@@ -66,6 +73,12 @@ class CandidatePipelineRepository:
         )
         return list(result.unique().scalars().all())
 
+    async def list_stage_slugs(self, organization_id: str) -> list[str]:
+        result = await self.db.execute(
+            select(PipelineStage.slug).where(PipelineStage.organizationId == organization_id)
+        )
+        return [str(slug) for slug in result.scalars().all()]
+
     async def get_stage(
         self,
         organization_id: str,
@@ -87,6 +100,122 @@ class CandidatePipelineRepository:
             )
         )
         return result.scalar_one_or_none()
+
+    async def get_stage_by_slug(
+        self,
+        organization_id: str,
+        stage_slug: str,
+    ) -> PipelineStage | None:
+        result = await self.db.execute(
+            select(PipelineStage)
+            .options(
+                selectinload(PipelineStage.applications).options(
+                    joinedload(CandidateApplication.candidate),
+                    joinedload(CandidateApplication.jobPosting),
+                    selectinload(CandidateApplication.stageEvents)
+                    .selectinload(StageEvent.participants)
+                    .joinedload(StageEventParticipant.member)
+                    .joinedload(Member.user),
+                ),
+                selectinload(PipelineStage.evaluationCategories),
+                selectinload(PipelineStage.evaluationWorkspace),
+                joinedload(PipelineStage.jobPosting),
+            )
+            .where(
+                PipelineStage.organizationId == organization_id,
+                PipelineStage.slug == stage_slug,
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
+    async def search_interviewers(
+        self,
+        organization_id: str,
+        search: str | None,
+        limit: int = 20,
+    ) -> list[tuple[Member, str | None]]:
+        query = (
+            select(Member, func.min(Department.name))
+            .join(User, Member.userId == User.id)
+            .options(contains_eager(Member.user))
+            .outerjoin(DepartmentMember, DepartmentMember.memberId == Member.id)
+            .outerjoin(Department, Department.id == DepartmentMember.departmentId)
+            .where(Member.organizationId == organization_id)
+            .group_by(Member.id, User.id)
+            .order_by(User.name.asc().nullslast(), User.email.asc())
+            .limit(limit)
+        )
+        if search and search.strip():
+            term = f"%{search.strip()}%"
+            query = query.where(
+                or_(
+                    func.lower(User.name).like(func.lower(term)),
+                    func.lower(User.email).like(func.lower(term)),
+                )
+            )
+        result = await self.db.execute(query)
+        return [(member, department) for member, department in result.all()]
+
+    async def get_members_by_ids(
+        self,
+        organization_id: str,
+        member_ids: list[str],
+    ) -> list[Member]:
+        if not member_ids:
+            return []
+        result = await self.db.execute(
+            select(Member)
+            .options(joinedload(Member.user))
+            .where(
+                Member.organizationId == organization_id,
+                Member.id.in_(member_ids),
+            )
+        )
+        return list(result.unique().scalars().all())
+
+    async def list_approved_leave_for_members(
+        self,
+        organization_id: str,
+        member_ids: list[str],
+        target_dates: list[date],
+    ) -> list[LeaveRequest]:
+        if not member_ids or not target_dates:
+            return []
+        result = await self.db.execute(
+            select(LeaveRequest).where(
+                LeaveRequest.organizationId == organization_id,
+                LeaveRequest.memberId.in_(member_ids),
+                LeaveRequest.status == "APPROVED",
+                LeaveRequest.deletedAt.is_(None),
+                or_(
+                    *[
+                        and_(
+                            LeaveRequest.startDate <= target_date,
+                            LeaveRequest.endDate >= target_date,
+                        )
+                        for target_date in target_dates
+                    ]
+                ),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def list_holidays(
+        self,
+        organization_id: str,
+        target_dates: list[date],
+    ) -> list[Holiday]:
+        if not target_dates:
+            return []
+        result = await self.db.execute(
+            select(Holiday).where(
+                Holiday.organizationId == organization_id,
+                Holiday.holidayDate.in_(target_dates),
+                Holiday.isHoliday.is_(True),
+                Holiday.deletedAt.is_(None),
+            )
+        )
+        return list(result.scalars().all())
 
     async def list_stage_categories(
         self,
@@ -255,6 +384,14 @@ class CandidatePipelineRepository:
         self.db.add(event)
         await self.db.flush()
         return event
+
+    async def add_stage_event_participant(
+        self,
+        participant: StageEventParticipant,
+    ) -> StageEventParticipant:
+        self.db.add(participant)
+        await self.db.flush()
+        return participant
 
     async def get_latest_stage_event(
         self,

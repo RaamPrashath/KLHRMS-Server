@@ -76,6 +76,7 @@ class PipelineStageRead(BaseModel):
     id: str
     jobPostingId: str
     name: str
+    slug: str
     order: int
     color: str | None
     isDefault: bool
@@ -98,6 +99,72 @@ class PipelineStageRead(BaseModel):
 class PipelineBoardRead(BaseModel):
     jobPostingId: str
     stages: list[PipelineStageRead]
+
+
+class StageWorkspaceInterviewerRead(BaseModel):
+    memberId: str
+    name: str
+    email: str
+    department: str | None = None
+
+
+class StageWorkspaceAssignmentRead(BaseModel):
+    eventId: str
+    interviewer: StageWorkspaceInterviewerRead | None
+    scheduledStartAt: datetime
+    scheduledEndAt: datetime
+    emailSentAt: datetime | None
+
+
+class StageWorkspaceCandidateRead(BaseModel):
+    applicationId: str
+    candidate: CandidateSummaryRead
+    jobTitle: str
+    source: ApplicationSource
+    score: int | None
+    appliedAt: datetime
+    currentAssignment: StageWorkspaceAssignmentRead | None = None
+
+
+class StageWorkspaceRead(BaseModel):
+    stage: PipelineStageRead
+    jobPosting: PipelineJobPostingRead
+    candidateCount: int
+    candidates: list[StageWorkspaceCandidateRead]
+
+
+class InterviewerSearchResponse(BaseModel):
+    items: list[StageWorkspaceInterviewerRead]
+
+
+class StageInterviewAssignmentInput(BaseModel):
+    applicationId: str = Field(min_length=1)
+    interviewerMemberId: str = Field(min_length=1)
+    scheduledStartAt: datetime
+    durationMinutes: int = Field(default=30, ge=15, le=240)
+
+
+class StageInterviewWarningRead(BaseModel):
+    applicationId: str
+    interviewerMemberId: str
+    messages: list[str]
+
+
+class StageInterviewWarningRequest(BaseModel):
+    assignments: list[StageInterviewAssignmentInput] = Field(default_factory=list)
+
+
+class StageInterviewWarningResponse(BaseModel):
+    warnings: list[StageInterviewWarningRead]
+
+
+class StageInterviewAssignmentRequest(BaseModel):
+    assignments: list[StageInterviewAssignmentInput] = Field(min_length=1)
+
+
+class StageInterviewAssignmentResponse(BaseModel):
+    assignedCount: int
+    warnings: list[StageInterviewWarningRead]
 
 
 class MoveApplicationStageRequest(BaseModel):

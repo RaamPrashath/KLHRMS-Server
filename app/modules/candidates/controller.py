@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.candidates import service
 from app.modules.candidates.schema import (
     CandidateApplicationDetailRead,
+    InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
     MoveApplicationStageRequest,
@@ -15,6 +16,11 @@ from app.modules.candidates.schema import (
     PipelineStageRead,
     PipelineStageUpdateRequest,
     StageEvaluationWorkspaceRead,
+    StageInterviewAssignmentRequest,
+    StageInterviewAssignmentResponse,
+    StageInterviewWarningRequest,
+    StageInterviewWarningResponse,
+    StageWorkspaceRead,
 )
 from app.shared.deps.organization_member import MemberContext
 
@@ -105,6 +111,47 @@ async def handle_get_application_detail(
     application_id: str,
 ) -> CandidateApplicationDetailRead:
     return await service.get_application_detail(db, ctx.organization.id, application_id)
+
+
+async def handle_get_stage_workspace(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_slug: str,
+) -> StageWorkspaceRead:
+    return await service.get_stage_workspace(db, ctx.organization.id, stage_slug)
+
+
+async def handle_list_interviewers(
+    ctx: MemberContext,
+    db: AsyncSession,
+    search: str | None,
+) -> InterviewerSearchResponse:
+    return await service.search_interviewers(db, ctx.organization.id, search)
+
+
+async def handle_preview_stage_interview_warnings(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_slug: str,
+    body: StageInterviewWarningRequest,
+) -> StageInterviewWarningResponse:
+    return await service.preview_stage_interview_warnings(db, ctx.organization.id, stage_slug, body)
+
+
+async def handle_assign_stage_interviews(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_slug: str,
+    body: StageInterviewAssignmentRequest,
+) -> StageInterviewAssignmentResponse:
+    return await service.assign_stage_interviews(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        stage_slug,
+        body,
+    )
 
 
 async def handle_create_interview_meeting(
