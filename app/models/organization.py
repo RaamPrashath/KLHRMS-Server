@@ -39,6 +39,16 @@ class Organization(Base):
         back_populates="organization",
     )
 
+    stageEvaluationCategories = relationship(
+        "StageEvaluationCategory",
+        back_populates="organization",
+    )
+
+    stageEvaluationWorkspaces = relationship(
+        "StageEvaluationWorkspace",
+        back_populates="organization",
+    )
+
     jobPostings = relationship(
         "JobPosting",
         back_populates="organization",

@@ -96,6 +96,26 @@ class Settings(BaseSettings):
         alias="CALENDARIFIC_API_KEY",
     )
 
+    google_client_id: str = Field(
+        default=os.getenv("GOOGLE_CLIENT_ID", ""),
+        alias="GOOGLE_CLIENT_ID",
+    )
+
+    google_client_secret: str = Field(
+        default=os.getenv("GOOGLE_CLIENT_SECRET", ""),
+        alias="GOOGLE_CLIENT_SECRET",
+    )
+
+    resend_api_key: str = Field(
+        default=os.getenv("RESEND_API_KEY", ""),
+        alias="RESEND_API_KEY",
+    )
+
+    resend_from_email: str = Field(
+        default=os.getenv("RESEND_FROM_EMAIL", "KL HRMS <onboarding@resend.dev>"),
+        alias="RESEND_FROM_EMAIL",
+    )
+
     @field_validator("database_url", mode="before")
     @classmethod
     def validate_database_url(cls, value: str) -> str:
