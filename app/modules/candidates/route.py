@@ -6,9 +6,14 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.candidates.controller import (
+    handle_complete_interview_meeting,
+    handle_create_interview_meeting,
     handle_create_stage,
     handle_delete_stage,
+    handle_extend_stage_due_date,
+    handle_generate_evaluation_workspace,
     handle_get_application_detail,
+    handle_get_evaluation_workspace,
     handle_get_pipeline_board,
     handle_list_job_postings,
     handle_move_application_stage,
@@ -16,6 +21,8 @@ from app.modules.candidates.controller import (
 )
 from app.modules.candidates.schema import (
     CandidateApplicationDetailRead,
+    InterviewMeetingCreateRequest,
+    InterviewMeetingRead,
     MoveApplicationStageRequest,
     PipelineApplicationRead,
     PipelineBoardRead,
@@ -23,6 +30,7 @@ from app.modules.candidates.schema import (
     PipelineStageCreateRequest,
     PipelineStageRead,
     PipelineStageUpdateRequest,
+    StageEvaluationWorkspaceRead,
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
@@ -67,6 +75,26 @@ async def get_application_detail(
     return await handle_get_application_detail(ctx, db, application_id)
 
 
+@router.post("/applications/{application_id}/interview-meetings", response_model=InterviewMeetingRead)
+async def create_interview_meeting(
+    application_id: str,
+    body: InterviewMeetingCreateRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> InterviewMeetingRead:
+    return await handle_create_interview_meeting(ctx, db, application_id, body)
+
+
+@router.post("/applications/{application_id}/interview-meetings/{event_id}/complete", response_model=InterviewMeetingRead)
+async def complete_interview_meeting(
+    application_id: str,
+    event_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> InterviewMeetingRead:
+    return await handle_complete_interview_meeting(ctx, db, application_id, event_id)
+
+
 @router.post("/pipeline/stages", response_model=PipelineStageRead)
 async def create_pipeline_stage(
     body: PipelineStageCreateRequest,
@@ -84,6 +112,33 @@ async def update_pipeline_stage(
     db: AsyncSession = Depends(get_db),
 ) -> PipelineStageRead:
     return await handle_update_stage(ctx, db, stage_id, body)
+
+
+@router.post("/pipeline/stages/{stage_id}/extend", response_model=PipelineStageRead)
+async def extend_pipeline_stage_due_date(
+    stage_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> PipelineStageRead:
+    return await handle_extend_stage_due_date(ctx, db, stage_id)
+
+
+@router.get("/pipeline/stages/{stage_id}/evaluation-workspace", response_model=StageEvaluationWorkspaceRead)
+async def get_evaluation_workspace(
+    stage_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    db: AsyncSession = Depends(get_db),
+) -> StageEvaluationWorkspaceRead:
+    return await handle_get_evaluation_workspace(ctx, db, stage_id)
+
+
+@router.post("/pipeline/stages/{stage_id}/evaluation-workspace", response_model=StageEvaluationWorkspaceRead)
+async def generate_evaluation_workspace(
+    stage_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> StageEvaluationWorkspaceRead:
+    return await handle_generate_evaluation_workspace(ctx, db, stage_id)
 
 
 @router.delete("/pipeline/stages/{stage_id}", status_code=204)

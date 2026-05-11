@@ -519,6 +519,46 @@ class PipelineStage(Base):
         default=StageType.DEFAULT,
     )
 
+    meetingEnabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    offerLetterEnabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    evaluationEnabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    evaluationType: Mapped[str | None] = mapped_column(String(32))
+
+    evaluationIncludeTotal: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    evaluationIncludeAnalysis: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    dueDate: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
+    extendToNextWorkingDay: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -537,6 +577,20 @@ class PipelineStage(Base):
         "StageEvent",
         back_populates="stage",
         cascade="all, delete-orphan",
+    )
+
+    evaluationWorkspace = relationship(
+        "StageEvaluationWorkspace",
+        back_populates="stage",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+    evaluationCategories = relationship(
+        "StageEvaluationCategory",
+        back_populates="stage",
+        cascade="all, delete-orphan",
+        order_by="StageEvaluationCategory.order",
     )
 
     organization = relationship(
@@ -572,6 +626,166 @@ class PipelineStage(Base):
             "order",
             name="uq_pipeline_stage_order",
         ),
+    )
+
+
+# =========================================================
+# STAGE EVALUATION WORKSPACE
+# =========================================================
+
+class StageEvaluationWorkspace(Base):
+    __tablename__ = "stage_evaluation_workspace"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    stageId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("pipeline_stage.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    googleSpreadsheetId: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    googleSpreadsheetUrl: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    googleSheetId: Mapped[int | None] = mapped_column(Integer)
+
+    googleSheetTitle: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+
+    createdByMemberId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization = relationship(
+        "Organization",
+        back_populates="stageEvaluationWorkspaces",
+    )
+
+    stage = relationship(
+        "PipelineStage",
+        back_populates="evaluationWorkspace",
+    )
+
+    createdBy = relationship(
+        "Member",
+        foreign_keys=[createdByMemberId],
+        back_populates="createdEvaluationWorkspaces",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "stageId",
+            name="uq_stage_evaluation_workspace_stage",
+        ),
+        UniqueConstraint(
+            "organizationId",
+            "stageId",
+            name="uq_stage_evaluation_workspace_org_stage",
+        ),
+        Index("ix_stage_evaluation_workspace_org_stage", "organizationId", "stageId"),
+    )
+
+
+# =========================================================
+# STAGE EVALUATION CATEGORY
+# =========================================================
+
+class StageEvaluationCategory(Base):
+    __tablename__ = "stage_evaluation_category"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    stageId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("pipeline_stage.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    name: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False,
+    )
+
+    order: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization = relationship(
+        "Organization",
+        back_populates="stageEvaluationCategories",
+    )
+
+    stage = relationship(
+        "PipelineStage",
+        back_populates="evaluationCategories",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "stageId",
+            "order",
+            name="uq_stage_evaluation_category_order",
+        ),
+        Index("ix_stage_evaluation_category_org_stage", "organizationId", "stageId"),
     )
 
 
@@ -848,9 +1062,15 @@ class StageEvent(Base):
 
     meetingUrl: Mapped[str | None] = mapped_column(String)
 
+    googleCalendarEventId: Mapped[str | None] = mapped_column(String(255))
+
+    googleCalendarEventUrl: Mapped[str | None] = mapped_column(Text)
+
     location: Mapped[str | None] = mapped_column(String)
 
     notes: Mapped[str | None] = mapped_column(Text)
+
+    emailSentAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),

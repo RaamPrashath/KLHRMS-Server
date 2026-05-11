@@ -24,6 +24,7 @@ from app.models.recruitment import (
     JobPosting,
     JobRequisition,
     PipelineStage,
+    StageEvaluationWorkspace,
     CandidateApplication,
     ApplicationStageHistory,
     RequisitionApproval,

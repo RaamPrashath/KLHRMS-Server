@@ -1,19 +1,38 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.integrations.email.resend_service import ResendEmailService
+from app.integrations.google.calendar_service import GoogleCalendarService
+from app.integrations.google.sheets_service import (
+    AnalysisMergeRange,
+    GoogleSheetsService,
+    SheetValueBlock,
+    make_unique_sheet_titles,
+    sanitize_sheet_title,
+)
 from app.models.recruitment import (
     ApplicationStageHistory,
     Candidate,
     CandidateApplication,
-    JobPosting,
+    EventStatus,
+    InterviewType,
     PipelineStage,
+    StageEvaluationCategory,
+    StageEvaluationWorkspace,
+    StageEvent,
 )
 from app.modules.candidates.repository import CandidatePipelineRepository
 from app.modules.candidates.schema import (
+    ApplicationInterviewMeetingRead,
     CandidateApplicationDetailRead,
     CandidateSummaryRead,
+    InterviewMeetingCreateRequest,
+    InterviewMeetingRead,
     MoveApplicationStageRequest,
     PipelineApplicationRead,
     PipelineBoardRead,
@@ -22,8 +41,10 @@ from app.modules.candidates.schema import (
     PipelineStageHistoryRead,
     PipelineStageRead,
     PipelineStageUpdateRequest,
+    StageEvaluationCategoryInput,
+    StageEvaluationCategoryRead,
+    StageEvaluationWorkspaceRead,
 )
-
 
 DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
     {"name": "Applied", "order": 1, "color": "#6366f1", "isDefault": True, "isFinal": False},
@@ -37,8 +58,47 @@ DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
 ]
 
 
+@dataclass(frozen=True)
+class AnalysisSheetData:
+    values: list[list[str]]
+    merge_ranges: list[AnalysisMergeRange]
+
+
 def _is_protected_stage(stage: PipelineStage) -> bool:
     return stage.name.strip().lower() == "applied" and stage.order == 1
+
+
+def _next_working_day_from_stage(stage: PipelineStage) -> None:
+    if stage.dueDate is None:
+        raise HTTPException(status_code=400, detail="Due date is not configured for this stage")
+    next_date = stage.dueDate + timedelta(days=1)
+    while next_date.weekday() == 6:
+        next_date += timedelta(days=1)
+    stage.dueDate = next_date
+
+
+def _serialize_category(category: StageEvaluationCategory) -> StageEvaluationCategoryRead:
+    return StageEvaluationCategoryRead(
+        id=category.id,
+        stageId=category.stageId,
+        name=category.name,
+        order=category.order,
+    )
+
+
+def _serialize_workspace(workspace: StageEvaluationWorkspace | None) -> StageEvaluationWorkspaceRead | None:
+    if workspace is None:
+        return None
+    return StageEvaluationWorkspaceRead(
+        id=workspace.id,
+        stageId=workspace.stageId,
+        googleSpreadsheetId=workspace.googleSpreadsheetId,
+        googleSpreadsheetUrl=workspace.googleSpreadsheetUrl,
+        googleSheetId=workspace.googleSheetId,
+        googleSheetTitle=workspace.googleSheetTitle,
+        createdByMemberId=workspace.createdByMemberId,
+        createdAt=workspace.createdAt,
+    )
 
 
 def _serialize_candidate(candidate: Candidate) -> CandidateSummaryRead:
@@ -67,6 +127,9 @@ def _serialize_application(
         source=application.source,
         appliedDate=application.appliedAt,
         resumeUrl=application.candidate.resumeUrl,
+        interviewMeeting=_serialize_application_interview_meeting(
+            _latest_stage_event(application, stage.id)
+        ),
     )
 
 
@@ -85,6 +148,20 @@ def _serialize_stage(stage: PipelineStage) -> PipelineStageRead:
         isDefault=stage.isDefault,
         isFinal=stage.isFinal,
         isProtected=_is_protected_stage(stage),
+        stageType=stage.stageType.value,
+        meetingEnabled=stage.meetingEnabled,
+        offerLetterEnabled=stage.offerLetterEnabled,
+        evaluationEnabled=stage.evaluationEnabled,
+        evaluationType=stage.evaluationType,
+        evaluationIncludeTotal=stage.evaluationIncludeTotal,
+        evaluationIncludeAnalysis=stage.evaluationIncludeAnalysis,
+        dueDate=stage.dueDate,
+        extendToNextWorkingDay=stage.extendToNextWorkingDay,
+        evaluationCategories=[
+            _serialize_category(category)
+            for category in sorted(stage.evaluationCategories or [], key=lambda item: item.order)
+        ],
+        evaluationWorkspace=_serialize_workspace(stage.evaluationWorkspace),
         applications=[
             _serialize_application(application, stage) for application in applications
         ],
@@ -106,6 +183,72 @@ def _serialize_history(history: ApplicationStageHistory) -> PipelineStageHistory
         movedByName=moved_by_name,
         note=history.note,
         createdAt=history.createdAt,
+    )
+
+
+def _serialize_interview_meeting(event: StageEvent) -> InterviewMeetingRead:
+    if event.scheduledStartAt is None or event.scheduledEndAt is None:
+        raise HTTPException(status_code=500, detail="Interview meeting is missing required metadata")
+    return InterviewMeetingRead(
+        id=event.id,
+        applicationId=event.applicationId,
+        stageId=event.stageId,
+        title=event.title,
+        status=_computed_interview_status(event),
+        scheduledStartAt=event.scheduledStartAt,
+        scheduledEndAt=event.scheduledEndAt,
+        meetingUrl=event.meetingUrl,
+        googleCalendarEventId=event.googleCalendarEventId,
+        googleCalendarEventUrl=event.googleCalendarEventUrl,
+        emailSentAt=event.emailSentAt,
+        createdAt=event.createdAt,
+    )
+
+
+def _latest_stage_event(application: CandidateApplication, stage_id: str) -> StageEvent | None:
+    events = [
+        event
+        for event in application.__dict__.get("stageEvents", [])
+        if event.stageId == stage_id and event.scheduledStartAt is not None and event.scheduledEndAt is not None
+    ]
+    if not events:
+        return None
+    return max(events, key=lambda event: event.createdAt or event.scheduledStartAt)
+
+
+def _computed_interview_status(event: StageEvent, now: datetime | None = None) -> str:
+    if event.status == EventStatus.COMPLETED:
+        return "COMPLETED"
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    current = current.astimezone(UTC)
+    start = event.scheduledStartAt
+    end = event.scheduledEndAt
+    if start is None or end is None:
+        return "PENDING"
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=UTC)
+    if current < start.astimezone(UTC):
+        return "PENDING"
+    if current <= end.astimezone(UTC):
+        return "ONGOING"
+    return "COMPLETED"
+
+
+def _serialize_application_interview_meeting(
+    event: StageEvent | None,
+) -> ApplicationInterviewMeetingRead | None:
+    if event is None or event.scheduledStartAt is None or event.scheduledEndAt is None:
+        return None
+    return ApplicationInterviewMeetingRead(
+        id=event.id,
+        status=_computed_interview_status(event),
+        scheduledStartAt=event.scheduledStartAt,
+        scheduledEndAt=event.scheduledEndAt,
+        meetingUrl=event.meetingUrl,
     )
 
 
@@ -170,6 +313,103 @@ async def _normalize_stage_order(db: AsyncSession, stages: list[PipelineStage]) 
     await db.flush()
 
 
+async def _sync_evaluation_categories(
+    db: AsyncSession,
+    organization_id: str,
+    stage: PipelineStage,
+    category_inputs: list[StageEvaluationCategoryInput],
+) -> None:
+    trimmed_categories = [
+        category
+        for category in category_inputs
+        if category.name.strip()
+    ]
+    names = [category.name.strip().lower() for category in trimmed_categories]
+    if len(names) != len(set(names)):
+        raise HTTPException(status_code=400, detail="Evaluation category names must be unique")
+
+    existing = list(stage.__dict__.get("evaluationCategories", []))
+    existing_by_id = {category.id: category for category in existing}
+    incoming_ids = {category.id for category in trimmed_categories if category.id is not None}
+
+    for category in existing:
+        if category.id not in incoming_ids:
+            await db.delete(category)
+        else:
+            category.order = -(category.order + 1000)
+            db.add(category)
+    await db.flush()
+
+    for index, category_input in enumerate(trimmed_categories, start=1):
+        if category_input.id is not None and category_input.id in existing_by_id:
+            category = existing_by_id[category_input.id]
+            category.name = category_input.name.strip()
+            category.order = index
+            db.add(category)
+        else:
+            db.add(
+                StageEvaluationCategory(
+                    organizationId=organization_id,
+                    stageId=stage.id,
+                    name=category_input.name.strip(),
+                    order=index,
+                )
+            )
+    await db.flush()
+
+
+async def _clear_evaluation_categories(db: AsyncSession, stage: PipelineStage) -> None:
+    categories = stage.__dict__.get("evaluationCategories", [])
+    for category in list(categories):
+        await db.delete(category)
+    await db.flush()
+
+
+async def _apply_stage_config(
+    db: AsyncSession,
+    organization_id: str,
+    stage: PipelineStage,
+    body: PipelineStageCreateRequest | PipelineStageUpdateRequest,
+) -> None:
+    if body.meetingEnabled is not None:
+        stage.meetingEnabled = body.meetingEnabled
+    if body.offerLetterEnabled is not None:
+        stage.offerLetterEnabled = body.offerLetterEnabled
+    if body.evaluationEnabled is not None:
+        stage.evaluationEnabled = body.evaluationEnabled
+    if body.evaluationType is not None:
+        stage.evaluationType = body.evaluationType
+    if body.evaluationIncludeTotal is not None:
+        stage.evaluationIncludeTotal = body.evaluationIncludeTotal
+    if body.evaluationIncludeAnalysis is not None:
+        stage.evaluationIncludeAnalysis = body.evaluationIncludeAnalysis
+
+    if isinstance(body, PipelineStageUpdateRequest) and body.dueDateEnabled is False:
+        stage.dueDate = None
+        stage.extendToNextWorkingDay = False
+    elif body.dueDate is not None:
+        stage.dueDate = body.dueDate
+
+    if body.extendToNextWorkingDay is not None:
+        stage.extendToNextWorkingDay = body.extendToNextWorkingDay and stage.dueDate is not None
+
+    if stage.meetingEnabled and stage.dueDate is None:
+        raise HTTPException(status_code=400, detail="Due date is required when online meeting is enabled")
+
+    if not stage.evaluationEnabled:
+        stage.evaluationType = None
+        stage.evaluationIncludeTotal = False
+        stage.evaluationIncludeAnalysis = False
+        await _clear_evaluation_categories(db, stage)
+        return
+
+    stage.evaluationType = stage.evaluationType or "NUMERIC"
+    if stage.evaluationType != "NUMERIC":
+        stage.evaluationIncludeTotal = False
+    if body.evaluationCategories is not None:
+        await _sync_evaluation_categories(db, organization_id, stage, body.evaluationCategories)
+
+
 async def list_job_postings(
     db: AsyncSession,
     organization_id: str,
@@ -202,7 +442,9 @@ async def get_pipeline_board(
 async def move_application_stage(
     db: AsyncSession,
     organization_id: str,
+    organization_name: str,
     actor_member_id: str,
+    actor_user_id: str,
     application_id: str,
     body: MoveApplicationStageRequest,
 ) -> PipelineApplicationRead:
@@ -229,6 +471,38 @@ async def move_application_stage(
     )
     db.add(application)
     await repository.add_history(history)
+    if target_stage.evaluationEnabled:
+        workspace = await _ensure_stage_evaluation_workspace(
+            db,
+            repository,
+            organization_id,
+            organization_name,
+            actor_member_id,
+            actor_user_id,
+            target_stage,
+        )
+        sheets_service = GoogleSheetsService(db)
+        values = await sheets_service.get_values(
+            actor_user_id,
+            workspace.googleSpreadsheetId,
+            workspace.googleSheetTitle,
+        )
+        if application.candidate.email.lower() not in _existing_candidate_emails(values):
+            await sheets_service.append_values(
+                actor_user_id,
+                workspace.googleSpreadsheetId,
+                workspace.googleSheetTitle,
+                [_stage_candidate_row(target_stage, application, row_number=len(values) + 1)],
+            )
+        await _update_analysis_sheet(
+            db,
+            repository,
+            sheets_service,
+            organization_id,
+            actor_user_id,
+            target_stage.jobPostingId,
+            workspace.googleSpreadsheetId,
+        )
     await db.commit()
 
     refreshed = await repository.get_application(organization_id, application_id)
@@ -240,6 +514,9 @@ async def move_application_stage(
 async def create_stage(
     db: AsyncSession,
     organization_id: str,
+    organization_name: str,
+    actor_member_id: str,
+    actor_user_id: str,
     body: PipelineStageCreateRequest,
 ) -> PipelineStageRead:
     repository = CandidatePipelineRepository(db)
@@ -251,13 +528,13 @@ async def create_stage(
     insert_index = len(stages)
     if body.afterStageId is not None:
         after_stage = next((stage for stage in stages if stage.id == body.afterStageId), None)
-        if after_stage is None:
-            raise HTTPException(status_code=404, detail="Anchor stage not found")
-        insert_index = sorted(stages, key=lambda stage: stage.order).index(after_stage) + 1
+        if after_stage is not None:
+            insert_index = sorted(stages, key=lambda stage: stage.order).index(after_stage) + 1
 
     new_stage = PipelineStage(
         organizationId=organization_id,
         jobPostingId=body.jobPostingId,
+        jobPosting=posting,
         name=body.name.strip(),
         order=10_000,
         color=None,
@@ -265,9 +542,19 @@ async def create_stage(
         isFinal=False,
     )
     await repository.add_stage(new_stage)
+    await _apply_stage_config(db, organization_id, new_stage, body)
     ordered = sorted(stages, key=lambda stage: stage.order)
     ordered.insert(insert_index, new_stage)
     await _normalize_stage_order(db, ordered)
+    await _sync_stage_evaluation_workspace_if_needed(
+        db,
+        repository,
+        organization_id,
+        organization_name,
+        actor_member_id,
+        actor_user_id,
+        new_stage,
+    )
     await db.commit()
     stages = await repository.list_stages_for_job(organization_id, body.jobPostingId)
     created = next(stage for stage in stages if stage.id == new_stage.id)
@@ -277,6 +564,9 @@ async def create_stage(
 async def update_stage(
     db: AsyncSession,
     organization_id: str,
+    organization_name: str,
+    actor_member_id: str,
+    actor_user_id: str,
     stage_id: str,
     body: PipelineStageUpdateRequest,
 ) -> PipelineStageRead:
@@ -287,6 +577,7 @@ async def update_stage(
 
     if body.name is not None:
         stage.name = body.name.strip()
+    await _apply_stage_config(db, organization_id, stage, body)
     if body.order is not None:
         stages = await repository.list_stages_for_job(organization_id, stage.jobPostingId)
         ordered = [item for item in sorted(stages, key=lambda item: item.order) if item.id != stage.id]
@@ -294,6 +585,35 @@ async def update_stage(
         ordered.insert(target_index, stage)
         await _normalize_stage_order(db, ordered)
 
+    db.add(stage)
+    await _sync_stage_evaluation_workspace_if_needed(
+        db,
+        repository,
+        organization_id,
+        organization_name,
+        actor_member_id,
+        actor_user_id,
+        stage,
+    )
+    await db.commit()
+    stages = await repository.list_stages_for_job(organization_id, stage.jobPostingId)
+    updated = next(item for item in stages if item.id == stage.id)
+    return _serialize_stage(updated)
+
+
+async def extend_stage_due_date(
+    db: AsyncSession,
+    organization_id: str,
+    stage_id: str,
+) -> PipelineStageRead:
+    repository = CandidatePipelineRepository(db)
+    stage = await repository.get_stage(organization_id, stage_id)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if not stage.extendToNextWorkingDay:
+        raise HTTPException(status_code=400, detail="Extension is not enabled for this stage")
+
+    _next_working_day_from_stage(stage)
     db.add(stage)
     await db.commit()
     stages = await repository.list_stages_for_job(organization_id, stage.jobPostingId)
@@ -337,3 +657,660 @@ async def get_application_detail(
     if application is None:
         raise HTTPException(status_code=404, detail="Application not found")
     return _serialize_detail(application)
+
+
+def _candidate_display_name(application: CandidateApplication) -> str:
+    return _candidate_name(application) or application.candidate.email
+
+
+def _meeting_time_text(starts_at: datetime) -> str:
+    value = starts_at
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    ist = value.astimezone(UTC) + timedelta(hours=5, minutes=30)
+    return ist.strftime("%d %b %Y, %I:%M %p IST")
+
+
+async def create_interview_meeting(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    actor_user_id: str,
+    application_id: str,
+    body: InterviewMeetingCreateRequest,
+) -> InterviewMeetingRead:
+    repository = CandidatePipelineRepository(db)
+    application = await repository.get_application(organization_id, application_id)
+    if application is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    stage = application.pipelineStage
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if not stage.meetingEnabled:
+        raise HTTPException(status_code=400, detail="Meetings are not enabled for this stage")
+
+    latest_event = await repository.get_latest_stage_event(
+        organization_id,
+        application.id,
+        stage.id,
+    )
+
+    starts_at = body.scheduledStartAt if body.mode == "SCHEDULE" else datetime.now(UTC)
+    if starts_at is None:
+        raise HTTPException(status_code=400, detail="Start time is required")
+    if starts_at.tzinfo is None:
+        starts_at = starts_at.replace(tzinfo=UTC)
+    starts_at = starts_at.astimezone(UTC)
+    ends_at = starts_at + timedelta(minutes=body.durationMinutes)
+
+    candidate_name = _candidate_display_name(application)
+    title = (body.title or f"{stage.name} interview - {candidate_name}").strip()
+    description_parts = [
+        f"Interview for {application.jobPosting.title}",
+        f"Candidate: {candidate_name}",
+        f"Stage: {stage.name}",
+    ]
+    if body.notes:
+        description_parts.append(f"Notes: {body.notes.strip()}")
+
+    if body.mode == "SCHEDULE":
+        calendar_service = GoogleCalendarService(db)
+        meeting = await calendar_service.create_meet_event(
+            user_id=actor_user_id,
+            summary=title,
+            description="\n".join(description_parts),
+            starts_at=starts_at,
+            ends_at=ends_at,
+        )
+
+        await ResendEmailService().send_interview_invite(
+            to_email=application.candidate.email,
+            candidate_name=candidate_name,
+            job_title=application.jobPosting.title,
+            stage_name=stage.name,
+            starts_at_text=_meeting_time_text(meeting.starts_at),
+            meeting_url=meeting.meeting_url,
+        )
+
+        event = (
+            None
+            if latest_event is not None and latest_event.status == EventStatus.COMPLETED
+            else latest_event
+        ) or StageEvent(
+            organizationId=organization_id,
+            applicationId=application.id,
+            stageId=stage.id,
+            createdByMemberId=actor_member_id,
+            title=title,
+            description="\n".join(description_parts),
+            interviewType=InterviewType.OTHER,
+            status=EventStatus.SCHEDULED,
+        )
+        event.title = title
+        event.description = "\n".join(description_parts)
+        event.status = EventStatus.SCHEDULED
+        event.scheduledStartAt = meeting.starts_at
+        event.scheduledEndAt = meeting.ends_at
+        event.notes = body.notes
+        event.meetingUrl = meeting.meeting_url
+        event.googleCalendarEventId = meeting.event_id
+        event.googleCalendarEventUrl = meeting.html_link
+        event.emailSentAt = datetime.now(UTC)
+        await repository.add_stage_event(event)
+        await db.commit()
+        return _serialize_interview_meeting(event)
+
+    if latest_event is not None and latest_event.meetingUrl and latest_event.status != EventStatus.COMPLETED:
+        return _serialize_interview_meeting(latest_event)
+
+    calendar_service = GoogleCalendarService(db)
+    meeting = await calendar_service.create_meet_event(
+        user_id=actor_user_id,
+        summary=title,
+        description="\n".join(description_parts),
+        starts_at=starts_at,
+        ends_at=ends_at,
+    )
+
+    await ResendEmailService().send_interview_invite(
+        to_email=application.candidate.email,
+        candidate_name=candidate_name,
+        job_title=application.jobPosting.title,
+        stage_name=stage.name,
+        starts_at_text=_meeting_time_text(meeting.starts_at),
+        meeting_url=meeting.meeting_url,
+    )
+
+    event = (
+        None
+        if latest_event is not None and latest_event.status == EventStatus.COMPLETED
+        else latest_event
+    ) or StageEvent(
+        organizationId=organization_id,
+        applicationId=application.id,
+        stageId=stage.id,
+        createdByMemberId=actor_member_id,
+        title=title,
+        description="\n".join(description_parts),
+        interviewType=InterviewType.OTHER,
+        status=EventStatus.SCHEDULED,
+    )
+    event.title = title
+    event.description = "\n".join(description_parts)
+    event.status = EventStatus.SCHEDULED
+    event.scheduledStartAt = meeting.starts_at
+    event.scheduledEndAt = meeting.ends_at
+    event.meetingUrl = meeting.meeting_url
+    event.googleCalendarEventId = meeting.event_id
+    event.googleCalendarEventUrl = meeting.html_link
+    event.notes = body.notes
+    event.emailSentAt = datetime.now(UTC)
+    await repository.add_stage_event(event)
+    await db.commit()
+    return _serialize_interview_meeting(event)
+
+
+async def complete_interview_meeting(
+    db: AsyncSession,
+    organization_id: str,
+    application_id: str,
+    event_id: str,
+) -> InterviewMeetingRead:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event(organization_id, application_id, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Interview meeting not found")
+    if event.scheduledStartAt is None or event.scheduledEndAt is None:
+        raise HTTPException(status_code=400, detail="Interview meeting is missing schedule metadata")
+
+    event.status = EventStatus.COMPLETED
+    now = datetime.now(UTC)
+    end = event.scheduledEndAt
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=UTC)
+    if end.astimezone(UTC) > now:
+        event.scheduledEndAt = now
+    db.add(event)
+    await db.commit()
+    return _serialize_interview_meeting(event)
+
+
+def _candidate_name(application: CandidateApplication) -> str:
+    return f"{application.candidate.firstName} {application.candidate.lastName}".strip()
+
+
+def _stage_tab_title(stage: PipelineStage) -> str:
+    return f"{stage.order}. {stage.name}"
+
+
+def _ordered_stage_categories(stage: PipelineStage) -> list[StageEvaluationCategory]:
+    return sorted(
+        stage.__dict__.get("evaluationCategories", []),
+        key=lambda item: item.order,
+    )
+
+
+def _stage_headers(stage: PipelineStage) -> list[str]:
+    categories = _ordered_stage_categories(stage)
+    headers = ["Candidate", "Email"]
+    headers.extend(category.name for category in categories)
+    if stage.evaluationType == "NUMERIC" and stage.evaluationIncludeTotal:
+        headers.append("Total")
+    headers.append("Notes")
+    return headers
+
+
+def _column_letter(index: int) -> str:
+    value = index + 1
+    letters = ""
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def _stage_candidate_row(
+    stage: PipelineStage,
+    application: CandidateApplication,
+    row_number: int | None = None,
+) -> list[str]:
+    categories = _ordered_stage_categories(stage)
+    row = [
+        _candidate_name(application),
+        application.candidate.email,
+    ]
+    row.extend("" for _ in categories)
+    if stage.evaluationType == "NUMERIC" and stage.evaluationIncludeTotal:
+        if categories and row_number is not None:
+            start = _column_letter(2)
+            end = _column_letter(1 + len(categories))
+            row.append(f"=SUM({start}{row_number}:{end}{row_number})")
+        else:
+            row.append("")
+    row.append("")
+    return row
+
+
+def _stage_sheet_values(stage: PipelineStage) -> list[list[str]]:
+    applications = sorted(
+        stage.__dict__.get("applications", []),
+        key=lambda application: application.appliedAt,
+    )
+    return [
+        _stage_headers(stage),
+        *[
+            _stage_candidate_row(stage, application, row_number=index)
+            for index, application in enumerate(applications, start=2)
+        ],
+    ]
+
+
+def _existing_candidate_emails(values: list[list[str]]) -> set[str]:
+    return {
+        row[1].strip().lower()
+        for row in values[1:]
+        if len(row) >= 2 and row[1]
+    }
+
+
+def _sheet_formula_quote(title: str) -> str:
+    return sanitize_sheet_title(title).replace("'", "''")
+
+
+def _analysis_formula(
+    sheet_title: str,
+    source_column_index: int,
+    target_row_number: int,
+) -> str:
+    source_column = _column_letter(source_column_index)
+    return (
+        f"=IFERROR(INDEX(FILTER('{_sheet_formula_quote(sheet_title)}'!"
+        f"{source_column}:{source_column},"
+        f"'{_sheet_formula_quote(sheet_title)}'!$B:$B=$B{target_row_number}),1),\"\")"
+    )
+
+
+def _analysis_sheet_values(stages: list[PipelineStage]) -> AnalysisSheetData:
+    evaluation_stages = [stage for stage in stages if stage.evaluationIncludeAnalysis]
+    if not evaluation_stages:
+        return AnalysisSheetData(values=[], merge_ranges=[])
+
+    first_header = ["Candidate", "Email"]
+    second_header = ["", ""]
+    seen_applications: dict[str, CandidateApplication] = {}
+    merge_ranges: list[AnalysisMergeRange] = []
+    stage_columns: list[tuple[PipelineStage, list[str]]] = []
+
+    for stage in evaluation_stages:
+        categories = _ordered_stage_categories(stage)
+        stage_headers = [category.name for category in categories]
+        if stage.evaluationType == "NUMERIC" and stage.evaluationIncludeTotal:
+            stage_headers.append("Total")
+        if not stage_headers:
+            stage_headers = ["Evaluation"]
+        stage_start = len(first_header)
+        first_header.extend([stage.name, *["" for _ in stage_headers[1:]]])
+        second_header.extend(stage_headers)
+        merge_ranges.append(
+            AnalysisMergeRange(
+                start_column_index=stage_start,
+                end_column_index=stage_start + len(stage_headers),
+            )
+        )
+        stage_columns.append((stage, stage_headers))
+        for application in stage.__dict__.get("applications", []):
+            seen_applications[application.candidate.email.lower()] = application
+
+    rows = []
+    for row_number, application in enumerate(
+        sorted(seen_applications.values(), key=lambda item: _candidate_name(item).lower()),
+        start=3,
+    ):
+        row = [
+            _candidate_name(application),
+            application.candidate.email,
+        ]
+        for stage, stage_headers in stage_columns:
+            stage_sheet_title = (
+                stage.evaluationWorkspace.googleSheetTitle
+                if stage.evaluationWorkspace
+                else _stage_tab_title(stage)
+            )
+            for offset, _header in enumerate(stage_headers):
+                row.append(_analysis_formula(stage_sheet_title, 2 + offset, row_number))
+        rows.append(row)
+    return AnalysisSheetData(values=[first_header, second_header, *rows], merge_ranges=merge_ranges)
+
+
+async def _append_missing_stage_candidates(
+    sheets_service: GoogleSheetsService,
+    user_id: str,
+    spreadsheet_id: str,
+    stage: PipelineStage,
+    sheet_title: str,
+) -> None:
+    values = await sheets_service.get_values(user_id, spreadsheet_id, sheet_title)
+    existing_emails = _existing_candidate_emails(values)
+    rows = [
+        _stage_candidate_row(stage, application, row_number=index)
+        for index, application in enumerate(
+            [
+                item
+                for item in sorted(stage.__dict__.get("applications", []), key=lambda item: item.appliedAt)
+                if item.candidate.email.lower() not in existing_emails
+            ],
+            start=len(values) + 1,
+        )
+    ]
+    await sheets_service.append_values(user_id, spreadsheet_id, sheet_title, rows)
+
+
+async def _format_stage_evaluation_sheet(
+    sheets_service: GoogleSheetsService,
+    user_id: str,
+    spreadsheet_id: str,
+    stage: PipelineStage,
+    sheet_id: int | None,
+) -> None:
+    if sheet_id is None:
+        return
+    await sheets_service.format_stage_sheet(
+        user_id,
+        spreadsheet_id,
+        sheet_id,
+        stage.evaluationType,
+        len(_ordered_stage_categories(stage)),
+        max(len(stage.__dict__.get("applications", [])) + 1, 2),
+    )
+
+
+async def _remove_legacy_application_id_column(
+    sheets_service: GoogleSheetsService,
+    user_id: str,
+    spreadsheet_id: str,
+    sheet_title: str,
+    sheet_id: int | None,
+) -> None:
+    if sheet_id is None:
+        return
+    values = await sheets_service.get_values(user_id, spreadsheet_id, sheet_title, "A1:Z1")
+    if values and len(values[0]) >= 3 and values[0][2].strip().lower() == "application id":
+        await sheets_service.delete_column(user_id, spreadsheet_id, sheet_id, 2)
+
+
+async def _update_analysis_sheet(
+    db: AsyncSession,
+    repository: CandidatePipelineRepository,
+    sheets_service: GoogleSheetsService,
+    organization_id: str,
+    user_id: str,
+    job_posting_id: str,
+    spreadsheet_id: str,
+) -> None:
+    stages = await repository.list_evaluation_stages_for_job(organization_id, job_posting_id)
+    data = _analysis_sheet_values(stages)
+    if not data.values:
+        return
+
+    analysis_title = "Overall Analysis"
+    analysis_sheet_id = await sheets_service.get_sheet_id(user_id, spreadsheet_id, analysis_title)
+    if analysis_sheet_id is None:
+        try:
+            tab = await sheets_service.create_sheet_tab(user_id, spreadsheet_id, analysis_title)
+            analysis_sheet_id = tab.sheet_id
+        except HTTPException as error:
+            if "already exists" not in str(error.detail).lower():
+                raise
+            analysis_sheet_id = await sheets_service.get_sheet_id(user_id, spreadsheet_id, analysis_title)
+
+    if analysis_sheet_id is not None:
+        await sheets_service.unmerge_header_row(
+            user_id,
+            spreadsheet_id,
+            analysis_sheet_id,
+            len(data.values[0]),
+        )
+    await sheets_service.clear_values(user_id, spreadsheet_id, analysis_title)
+    await sheets_service.write_values(
+        user_id,
+        spreadsheet_id,
+        [SheetValueBlock(sheet_title=analysis_title, values=data.values)],
+    )
+    if analysis_sheet_id is not None:
+        await sheets_service.format_analysis_sheet(
+            user_id,
+            spreadsheet_id,
+            analysis_sheet_id,
+            data.merge_ranges,
+            len(data.values[0]),
+        )
+
+
+async def _ensure_stage_evaluation_workspace(
+    db: AsyncSession,
+    repository: CandidatePipelineRepository,
+    organization_id: str,
+    organization_name: str,
+    actor_member_id: str,
+    actor_user_id: str,
+    stage: PipelineStage,
+) -> StageEvaluationWorkspace:
+    existing = stage.__dict__.get("evaluationWorkspace") or await repository.get_evaluation_workspace(
+        organization_id,
+        stage.id,
+    )
+    sheets_service = GoogleSheetsService(db)
+
+    if existing is not None:
+        desired_title = _stage_tab_title(stage)
+        if existing.googleSheetId is not None and existing.googleSheetTitle != desired_title:
+            try:
+                existing.googleSheetTitle = await sheets_service.rename_sheet_tab(
+                    actor_user_id,
+                    existing.googleSpreadsheetId,
+                    existing.googleSheetId,
+                    desired_title,
+                )
+                db.add(existing)
+                await db.flush()
+            except HTTPException as error:
+                if "already exists" not in str(error.detail).lower():
+                    raise
+        await _remove_legacy_application_id_column(
+            sheets_service,
+            actor_user_id,
+            existing.googleSpreadsheetId,
+            existing.googleSheetTitle,
+            existing.googleSheetId,
+        )
+        await sheets_service.clear_values(
+            actor_user_id,
+            existing.googleSpreadsheetId,
+            existing.googleSheetTitle,
+            "A1:ZZ1",
+        )
+        await sheets_service.write_values(
+            actor_user_id,
+            existing.googleSpreadsheetId,
+            [SheetValueBlock(sheet_title=existing.googleSheetTitle, values=[_stage_headers(stage)])],
+        )
+        await _append_missing_stage_candidates(
+            sheets_service,
+            actor_user_id,
+            existing.googleSpreadsheetId,
+            stage,
+            existing.googleSheetTitle,
+        )
+        await _format_stage_evaluation_sheet(
+            sheets_service,
+            actor_user_id,
+            existing.googleSpreadsheetId,
+            stage,
+            existing.googleSheetId,
+        )
+        await _update_analysis_sheet(
+            db,
+            repository,
+            sheets_service,
+            organization_id,
+            actor_user_id,
+            stage.jobPostingId,
+            existing.googleSpreadsheetId,
+        )
+        return existing
+
+    job_workspace = await repository.get_any_evaluation_workspace_for_job(
+        organization_id,
+        stage.jobPostingId,
+    )
+    desired_title = _stage_tab_title(stage)
+
+    if job_workspace is None:
+        spreadsheet = await sheets_service.create_evaluation_spreadsheet(
+            user_id=actor_user_id,
+            title=f"{organization_name} - {stage.jobPosting.title}",
+            first_tab_title=desired_title,
+            value_blocks=[
+                SheetValueBlock(
+                    sheet_title=desired_title,
+                    values=_stage_sheet_values(stage),
+                )
+            ],
+        )
+        workspace = StageEvaluationWorkspace(
+            organizationId=organization_id,
+            stageId=stage.id,
+            googleSpreadsheetId=spreadsheet.spreadsheet_id,
+            googleSpreadsheetUrl=spreadsheet.spreadsheet_url,
+            googleSheetId=spreadsheet.sheet_id,
+            googleSheetTitle=spreadsheet.sheet_title,
+            createdByMemberId=actor_member_id,
+        )
+        await _format_stage_evaluation_sheet(
+            sheets_service,
+            actor_user_id,
+            spreadsheet.spreadsheet_id,
+            stage,
+            spreadsheet.sheet_id,
+        )
+    else:
+        stages = await repository.list_evaluation_stages_for_job(organization_id, stage.jobPostingId)
+        existing_titles = [
+            item.evaluationWorkspace.googleSheetTitle
+            for item in stages
+            if item.evaluationWorkspace is not None
+        ]
+        tab_title = make_unique_sheet_titles([*existing_titles, desired_title])[-1]
+        tab = await sheets_service.create_sheet_tab(
+            actor_user_id,
+            job_workspace.googleSpreadsheetId,
+            tab_title,
+        )
+        await sheets_service.write_values(
+            actor_user_id,
+            job_workspace.googleSpreadsheetId,
+            [
+                SheetValueBlock(
+                    sheet_title=tab.sheet_title,
+                    values=_stage_sheet_values(stage),
+                )
+            ],
+        )
+        workspace = StageEvaluationWorkspace(
+            organizationId=organization_id,
+            stageId=stage.id,
+            googleSpreadsheetId=job_workspace.googleSpreadsheetId,
+            googleSpreadsheetUrl=job_workspace.googleSpreadsheetUrl,
+            googleSheetId=tab.sheet_id,
+            googleSheetTitle=tab.sheet_title,
+            createdByMemberId=actor_member_id,
+        )
+        await _format_stage_evaluation_sheet(
+            sheets_service,
+            actor_user_id,
+            job_workspace.googleSpreadsheetId,
+            stage,
+            tab.sheet_id,
+        )
+
+    await repository.add_evaluation_workspace(workspace)
+    await db.flush()
+    await _update_analysis_sheet(
+        db,
+        repository,
+        sheets_service,
+        organization_id,
+        actor_user_id,
+        stage.jobPostingId,
+        workspace.googleSpreadsheetId,
+    )
+    return workspace
+
+
+async def _sync_stage_evaluation_workspace_if_needed(
+    db: AsyncSession,
+    repository: CandidatePipelineRepository,
+    organization_id: str,
+    organization_name: str,
+    actor_member_id: str,
+    actor_user_id: str,
+    stage: PipelineStage,
+) -> None:
+    if not stage.evaluationEnabled:
+        return
+    await _ensure_stage_evaluation_workspace(
+        db,
+        repository,
+        organization_id,
+        organization_name,
+        actor_member_id,
+        actor_user_id,
+        stage,
+    )
+
+
+async def get_evaluation_workspace(
+    db: AsyncSession,
+    organization_id: str,
+    stage_id: str,
+) -> StageEvaluationWorkspaceRead:
+    repository = CandidatePipelineRepository(db)
+    workspace = await repository.get_evaluation_workspace(organization_id, stage_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Evaluation workspace not found")
+    serialized = _serialize_workspace(workspace)
+    if serialized is None:
+        raise HTTPException(status_code=404, detail="Evaluation workspace not found")
+    return serialized
+
+
+async def generate_evaluation_workspace(
+    db: AsyncSession,
+    organization_id: str,
+    organization_name: str,
+    actor_member_id: str,
+    actor_user_id: str,
+    stage_id: str,
+) -> StageEvaluationWorkspaceRead:
+    repository = CandidatePipelineRepository(db)
+    stage = await repository.get_stage(organization_id, stage_id)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if not stage.evaluationEnabled:
+        raise HTTPException(status_code=400, detail="Evaluation is not enabled for this stage")
+
+    workspace = await _ensure_stage_evaluation_workspace(
+        db,
+        repository,
+        organization_id,
+        organization_name,
+        actor_member_id,
+        actor_user_id,
+        stage,
+    )
+    await db.commit()
+    await db.refresh(workspace)
+    serialized = _serialize_workspace(workspace)
+    if serialized is None:
+        raise HTTPException(status_code=500, detail="Evaluation workspace was not created")
+    return serialized
