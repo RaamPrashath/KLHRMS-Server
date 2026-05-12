@@ -460,6 +460,12 @@ class JobPosting(Base):
         cascade="all, delete-orphan",
     )
 
+    hiringTeams = relationship(
+        "HiringTeam",
+        back_populates="jobPosting",
+        cascade="all, delete-orphan",
+    )
+
 
 # =========================================================
 # PIPELINE STAGE
@@ -1372,4 +1378,135 @@ class OfferLetter(Base):
         "Member",
         foreign_keys=[createdByMemberId],
         back_populates="createdOfferLetters",
+    )
+
+
+# =========================================================
+# HIRING TEAM
+# =========================================================
+
+
+class HiringTeam(Base):
+    __tablename__ = "hiring_team"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    jobPostingId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("job_posting.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    description: Mapped[str | None] = mapped_column(Text)
+
+    isActive: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # RELATIONSHIPS
+
+    organization = relationship(
+        "Organization",
+        back_populates="hiringTeams",
+    )
+
+    jobPosting = relationship(
+        "JobPosting",
+        back_populates="hiringTeams",
+    )
+
+    members = relationship(
+        "HiringTeamMember",
+        back_populates="hiringTeam",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("hiring_team_organizationId_idx", "organizationId"),
+        Index("hiring_team_jobPostingId_idx", "jobPostingId"),
+        Index("hiring_team_organizationId_isActive_idx", "organizationId", "isActive"),
+    )
+
+
+class HiringTeamMember(Base):
+    __tablename__ = "hiring_team_member"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    hiringTeamId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("hiring_team.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    memberId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    role: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    # RELATIONSHIPS
+
+    hiringTeam = relationship(
+        "HiringTeam",
+        back_populates="members",
+    )
+
+    member = relationship(
+        "Member",
+        back_populates="hiringTeamMemberships",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "hiringTeamId",
+            "memberId",
+            name="uq_hiring_team_member",
+        ),
     )

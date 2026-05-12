@@ -9,18 +9,24 @@ from app.modules.candidates.schema import (
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
     MoveApplicationStageRequest,
+    MyInterviewListResponse,
     PipelineApplicationRead,
     PipelineBoardRead,
     PipelineJobPostingRead,
     PipelineStageCreateRequest,
     PipelineStageRead,
     PipelineStageUpdateRequest,
+    ReassignmentRequestCreate,
+    ReshuffleRequest,
+    ReshuffleResponse,
     StageEvaluationWorkspaceRead,
     StageInterviewAssignmentRequest,
     StageInterviewAssignmentResponse,
     StageInterviewWarningRequest,
     StageInterviewWarningResponse,
     StageWorkspaceRead,
+    TeamDistributionRequest,
+    TeamDistributionResponse,
 )
 from app.shared.deps.organization_member import MemberContext
 
@@ -204,4 +210,63 @@ async def handle_generate_evaluation_workspace(
         ctx.member.id,
         ctx.member.userId,
         stage_id,
+    )
+
+
+async def handle_distribute_stage_interviews(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_slug: str,
+    body: TeamDistributionRequest,
+) -> TeamDistributionResponse:
+    return await service.distribute_stage_interviews(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        stage_slug,
+        body,
+    )
+
+
+async def handle_reshuffle_interview_assignment(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    event_id: str,
+    body: ReshuffleRequest,
+) -> ReshuffleResponse:
+    return await service.reshuffle_interview_assignment(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        application_id,
+        event_id,
+        body,
+    )
+
+
+async def handle_list_my_interviews(
+    ctx: MemberContext,
+    db: AsyncSession,
+) -> MyInterviewListResponse:
+    return await service.list_my_interviews(
+        db,
+        ctx.organization.id,
+        ctx.member.id,
+    )
+
+
+async def handle_create_reassignment_request(
+    ctx: MemberContext,
+    db: AsyncSession,
+    body: ReassignmentRequestCreate,
+) -> None:
+    return await service.create_reassignment_request(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        body,
     )

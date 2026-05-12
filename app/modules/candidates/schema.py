@@ -167,6 +167,54 @@ class StageInterviewAssignmentResponse(BaseModel):
     warnings: list[StageInterviewWarningRead]
 
 
+class TeamDistributionRequest(BaseModel):
+    hiringTeamId: str = Field(min_length=1)
+    strategy: Literal["ROUND_ROBIN"] = "ROUND_ROBIN"
+    applicationIds: list[str] = Field(min_length=1)
+    scheduledStartAt: datetime
+    durationMinutes: int = Field(default=30, ge=15, le=240)
+    backupInterviewers: list[str] = Field(default_factory=list)
+    ignoreWarnings: bool = False
+
+
+class TeamDistributionResponse(BaseModel):
+    assignedCount: int
+    warnings: list[StageInterviewWarningRead]
+
+
+class ReshuffleRequest(BaseModel):
+    newInterviewerMemberId: str | None = None
+
+
+class ReshuffleResponse(BaseModel):
+    eventId: str
+    newInterviewerMemberId: str
+    warnings: list[StageInterviewWarningRead]
+
+
+class MyInterviewRead(BaseModel):
+    eventId: str
+    applicationId: str
+    stageId: str
+    stageName: str
+    candidate: CandidateSummaryRead
+    jobTitle: str
+    scheduledStartAt: datetime
+    scheduledEndAt: datetime
+    status: str
+    role: str
+    isBackup: bool
+
+
+class MyInterviewListResponse(BaseModel):
+    items: list[MyInterviewRead]
+
+
+class ReassignmentRequestCreate(BaseModel):
+    eventId: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class MoveApplicationStageRequest(BaseModel):
     toStageId: str = Field(min_length=1)
     note: str | None = None

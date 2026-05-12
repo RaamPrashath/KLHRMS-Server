@@ -20,6 +20,7 @@ from app.modules.leave.route import router as leave_router
 from app.modules.projects.route import router as projects_router
 from app.modules.role.route import router as role_router
 from app.modules.weekly_plan.router import router as weekly_plan_router
+from app.modules.hiring_teams.route import router as hiring_teams_router
 from app.shared.config import get_settings
 from app.shared.scheduler import register_jobs, scheduler
 
@@ -68,6 +69,7 @@ app.include_router(projects_router)
 app.include_router(departments_router)
 app.include_router(holiday_sync_router)
 app.include_router(weekly_plan_router, prefix=settings.api_v1_prefix)
+app.include_router(hiring_teams_router)
 app.include_router(employee_router)
 
 

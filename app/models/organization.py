@@ -84,6 +84,11 @@ class Organization(Base):
         back_populates="organization",
     )
 
+    hiringTeams = relationship(
+        "HiringTeam",
+        back_populates="organization",
+    )
+
     __table_args__ = (
         UniqueConstraint("slug", name="organization_slug_key"),
     )

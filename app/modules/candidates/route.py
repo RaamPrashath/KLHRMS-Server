@@ -9,8 +9,10 @@ from app.modules.candidates.controller import (
     handle_assign_stage_interviews,
     handle_complete_interview_meeting,
     handle_create_interview_meeting,
+    handle_create_reassignment_request,
     handle_create_stage,
     handle_delete_stage,
+    handle_distribute_stage_interviews,
     handle_extend_stage_due_date,
     handle_generate_evaluation_workspace,
     handle_get_application_detail,
@@ -19,8 +21,10 @@ from app.modules.candidates.controller import (
     handle_get_stage_workspace,
     handle_list_interviewers,
     handle_list_job_postings,
+    handle_list_my_interviews,
     handle_move_application_stage,
     handle_preview_stage_interview_warnings,
+    handle_reshuffle_interview_assignment,
     handle_update_stage,
 )
 from app.modules.candidates.schema import (
@@ -29,18 +33,24 @@ from app.modules.candidates.schema import (
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
     MoveApplicationStageRequest,
+    MyInterviewListResponse,
     PipelineApplicationRead,
     PipelineBoardRead,
     PipelineJobPostingRead,
     PipelineStageCreateRequest,
     PipelineStageRead,
     PipelineStageUpdateRequest,
+    ReassignmentRequestCreate,
+    ReshuffleRequest,
+    ReshuffleResponse,
     StageEvaluationWorkspaceRead,
     StageInterviewAssignmentRequest,
     StageInterviewAssignmentResponse,
     StageInterviewWarningRequest,
     StageInterviewWarningResponse,
     StageWorkspaceRead,
+    TeamDistributionRequest,
+    TeamDistributionResponse,
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
@@ -104,7 +114,7 @@ async def preview_stage_interview_warnings(
 async def assign_stage_interviews(
     stage_slug: str,
     body: StageInterviewAssignmentRequest,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
     db: AsyncSession = Depends(get_db),
 ) -> StageInterviewAssignmentResponse:
     return await handle_assign_stage_interviews(ctx, db, stage_slug, body)
@@ -133,7 +143,7 @@ async def get_application_detail(
 async def create_interview_meeting(
     application_id: str,
     body: InterviewMeetingCreateRequest,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
     db: AsyncSession = Depends(get_db),
 ) -> InterviewMeetingRead:
     return await handle_create_interview_meeting(ctx, db, application_id, body)
@@ -143,7 +153,7 @@ async def create_interview_meeting(
 async def complete_interview_meeting(
     application_id: str,
     event_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
     db: AsyncSession = Depends(get_db),
 ) -> InterviewMeetingRead:
     return await handle_complete_interview_meeting(ctx, db, application_id, event_id)
@@ -203,3 +213,50 @@ async def delete_pipeline_stage(
 ) -> Response:
     await handle_delete_stage(ctx, db, stage_id)
     return Response(status_code=204)
+
+
+@router.post(
+    "/pipeline/stages/by-slug/{stage_slug}/team-assignments",
+    response_model=TeamDistributionResponse,
+)
+async def distribute_stage_interviews(
+    stage_slug: str,
+    body: TeamDistributionRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> TeamDistributionResponse:
+    return await handle_distribute_stage_interviews(ctx, db, stage_slug, body)
+
+
+@router.post(
+    "/applications/{application_id}/interview-events/{event_id}/reshuffle",
+    response_model=ReshuffleResponse,
+)
+async def reshuffle_interview_assignment(
+    application_id: str,
+    event_id: str,
+    body: ReshuffleRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> ReshuffleResponse:
+    return await handle_reshuffle_interview_assignment(ctx, db, application_id, event_id, body)
+
+
+@router.get("/interviews/my", response_model=MyInterviewListResponse)
+async def list_my_interviews(
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "view"))],
+    db: AsyncSession = Depends(get_db),
+) -> MyInterviewListResponse:
+    return await handle_list_my_interviews(ctx, db)
+
+
+@router.post("/interviews/{event_id}/reassignment-requests")
+async def create_reassignment_request(
+    event_id: str,
+    body: ReassignmentRequestCreate,
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "view"))],
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    body.eventId = event_id
+    await handle_create_reassignment_request(ctx, db, body)
+    return Response(status_code=201)

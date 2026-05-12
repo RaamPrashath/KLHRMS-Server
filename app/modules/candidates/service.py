@@ -38,6 +38,8 @@ from app.modules.candidates.schema import (
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
     MoveApplicationStageRequest,
+    MyInterviewListResponse,
+    MyInterviewRead,
     PipelineApplicationRead,
     PipelineBoardRead,
     PipelineJobPostingRead,
@@ -45,6 +47,9 @@ from app.modules.candidates.schema import (
     PipelineStageHistoryRead,
     PipelineStageRead,
     PipelineStageUpdateRequest,
+    ReshuffleRequest,
+    ReshuffleResponse,
+    ReassignmentRequestCreate,
     StageEvaluationCategoryInput,
     StageEvaluationCategoryRead,
     StageEvaluationWorkspaceRead,
@@ -58,6 +63,8 @@ from app.modules.candidates.schema import (
     StageWorkspaceCandidateRead,
     StageWorkspaceInterviewerRead,
     StageWorkspaceRead,
+    TeamDistributionRequest,
+    TeamDistributionResponse,
 )
 
 DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
@@ -344,10 +351,14 @@ def _latest_assignment_event(application: CandidateApplication, stage_id: str) -
 def _serialize_workspace_assignment(event: StageEvent | None) -> StageWorkspaceAssignmentRead | None:
     if event is None or event.scheduledStartAt is None or event.scheduledEndAt is None:
         return None
-    participant = (event.participants or [None])[0]
+    primary = None
+    for participant in (event.participants or []):
+        if participant.role == "INTERVIEWER" or participant.role is None:
+            primary = participant
+            break
     interviewer = None
-    if participant is not None and participant.member is not None:
-        interviewer = _serialize_interviewer(participant.member)
+    if primary is not None and primary.member is not None:
+        interviewer = _serialize_interviewer(primary.member)
     return StageWorkspaceAssignmentRead(
         eventId=event.id,
         interviewer=interviewer,
@@ -832,6 +843,16 @@ async def _build_assignment_warnings(
     }
     holidays_by_date = {holiday.holidayDate: holiday for holiday in holidays}
 
+    # Count existing interviews per member per date
+    interview_counts: dict[tuple[str, date], int] = {}
+    for assignment in assignments:
+        target_date = _assignment_date(assignment.scheduledStartAt)
+        key = (assignment.interviewerMemberId, target_date)
+        if key not in interview_counts:
+            interview_counts[key] = await repository.count_interviews_for_member_on_date(
+                organization_id, assignment.interviewerMemberId, target_date
+            )
+
     warnings: list[StageInterviewWarningRead] = []
     for assignment in assignments:
         target_date = _assignment_date(assignment.scheduledStartAt)
@@ -842,6 +863,11 @@ async def _build_assignment_warnings(
             messages.append(f"{holidays_by_date[target_date].name} is marked as a holiday.")
         if (assignment.interviewerMemberId, target_date) in leave_pairs:
             messages.append("Interviewer is on approved leave on this date.")
+        existing_count = interview_counts.get((assignment.interviewerMemberId, target_date), 0)
+        if existing_count >= 3:
+            messages.append(f"Interviewer already has {existing_count} interviews scheduled on this date.")
+        elif existing_count > 0:
+            messages.append(f"Interviewer already has {existing_count} interview(s) scheduled on this date.")
         if messages:
             warnings.append(
                 StageInterviewWarningRead(
@@ -955,6 +981,299 @@ async def assign_stage_interviews(
         assignedCount=len(body.assignments),
         warnings=warnings,
     )
+
+
+async def distribute_stage_interviews(
+    db: AsyncSession,
+    organization_id: str,
+    organization_name: str,
+    actor_member_id: str,
+    stage_slug: str,
+    body: TeamDistributionRequest,
+) -> TeamDistributionResponse:
+    repository = CandidatePipelineRepository(db)
+    stage = await repository.get_stage_by_slug(organization_id, stage_slug)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+
+    team = await repository.get_hiring_team(organization_id, body.hiringTeamId)
+    if team is None:
+        raise HTTPException(status_code=404, detail="Hiring team not found")
+    if team.jobPostingId != stage.jobPostingId:
+        raise HTTPException(status_code=400, detail="Hiring team does not belong to this job posting")
+
+    team_member_ids = [item.memberId for item in (team.members or [])]
+    if not team_member_ids:
+        raise HTTPException(status_code=400, detail="Hiring team has no members")
+
+    applications_by_id = {application.id: application for application in stage.applications}
+    selected_applications = []
+    for app_id in body.applicationIds:
+        application = applications_by_id.get(app_id)
+        if application is None:
+            raise HTTPException(status_code=400, detail="One or more candidates are not in this stage")
+        selected_applications.append(application)
+
+    # Build round-robin assignments
+    assignments: list[StageInterviewAssignmentInput] = []
+    for index, application in enumerate(selected_applications):
+        interviewer_member_id = team_member_ids[index % len(team_member_ids)]
+        assignments.append(
+            StageInterviewAssignmentInput(
+                applicationId=application.id,
+                interviewerMemberId=interviewer_member_id,
+                scheduledStartAt=body.scheduledStartAt,
+                durationMinutes=body.durationMinutes,
+            )
+        )
+
+    warnings = await _build_assignment_warnings(repository, organization_id, assignments)
+    if warnings and not body.ignoreWarnings:
+        return TeamDistributionResponse(assignedCount=0, warnings=warnings)
+
+    members = await repository.get_members_by_ids(organization_id, team_member_ids)
+    members_by_id = {member.id: member for member in members}
+
+    email_service = ResendEmailService()
+
+    for assignment in assignments:
+        application = applications_by_id[assignment.applicationId]
+        interviewer = members_by_id[assignment.interviewerMemberId]
+        interviewer_email = interviewer.user.email if interviewer.user is not None else None
+        if not interviewer_email:
+            raise HTTPException(status_code=400, detail="Interviewer email is missing")
+
+        starts_at = assignment.scheduledStartAt
+        if starts_at.tzinfo is None:
+            starts_at = starts_at.replace(tzinfo=UTC)
+        starts_at = starts_at.astimezone(UTC)
+        ends_at = starts_at + timedelta(minutes=assignment.durationMinutes)
+        candidate_name = _candidate_display_name(application)
+        interviewer_name = interviewer.user.name or interviewer.user.email
+
+        event = StageEvent(
+            organizationId=organization_id,
+            applicationId=application.id,
+            stageId=stage.id,
+            createdByMemberId=actor_member_id,
+            title=f"{stage.name} interview - {candidate_name}",
+            description=f"Interview for {application.jobPosting.title}",
+            interviewType=InterviewType.OTHER,
+            status=EventStatus.SCHEDULED,
+            scheduledStartAt=starts_at,
+            scheduledEndAt=ends_at,
+        )
+        await repository.add_stage_event(event)
+        await repository.add_stage_event_participant(
+            StageEventParticipant(
+                eventId=event.id,
+                memberId=interviewer.id,
+                role="INTERVIEWER",
+            )
+        )
+
+        # Add backup interviewers if any
+        for backup_member_id in (body.backupInterviewers or []):
+            if backup_member_id == assignment.interviewerMemberId:
+                continue
+            backup_member = members_by_id.get(backup_member_id)
+            if backup_member is not None:
+                await repository.add_stage_event_participant(
+                    StageEventParticipant(
+                        eventId=event.id,
+                        memberId=backup_member_id,
+                        role="BACKUP",
+                    )
+                )
+
+        starts_at_text = _meeting_time_text(starts_at)
+        await email_service.send_stage_interview_assignment_to_interviewer(
+            to_email=interviewer_email,
+            interviewer_name=interviewer_name,
+            candidate_name=candidate_name,
+            candidate_email=application.candidate.email,
+            stage_name=stage.name,
+            organization_name=organization_name,
+            starts_at_text=starts_at_text,
+        )
+        await email_service.send_stage_interview_assignment_to_candidate(
+            to_email=application.candidate.email,
+            candidate_name=candidate_name,
+            interviewer_name=interviewer_name,
+            organization_name=organization_name,
+            starts_at_text=starts_at_text,
+        )
+        event.emailSentAt = datetime.now(UTC)
+        db.add(event)
+
+    await db.commit()
+    return TeamDistributionResponse(
+        assignedCount=len(assignments),
+        warnings=warnings,
+    )
+
+
+async def reshuffle_interview_assignment(
+    db: AsyncSession,
+    organization_id: str,
+    organization_name: str,
+    actor_member_id: str,
+    application_id: str,
+    event_id: str,
+    body: ReshuffleRequest,
+) -> ReshuffleResponse:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_with_participants(organization_id, event_id)
+    if event is None or event.applicationId != application_id:
+        raise HTTPException(status_code=404, detail="Interview event not found")
+
+    if body.newInterviewerMemberId is not None:
+        # Manual reshuffle
+        new_interviewer = await repository.get_member(organization_id, body.newInterviewerMemberId)
+        if new_interviewer is None:
+            raise HTTPException(status_code=400, detail="New interviewer not found")
+        new_member_id = new_interviewer.id
+    else:
+        # Auto reshuffle: find next available team member with fewest warnings
+        # For simplicity, find any org member who is not the current primary and has no warnings
+        current_primary = None
+        for p in (event.participants or []):
+            if p.role == "INTERVIEWER" or p.role is None:
+                current_primary = p
+                break
+
+        if current_primary is None:
+            raise HTTPException(status_code=400, detail="No primary interviewer to reshuffle")
+
+        # Try to find a backup first
+        new_member_id = None
+        for p in (event.participants or []):
+            if p.role == "BACKUP":
+                new_member_id = p.memberId
+                break
+
+        if new_member_id is None:
+            raise HTTPException(status_code=400, detail="No backup interviewer available for auto-reshuffle")
+
+    # Swap primary interviewer
+    for p in (event.participants or []):
+        if p.role == "INTERVIEWER" or p.role is None:
+            p.role = "BACKUP"
+        elif p.memberId == new_member_id:
+            p.role = "INTERVIEWER"
+
+    db.add(event)
+    await db.commit()
+
+    # Build minimal warning for the new interviewer
+    assignment_input = StageInterviewAssignmentInput(
+        applicationId=application_id,
+        interviewerMemberId=new_member_id,
+        scheduledStartAt=event.scheduledStartAt,
+        durationMinutes=30,
+    )
+    warnings = await _build_assignment_warnings(repository, organization_id, [assignment_input])
+
+    # Send reassignment email
+    new_interviewer_member = await repository.get_member(organization_id, new_member_id)
+    if new_interviewer_member is not None and new_interviewer_member.user is not None:
+        email_service = ResendEmailService()
+        candidate_name = _candidate_display_name(event.application)
+        await email_service.send_stage_interview_assignment_to_interviewer(
+            to_email=new_interviewer_member.user.email,
+            interviewer_name=new_interviewer_member.user.name or new_interviewer_member.user.email,
+            candidate_name=candidate_name,
+            candidate_email=event.application.candidate.email,
+            stage_name=event.stage.name,
+            organization_name=organization_name,
+            starts_at_text=_meeting_time_text(event.scheduledStartAt),
+        )
+
+    return ReshuffleResponse(
+        eventId=event.id,
+        newInterviewerMemberId=new_member_id,
+        warnings=warnings,
+    )
+
+
+async def list_my_interviews(
+    db: AsyncSession,
+    organization_id: str,
+    member_id: str,
+) -> MyInterviewListResponse:
+    repository = CandidatePipelineRepository(db)
+    rows = await repository.list_my_interviews(organization_id, member_id)
+    items: list[MyInterviewRead] = []
+    for participant in rows:
+        event = participant.event
+        if event is None:
+            continue
+        application = event.application
+        if application is None:
+            continue
+        candidate = application.candidate
+        stage = event.stage
+        is_backup = participant.role == "BACKUP"
+        items.append(
+            MyInterviewRead(
+                eventId=event.id,
+                applicationId=application.id,
+                stageId=stage.id if stage else "",
+                stageName=stage.name if stage else "",
+                candidate=_serialize_candidate(candidate),
+                jobTitle=application.jobPosting.title if application.jobPosting else "",
+                scheduledStartAt=event.scheduledStartAt,
+                scheduledEndAt=event.scheduledEndAt,
+                status=_computed_interview_status(event),
+                role=participant.role or "INTERVIEWER",
+                isBackup=is_backup,
+            )
+        )
+    return MyInterviewListResponse(items=items)
+
+
+async def create_reassignment_request(
+    db: AsyncSession,
+    organization_id: str,
+    organization_name: str,
+    member_id: str,
+    body: ReassignmentRequestCreate,
+) -> None:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_with_participants(organization_id, body.eventId)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Interview event not found")
+
+    # Find the requesting member's participant record
+    participant = None
+    for p in (event.participants or []):
+        if p.memberId == member_id:
+            participant = p
+            break
+    if participant is None:
+        raise HTTPException(status_code=400, detail="You are not assigned to this interview")
+
+    # Email HR/admin — for now just email the actor who created the event if available
+    hr_email = None
+    if event.createdBy is not None and event.createdBy.user is not None:
+        hr_email = event.createdBy.user.email
+
+    email_service = ResendEmailService()
+    candidate_name = _candidate_display_name(event.application)
+    interviewer_name = participant.member.user.name if participant.member and participant.member.user else ""
+    interviewer_email = participant.member.user.email if participant.member and participant.member.user else ""
+
+    if hr_email:
+        await email_service.send_reassignment_notification_to_hr(
+            to_email=hr_email,
+            interviewer_name=interviewer_name,
+            interviewer_email=interviewer_email,
+            candidate_name=candidate_name,
+            stage_name=event.stage.name if event.stage else "",
+            organization_name=organization_name,
+            reason=body.reason,
+        )
+    await db.commit()
 
 
 def _candidate_display_name(application: CandidateApplication) -> str:

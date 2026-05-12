@@ -12,6 +12,21 @@ class ResendEmailService:
     def __init__(self) -> None:
         self.settings = get_settings()
 
+    def _is_production(self) -> bool:
+        return self.settings.mode.strip().lower() == "production"
+
+    def _resolve_delivery(self, to_email: str) -> tuple[str, list[str]]:
+        if self._is_production():
+            return self.settings.resend_from_email, [to_email]
+
+        fallback_email = self.settings.secondary_receiver.strip()
+        if not fallback_email:
+            raise HTTPException(
+                status_code=400,
+                detail="SECONDARY_RECEIVER must be configured when MODE is not production",
+            )
+        return self.settings.resend_from_email, [fallback_email]
+
     async def send_interview_invite(
         self,
         to_email: str,
@@ -47,6 +62,7 @@ class ResendEmailService:
             f"Time: {starts_at_text}\n"
             f"Google Meet: {meeting_url}\n"
         )
+        from_email, recipient_list = self._resolve_delivery(to_email)
 
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(
@@ -56,8 +72,8 @@ class ResendEmailService:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": self.settings.resend_from_email,
-                    "to": [to_email],
+                    "from": from_email,
+                    "to": recipient_list,
                     "subject": subject,
                     "html": html,
                     "text": text,
@@ -123,9 +139,74 @@ class ResendEmailService:
         )
         await self._send_email(to_email, subject, html, text)
 
+    async def send_reassignment_notification_to_hr(
+        self,
+        to_email: str,
+        interviewer_name: str,
+        interviewer_email: str,
+        candidate_name: str,
+        stage_name: str,
+        organization_name: str,
+        reason: str,
+    ) -> None:
+        subject = f"Interview reassignment request - {candidate_name} for {stage_name}"
+        html = f"""
+        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#1d1d1f">
+          <p>Hello HR Team,</p>
+          <p>An interviewer has requested reassignment for an interview.</p>
+          <p><strong>Candidate:</strong> {candidate_name}<br />
+          <strong>Stage:</strong> {stage_name}<br />
+          <strong>Interviewer:</strong> {interviewer_name} ({interviewer_email})<br />
+          <strong>Reason:</strong> {reason}</p>
+          <p>Please review and reassign this interview as appropriate.</p>
+        </div>
+        """
+        text = (
+            f"Hello HR Team,\n\n"
+            f"An interviewer has requested reassignment for an interview.\n"
+            f"Candidate: {candidate_name}\n"
+            f"Stage: {stage_name}\n"
+            f"Interviewer: {interviewer_name} ({interviewer_email})\n"
+            f"Reason: {reason}\n\n"
+            f"Please review and reassign this interview as appropriate.\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
+    async def send_interview_backup_notification(
+        self,
+        to_email: str,
+        backup_name: str,
+        candidate_name: str,
+        stage_name: str,
+        starts_at_text: str,
+        organization_name: str,
+    ) -> None:
+        subject = f"You are a backup interviewer for {candidate_name} - {organization_name}"
+        html = f"""
+        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#1d1d1f">
+          <p>Hello {backup_name},</p>
+          <p>You have been added as a backup interviewer for an upcoming interview at <strong>{organization_name}</strong>.</p>
+          <p><strong>Candidate:</strong> {candidate_name}<br />
+          <strong>Stage:</strong> {stage_name}<br />
+          <strong>Time:</strong> {starts_at_text}</p>
+          <p>You will be contacted if the primary interviewer is unavailable.</p>
+        </div>
+        """
+        text = (
+            f"Hello {backup_name},\n\n"
+            f"You have been added as a backup interviewer for an upcoming interview at {organization_name}.\n"
+            f"Candidate: {candidate_name}\n"
+            f"Stage: {stage_name}\n"
+            f"Time: {starts_at_text}\n\n"
+            f"You will be contacted if the primary interviewer is unavailable.\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
     async def _send_email(self, to_email: str, subject: str, html: str, text: str) -> None:
         if not self.settings.resend_api_key:
             raise HTTPException(status_code=400, detail="Resend API key is not configured")
+
+        from_email, recipient_list = self._resolve_delivery(to_email)
 
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(
@@ -135,8 +216,8 @@ class ResendEmailService:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": self.settings.resend_from_email,
-                    "to": [to_email],
+                    "from": from_email,
+                    "to": recipient_list,
                     "subject": subject,
                     "html": html,
                     "text": text,

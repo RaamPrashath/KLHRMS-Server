@@ -13,6 +13,8 @@ from app.models.member import Member
 from app.models.recruitment import (
     ApplicationStageHistory,
     CandidateApplication,
+    HiringTeam,
+    HiringTeamMember,
     JobPosting,
     PipelineStage,
     StageEvaluationCategory,
@@ -424,3 +426,85 @@ class CandidatePipelineRepository:
             )
         )
         return result.scalars().first()
+
+    async def get_hiring_team(
+        self,
+        organization_id: str,
+        team_id: str,
+    ) -> HiringTeam | None:
+        result = await self.db.execute(
+            select(HiringTeam)
+            .options(
+                joinedload(HiringTeam.members).joinedload(HiringTeamMember.member).joinedload(Member.user)
+            )
+            .where(
+                HiringTeam.organizationId == organization_id,
+                HiringTeam.id == team_id,
+                HiringTeam.isActive.is_(True),
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
+    async def count_interviews_for_member_on_date(
+        self,
+        organization_id: str,
+        member_id: str,
+        target_date: date,
+    ) -> int:
+        result = await self.db.execute(
+            select(func.count(StageEvent.id))
+            .join(StageEventParticipant, StageEventParticipant.eventId == StageEvent.id)
+            .where(
+                StageEvent.organizationId == organization_id,
+                StageEventParticipant.memberId == member_id,
+                StageEventParticipant.role == "INTERVIEWER",
+                func.date(StageEvent.scheduledStartAt) == target_date,
+            )
+        )
+        return int(result.scalar_one())
+
+    async def get_stage_event_with_participants(
+        self,
+        organization_id: str,
+        event_id: str,
+    ) -> StageEvent | None:
+        result = await self.db.execute(
+            select(StageEvent)
+            .options(
+                joinedload(StageEvent.application).joinedload(CandidateApplication.candidate),
+                joinedload(StageEvent.application).joinedload(CandidateApplication.jobPosting),
+                joinedload(StageEvent.stage),
+                selectinload(StageEvent.participants).joinedload(StageEventParticipant.member).joinedload(Member.user),
+            )
+            .where(
+                StageEvent.organizationId == organization_id,
+                StageEvent.id == event_id,
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
+    async def list_my_interviews(
+        self,
+        organization_id: str,
+        member_id: str,
+    ) -> list[StageEventParticipant]:
+        result = await self.db.execute(
+            select(StageEventParticipant)
+            .options(
+                joinedload(StageEventParticipant.event)
+                .joinedload(StageEvent.application)
+                .joinedload(CandidateApplication.candidate),
+                joinedload(StageEventParticipant.event)
+                .joinedload(StageEvent.application)
+                .joinedload(CandidateApplication.jobPosting),
+                joinedload(StageEventParticipant.event)
+                .joinedload(StageEvent.stage),
+                joinedload(StageEventParticipant.member).joinedload(Member.user),
+            )
+            .where(
+                StageEventParticipant.memberId == member_id,
+                StageEventParticipant.event.has(StageEvent.organizationId == organization_id),
+            )
+            .order_by(StageEventParticipant.createdAt.desc())
+        )
+        return list(result.unique().scalars().all())

@@ -66,6 +66,12 @@ class Member(Base):
         back_populates="member",
     )
 
+    hiringTeamMemberships = relationship(
+        "HiringTeamMember",
+        back_populates="member",
+        cascade="all, delete-orphan",
+    )
+
     interviewFeedbacks = relationship(
         "InterviewFeedback",
         foreign_keys="InterviewFeedback.memberId",
