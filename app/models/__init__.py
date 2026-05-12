@@ -16,6 +16,9 @@ from app.models.weekly_plan import WeeklyPlan
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.project_task import ProjectTask
+from app.models.asset import Asset
+from app.models.asset_assignment import AssetAssignment
+from app.models.asset_maintenance_log import AssetMaintenanceLog
 from app.models.team import Team
 from app.models.team_member import TeamMember
 from app.models.base import Base

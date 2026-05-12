@@ -4,12 +4,13 @@ KL HRMS API — FastAPI application entry point.
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.modules.assets.route import router as assets_router
 from app.modules.attendance.route import router as attendance_router
 from app.modules.candidates.route import router as candidates_router
 from app.modules.departments.route import router as departments_router
@@ -65,6 +66,7 @@ app.include_router(candidates_router)
 app.include_router(jobs_router)
 app.include_router(leave_router)
 app.include_router(projects_router)
+app.include_router(assets_router)
 app.include_router(departments_router)
 app.include_router(holiday_sync_router)
 app.include_router(weekly_plan_router, prefix=settings.api_v1_prefix)
