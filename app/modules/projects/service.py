@@ -22,6 +22,7 @@ from app.modules.projects.schema import (
     ProjectFilters,
     ProjectListResponse,
     ProjectLookupOption,
+    ProjectMemberAssignBulkRequest,
     ProjectMemberAssignRequest,
     ProjectMemberSummary,
     ProjectMetaResponse,
@@ -131,7 +132,7 @@ async def get_project(db: AsyncSession, ctx: MemberContext, project_id: str) -> 
         )
         .options(joinedload(Project.team))
         .options(joinedload(Project.members).joinedload(ProjectMember.member).joinedload(Member.user))
-        .options(joinedload(Project.tasks).joinedload(ProjectTask.assigned_member).joinedload(Member.user))
+        .options(joinedload(Project.tasks))
     )
     project = result.unique().scalar_one_or_none()
     if project is None:
@@ -155,10 +156,6 @@ async def get_project(db: AsyncSession, ctx: MemberContext, project_id: str) -> 
         ProjectTaskSummary(
             id=task.id,
             name=task.name,
-            description=task.description,
-            status=task.status,
-            assignedMemberId=task.assignedMemberId,
-            assignedMemberName=task.assigned_member.user.name if task.assigned_member and task.assigned_member.user else None,
             createdAt=task.createdAt,
         )
         for task in sorted(project.tasks, key=lambda item: item.createdAt, reverse=True)
@@ -298,8 +295,45 @@ async def add_project_member(
     return await get_project(db, ctx, project_id)
 
 
-async def remove_project_member(
+async def bulk_assign_project_members(
     db: AsyncSession,
+    ctx: MemberContext,
+    project_id: str,
+    payload: ProjectMemberAssignBulkRequest,
+) -> ProjectDetailResponse:
+    project_result = await db.execute(
+        select(Project).where(
+            Project.id == project_id,
+            Project.organizationId == ctx.organization.id,
+            Project.deletedAt.is_(None),
+        )
+    )
+    project = project_result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    for member_id in payload.memberIds:
+        member_result = await db.execute(
+            select(Member).where(Member.id == member_id, Member.organizationId == ctx.organization.id)
+        )
+        member = member_result.scalar_one_or_none()
+        if member is None:
+            continue
+
+        existing_result = await db.execute(
+            select(ProjectMember).where(
+                ProjectMember.projectId == project_id,
+                ProjectMember.memberId == member_id,
+            )
+        )
+        if existing_result.scalar_one_or_none() is None:
+            db.add(ProjectMember(projectId=project_id, memberId=member_id))
+
+    await db.commit()
+    return await get_project(db, ctx, project_id)
+
+
+async def remove_project_member(    db: AsyncSession,
     ctx: MemberContext,
     project_id: str,
     member_id: str,
@@ -345,23 +379,10 @@ async def create_project_task(
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if payload.assignedMemberId:
-        member_result = await db.execute(
-            select(Member).where(
-                Member.id == payload.assignedMemberId,
-                Member.organizationId == ctx.organization.id,
-            )
-        )
-        if member_result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Assigned employee not found")
-
     db.add(
         ProjectTask(
             projectId=project_id,
             name=payload.name.strip(),
-            description=payload.description.strip() if payload.description else None,
-            assignedMemberId=payload.assignedMemberId,
-            status=payload.status,
         )
     )
     await db.commit()
@@ -399,3 +420,56 @@ async def get_project_meta(db: AsyncSession, ctx: MemberContext) -> ProjectMetaR
     departments = [ProjectLookupOption(id=dept_id, label=name) for dept_id, name in departments_result.all()]
     teams = [ProjectLookupOption(id=team_id, label=name) for team_id, name in teams_result.all()]
     return ProjectMetaResponse(members=members, departments=departments, teams=teams)
+
+
+async def list_projects_for_attendance(
+    db: AsyncSession,
+    ctx: MemberContext,
+):
+    """
+    Return active projects with their tasks for attendance work log selection.
+    Only returns projects that are ACTIVE and not deleted.
+    """
+    # Fetch active projects
+    projects_result = await db.execute(
+        select(Project)
+        .where(
+            Project.organizationId == ctx.organization.id,
+            Project.status == "ACTIVE",
+            Project.deletedAt.is_(None),
+        )
+        .order_by(Project.name)
+    )
+    projects = projects_result.scalars().all()
+
+    if not projects:
+        return []
+
+    # Fetch all tasks for these projects
+    project_ids = [p.id for p in projects]
+    tasks_result = await db.execute(
+        select(ProjectTask)
+        .where(ProjectTask.projectId.in_(project_ids))
+        .order_by(ProjectTask.name)
+    )
+    tasks = tasks_result.scalars().all()
+
+    # Group tasks by project
+    tasks_by_project: dict[str, list[dict]] = {}
+    for task in tasks:
+        if task.projectId not in tasks_by_project:
+            tasks_by_project[task.projectId] = []
+        tasks_by_project[task.projectId].append({
+            "id": task.id,
+            "name": task.name,
+        })
+
+    # Build response
+    return [
+        {
+            "id": project.id,
+            "name": project.name,
+            "tasks": tasks_by_project.get(project.id, []),
+        }
+        for project in projects
+    ]

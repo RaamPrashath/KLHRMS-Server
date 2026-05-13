@@ -26,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.attendance_record import AttendanceRecord
 from app.models.base import generate_uuid
 from app.models.member import Member
+from app.models.project import Project
+from app.models.project_task import ProjectTask
 from app.models.weekly_plan import WeeklyPlan
 from app.models.work_hour_policy import WorkHourPolicy
 
@@ -316,6 +318,57 @@ async def resolve_target_member(
     return member
 
 
+async def _validate_attendance_project_selection(
+    db: AsyncSession,
+    organization_id: str,
+    project_id: str | None,
+    project_task_id: str | None,
+) -> tuple[str | None, str | None]:
+    """
+    Validate project/task pairing used by attendance and work logs.
+
+    - Both values may be omitted.
+    - If one is provided, both are required.
+    - Project must belong to the organization and remain active.
+    - Task must belong to the selected project.
+    """
+    normalized_project_id = project_id.strip() if project_id else None
+    normalized_task_id = project_task_id.strip() if project_task_id else None
+
+    if normalized_project_id is None and normalized_task_id is None:
+        return None, None
+
+    if normalized_project_id is None or normalized_task_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Both project_id and project_task_id are required together",
+        )
+
+    project_result = await db.execute(
+        select(Project).where(
+            Project.id == normalized_project_id,
+            Project.organizationId == organization_id,
+            Project.status == "ACTIVE",
+            Project.deletedAt.is_(None),
+        )
+    )
+    project = project_result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    task_result = await db.execute(
+        select(ProjectTask).where(
+            ProjectTask.id == normalized_task_id,
+            ProjectTask.projectId == normalized_project_id,
+        )
+    )
+    task = task_result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Project task not found")
+
+    return normalized_project_id, normalized_task_id
+
+
 def enforce_scope(
     actor_member_id: str,
     target_member_id: str,
@@ -383,6 +436,9 @@ async def _upsert_day_row(
     overtime_hours: float | None,
     status: str,
     entered_by_manager_id: str | None,
+    project_id: str | None = None,
+    project_task_id: str | None = None,
+    description: str | None = None,
 ) -> AttendanceRecord:
     """
     Create or replace the attendance row for (employeeId, date).
@@ -400,6 +456,9 @@ async def _upsert_day_row(
     if existing is not None:
         existing.clockIn = clock_in
         existing.clockOut = clock_out
+        existing.projectId = project_id
+        existing.projectTaskId = project_task_id
+        existing.description = description
         existing.totalHours = total_hours
         existing.overtimeHours = overtime_hours
         existing.status = status
@@ -413,6 +472,9 @@ async def _upsert_day_row(
             date=day,
             clockIn=clock_in,
             clockOut=clock_out,
+            projectId=project_id,
+            projectTaskId=project_task_id,
+            description=description,
             totalHours=total_hours,
             overtimeHours=overtime_hours,
             status=status,
@@ -448,6 +510,9 @@ async def clock_in(
     latitude: float = 0,
     longitude: float = 0,
     accuracy_meters: float | None = None,
+    project_id: str | None = None,
+    project_task_id: str | None = None,
+    description: str | None = None,
     office_latitude: float | None = None,
     office_longitude: float | None = None,
     office_radius_meters: float = 200.0,
@@ -471,6 +536,13 @@ async def clock_in(
 
     now = clock_in_time or datetime.now(tz=timezone.utc)
     today = now.date()
+    validated_project_id, validated_project_task_id = await _validate_attendance_project_selection(
+        db=db,
+        organization_id=organization_id,
+        project_id=project_id,
+        project_task_id=project_task_id,
+    )
+    normalized_description = description.strip() if description else None
     target_member = await resolve_target_member(db, organization_id, target_member_id)
     validation_result = _validate_clock_in_location(
         declared_location=work_location,
@@ -504,6 +576,9 @@ async def clock_in(
         day=today,
         clock_in=now,
         clock_out=None,
+        project_id=validated_project_id,
+        project_task_id=validated_project_task_id,
+        description=normalized_description,
         total_hours=None,
         overtime_hours=None,
         status="PRESENT",
@@ -562,6 +637,9 @@ async def clock_out(
 
     segments = _split_into_day_segments(ci, now)
     written: list[AttendanceRecord] = []
+    active_project_id = active.projectId
+    active_project_task_id = active.projectTaskId
+    active_description = active.description
 
     for seg in segments:
         total = _compute_hours(seg.clock_in, seg.clock_out)
@@ -575,12 +653,27 @@ async def clock_out(
             day=seg.day,
             clock_in=seg.clock_in,
             clock_out=seg.clock_out,
+            project_id=active_project_id,
+            project_task_id=active_project_task_id,
+            description=active_description,
             total_hours=total,
             overtime_hours=overtime,
             status=status,
             entered_by_manager_id=None,
         )
+        await _insert_clock_session_work_log_if_missing(
+            db=db,
+            record=record,
+            segment=seg,
+            project_id=active_project_id,
+            project_task_id=active_project_task_id,
+            description=active_description,
+        )
         written.append(record)
+
+    await db.commit()
+    for record in written:
+        await db.refresh(record)
 
     return written
 
@@ -896,6 +989,8 @@ class _NormalizedLog:
 
     start_time: datetime
     end_time: datetime
+    project_id: str | None
+    project_task_id: str | None
     title: str | None
     notes: str | None
 
@@ -959,7 +1054,14 @@ def _validate_work_log_item(
             ),
         )
 
-    return _NormalizedLog(start_time=start, end_time=end, title=None, notes=None)
+    return _NormalizedLog(
+        start_time=start,
+        end_time=end,
+        project_id=None,
+        project_task_id=None,
+        title=None,
+        notes=None,
+    )
 
 
 def _derive_day_from_logs(
@@ -1034,6 +1136,8 @@ async def _insert_work_logs(
             date=day,
             startTime=log.start_time,
             endTime=log.end_time,
+            projectId=log.project_id,
+            projectTaskId=log.project_task_id,
             title=log.title,
             notes=log.notes,
         )
@@ -1045,6 +1149,52 @@ async def _insert_work_logs(
         await db.refresh(row)
 
     return inserted
+
+
+async def _insert_clock_session_work_log_if_missing(
+    db: AsyncSession,
+    record: AttendanceRecord,
+    segment: DaySegment,
+    project_id: str | None,
+    project_task_id: str | None,
+    description: str | None,
+) -> None:
+    """
+    Materialize clock-in metadata into the timesheet work-log table.
+
+    If the day already has work logs, leave them untouched to avoid overwriting
+    manual edits or bulk-entered logs.
+    """
+    from app.models.attendance_work_log import AttendanceWorkLog
+
+    if project_id is None or project_task_id is None:
+        return
+
+    existing_logs_result = await db.execute(
+        select(AttendanceWorkLog.id).where(
+            AttendanceWorkLog.attendanceRecordId == record.id,
+        ).limit(1)
+    )
+    existing_log_id = existing_logs_result.scalar_one_or_none()
+    if existing_log_id is not None:
+        return
+
+    db.add(
+        AttendanceWorkLog(
+            id=generate_uuid(),
+            attendanceRecordId=record.id,
+            organizationId=record.organizationId,
+            employeeId=record.employeeId,
+            date=record.date,
+            startTime=segment.clock_in,
+            endTime=segment.clock_out,
+            projectId=project_id,
+            projectTaskId=project_task_id,
+            title=None,
+            notes=description,
+        )
+    )
+    await db.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -1108,14 +1258,24 @@ async def upsert_bulk_work_logs(
             # Validate and normalize each log item.
             normalized: list[_NormalizedLog] = []
             for idx, log_item in enumerate(raw_logs):
+                validated_project_id, validated_project_task_id = (
+                    await _validate_attendance_project_selection(
+                        db=db,
+                        organization_id=organization_id,
+                        project_id=log_item.projectId,
+                        project_task_id=log_item.projectTaskId,
+                    )
+                )
                 n = _validate_work_log_item(
                     log_start=log_item.startTime,
                     log_end=log_item.endTime,
                     expected_date=day,
                     index=idx,
                 )
+                n.project_id = validated_project_id
+                n.project_task_id = validated_project_task_id
                 n.title = log_item.title
-                n.notes = log_item.notes
+                n.notes = log_item.notes.strip() if log_item.notes else None
                 normalized.append(n)
 
             # Sort logs by startTime ascending.

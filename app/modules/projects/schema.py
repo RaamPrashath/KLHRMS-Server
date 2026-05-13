@@ -5,7 +5,6 @@ from datetime import date, datetime
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 PROJECT_STATUSES = {"ACTIVE", "ON_HOLD", "COMPLETED", "CANCELLED"}
-TASK_STATUSES = {"TODO", "IN_PROGRESS", "DONE", "BLOCKED"}
 
 
 class ProjectFilters(BaseModel):
@@ -26,6 +25,10 @@ class ProjectFilters(BaseModel):
         return normalized
 
 
+class ProjectMemberAssignBulkRequest(BaseModel):
+    memberIds: list[str]
+
+
 class ProjectMemberAssignRequest(BaseModel):
     memberId: str
     role: str | None = Field(default=None, max_length=120)
@@ -34,17 +37,6 @@ class ProjectMemberAssignRequest(BaseModel):
 
 class ProjectTaskCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    description: str | None = None
-    assignedMemberId: str | None = None
-    status: str = Field(default="TODO")
-
-    @field_validator("status")
-    @classmethod
-    def validate_status(cls, value: str) -> str:
-        normalized = value.upper()
-        if normalized not in TASK_STATUSES:
-            raise ValueError("Invalid task status")
-        return normalized
 
 
 class ProjectUpsertRequest(BaseModel):
@@ -86,10 +78,6 @@ class ProjectMemberSummary(BaseModel):
 class ProjectTaskSummary(BaseModel):
     id: str
     name: str
-    description: str | None
-    status: str
-    assignedMemberId: str | None
-    assignedMemberName: str | None
     createdAt: datetime
 
 

@@ -7,12 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.projects.controller import (
     handle_assign_member,
+    handle_bulk_assign_members,
     handle_create_project,
     handle_create_task,
     handle_delete_project,
     handle_get_meta,
     handle_get_project,
     handle_list_projects,
+    handle_list_projects_for_attendance,
     handle_list_tasks,
     handle_revoke_member,
     handle_update_project,
@@ -21,6 +23,7 @@ from app.modules.projects.schema import (
     ProjectDetailResponse,
     ProjectFilters,
     ProjectListResponse,
+    ProjectMemberAssignBulkRequest,
     ProjectMemberAssignRequest,
     ProjectMetaResponse,
     ProjectTaskCreateRequest,
@@ -61,6 +64,18 @@ async def get_project_meta(
     db: DbSession,
 ) -> ProjectMetaResponse:
     return await handle_get_meta(access, db)
+
+
+@router.get("/for-attendance")
+async def list_projects_for_attendance(
+    access: Annotated[MemberContext, Depends(require_permission("attendance", "view", allow_self=True))],
+    db: DbSession,
+):
+    """
+    Return active projects with their tasks for attendance work log selection.
+    Only returns projects that are ACTIVE and not deleted.
+    """
+    return await handle_list_projects_for_attendance(access, db)
 
 
 @router.get("/{project_id}", response_model=ProjectDetailResponse)
@@ -109,6 +124,16 @@ async def add_member(
     db: DbSession,
 ) -> ProjectDetailResponse:
     return await handle_assign_member(access, db, project_id, body)
+
+
+@router.post("/{project_id}/members/bulk", response_model=ProjectDetailResponse)
+async def bulk_add_members(
+    project_id: str,
+    body: ProjectMemberAssignBulkRequest,
+    access: Annotated[MemberContext, Depends(require_permission("projects", "edit"))],
+    db: DbSession,
+) -> ProjectDetailResponse:
+    return await handle_bulk_assign_members(access, db, project_id, body)
 
 
 @router.delete("/{project_id}/members/{member_id}", response_model=ProjectDetailResponse)

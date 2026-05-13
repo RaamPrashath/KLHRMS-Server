@@ -25,6 +25,9 @@ class AttendanceWorkLog(Base):
     startTime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     endTime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    projectId: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    projectTaskId: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
@@ -39,4 +42,6 @@ class AttendanceWorkLog(Base):
         Index("attendanceWorkLog_organizationId_idx", "organizationId"),
         Index("attendanceWorkLog_organizationId_employeeId_idx", "organizationId", "employeeId"),
         Index("attendanceWorkLog_organizationId_date_idx", "organizationId", "date"),
+        Index("attendanceWorkLog_projectId_idx", "projectId"),
+        Index("attendanceWorkLog_projectTaskId_idx", "projectTaskId"),
     )
