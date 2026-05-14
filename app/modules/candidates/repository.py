@@ -50,6 +50,19 @@ class CandidatePipelineRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_job_posting_by_slug(
+        self,
+        organization_id: str,
+        slug: str,
+    ) -> JobPosting | None:
+        result = await self.db.execute(
+            select(JobPosting).where(
+                JobPosting.organizationId == organization_id,
+                JobPosting.slug == slug,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def list_stages_for_job(
         self,
         organization_id: str,
@@ -62,8 +75,11 @@ class CandidatePipelineRepository:
                     CandidateApplication.candidate
                 ),
                 selectinload(PipelineStage.applications).selectinload(
-                    CandidateApplication.stageEvents
+                    CandidateApplication.stageHistory
                 ),
+                selectinload(PipelineStage.applications).selectinload(
+                    CandidateApplication.stageEvents
+                ).selectinload(StageEvent.participants),
                 selectinload(PipelineStage.evaluationCategories),
                 selectinload(PipelineStage.evaluationWorkspace),
             )
@@ -75,9 +91,12 @@ class CandidatePipelineRepository:
         )
         return list(result.unique().scalars().all())
 
-    async def list_stage_slugs(self, organization_id: str) -> list[str]:
+    async def list_stage_slugs(self, organization_id: str, job_posting_id: str) -> list[str]:
         result = await self.db.execute(
-            select(PipelineStage.slug).where(PipelineStage.organizationId == organization_id)
+            select(PipelineStage.slug).where(
+                PipelineStage.organizationId == organization_id,
+                PipelineStage.jobPostingId == job_posting_id,
+            )
         )
         return [str(slug) for slug in result.scalars().all()]
 
@@ -125,6 +144,36 @@ class CandidatePipelineRepository:
             )
             .where(
                 PipelineStage.organizationId == organization_id,
+                PipelineStage.slug == stage_slug,
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
+    async def get_stage_by_job_and_slug(
+        self,
+        organization_id: str,
+        job_posting_id: str,
+        stage_slug: str,
+    ) -> PipelineStage | None:
+        result = await self.db.execute(
+            select(PipelineStage)
+            .options(
+                selectinload(PipelineStage.applications).options(
+                    joinedload(CandidateApplication.candidate),
+                    joinedload(CandidateApplication.jobPosting),
+                    selectinload(CandidateApplication.stageHistory),
+                    selectinload(CandidateApplication.stageEvents)
+                    .selectinload(StageEvent.participants)
+                    .joinedload(StageEventParticipant.member)
+                    .joinedload(Member.user),
+                ),
+                selectinload(PipelineStage.evaluationCategories),
+                selectinload(PipelineStage.evaluationWorkspace),
+                joinedload(PipelineStage.jobPosting),
+            )
+            .where(
+                PipelineStage.organizationId == organization_id,
+                PipelineStage.jobPostingId == job_posting_id,
                 PipelineStage.slug == stage_slug,
             )
         )
@@ -245,7 +294,9 @@ class CandidatePipelineRepository:
                 joinedload(CandidateApplication.candidate),
                 joinedload(CandidateApplication.jobPosting),
                 joinedload(CandidateApplication.pipelineStage),
-                selectinload(CandidateApplication.stageEvents),
+                selectinload(CandidateApplication.stageEvents)
+                .selectinload(StageEvent.participants),
+                selectinload(CandidateApplication.stageHistory),
             )
             .where(
                 CandidateApplication.organizationId == organization_id,
@@ -265,6 +316,10 @@ class CandidatePipelineRepository:
                 joinedload(CandidateApplication.candidate),
                 joinedload(CandidateApplication.jobPosting),
                 joinedload(CandidateApplication.pipelineStage),
+                selectinload(CandidateApplication.stageEvents)
+                .selectinload(StageEvent.participants)
+                .joinedload(StageEventParticipant.member)
+                .joinedload(Member.user),
                 selectinload(CandidateApplication.stageHistory).options(
                     joinedload(ApplicationStageHistory.fromStage),
                     joinedload(ApplicationStageHistory.toStage),
@@ -403,6 +458,11 @@ class CandidatePipelineRepository:
     ) -> StageEvent | None:
         result = await self.db.execute(
             select(StageEvent)
+            .options(
+                selectinload(StageEvent.participants)
+                .joinedload(StageEventParticipant.member)
+                .joinedload(Member.user)
+            )
             .where(
                 StageEvent.organizationId == organization_id,
                 StageEvent.applicationId == application_id,

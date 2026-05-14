@@ -24,6 +24,7 @@ from app.models.recruitment import (
     EventStatus,
     InterviewType,
     PipelineStage,
+    StageType,
     StageEvaluationCategory,
     StageEvaluationWorkspace,
     StageEvent,
@@ -33,6 +34,7 @@ from app.modules.candidates.repository import CandidatePipelineRepository
 from app.modules.candidates.schema import (
     ApplicationInterviewMeetingRead,
     CandidateApplicationDetailRead,
+    CandidateApplicationUpdateRequest,
     CandidateSummaryRead,
     InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
@@ -68,14 +70,13 @@ from app.modules.candidates.schema import (
 )
 
 DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
-    {"name": "Applied", "order": 1, "color": "#6366f1", "isDefault": True, "isFinal": False},
-    {"name": "Screening", "order": 2, "color": "#f59e0b", "isDefault": True, "isFinal": False},
-    {"name": "Interview Round 1", "order": 3, "color": "#3b82f6", "isDefault": True, "isFinal": False},
-    {"name": "Interview Round 2", "order": 4, "color": "#8b5cf6", "isDefault": False, "isFinal": False},
-    {"name": "Offer", "order": 5, "color": "#10b981", "isDefault": True, "isFinal": False},
-    {"name": "Hired", "order": 6, "color": "#22c55e", "isDefault": True, "isFinal": True},
-    {"name": "Onboarded", "order": 7, "color": "#06b6d4", "isDefault": True, "isFinal": True},
-    {"name": "Rejected", "order": 8, "color": "#ef4444", "isDefault": True, "isFinal": True},
+    {"name": "Applied", "order": 1.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.DEFAULT},
+    {"name": "Screening", "order": 2.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.DEFAULT},
+    {"name": "Interview Round 1", "order": 3.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.INTERVIEW},
+    {"name": "Interview Round 2", "order": 4.0, "color": None, "isDefault": False, "isFinal": False, "stageType": StageType.INTERVIEW},
+    {"name": "Offer", "order": 5.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.OFFER},
+    {"name": "Hired", "order": 6.0, "color": None, "isDefault": True, "isFinal": True, "stageType": StageType.HIRED},
+    {"name": "Rejected", "order": 7.0, "color": None, "isDefault": True, "isFinal": True, "stageType": StageType.REJECTED},
 ]
 
 
@@ -97,10 +98,11 @@ def _slugify_stage_name(value: str) -> str:
 async def _generate_stage_slug(
     repository: CandidatePipelineRepository,
     organization_id: str,
+    job_posting_id: str,
     name: str,
     excluded_stage_id: str | None = None,
 ) -> str:
-    used_slugs = set(await repository.list_stage_slugs(organization_id))
+    used_slugs = set(await repository.list_stage_slugs(organization_id, job_posting_id))
     if excluded_stage_id is not None:
         excluded_stage = await repository.get_stage(organization_id, excluded_stage_id)
         if excluded_stage is not None:
@@ -155,8 +157,30 @@ def _serialize_candidate(candidate: Candidate) -> CandidateSummaryRead:
         email=candidate.email,
         phone=candidate.phone,
         linkedinUrl=candidate.linkedinUrl,
+        portfolioUrl=candidate.portfolioUrl,
+        currentCompany=candidate.currentCompany,
+        currentTitle=candidate.currentTitle,
+        totalExperience=candidate.totalExperience,
         resumeUrl=candidate.resumeUrl,
     )
+
+
+def _last_moved_at(application: CandidateApplication) -> datetime | None:
+    histories = application.__dict__.get("stageHistory", []) or []
+    if not histories:
+        return None
+    return max((history.createdAt for history in histories), default=None)
+
+
+def _application_status(application: CandidateApplication, stage: PipelineStage) -> str:
+    latest_event = _latest_assignment_event(application, stage.id)
+    if latest_event is not None:
+        return _computed_interview_status(latest_event)
+    if stage.stageType == StageType.HIRED:
+        return "FINALIZED"
+    if stage.stageType == StageType.REJECTED:
+        return "REJECTED"
+    return "ACTIVE"
 
 
 def _serialize_application(
@@ -170,8 +194,11 @@ def _serialize_application(
         currentStage=stage.name,
         candidate=_serialize_candidate(application.candidate),
         score=application.score,
+        rating=application.rating,
         source=application.source,
         appliedDate=application.appliedAt,
+        lastMovedAt=_last_moved_at(application),
+        status=_application_status(application, stage),
         resumeUrl=application.candidate.resumeUrl,
         interviewMeeting=_serialize_application_interview_meeting(
             _latest_stage_event(application, stage.id)
@@ -196,14 +223,14 @@ def _serialize_stage(stage: PipelineStage) -> PipelineStageRead:
         isFinal=stage.isFinal,
         isProtected=_is_protected_stage(stage),
         stageType=stage.stageType.value,
-        meetingEnabled=stage.meetingEnabled,
-        offerLetterEnabled=stage.offerLetterEnabled,
+        meetingEnabled=stage.stageType == StageType.INTERVIEW,
+        offerLetterEnabled=stage.stageType == StageType.OFFER,
         evaluationEnabled=stage.evaluationEnabled,
         evaluationType=stage.evaluationType,
         evaluationIncludeTotal=stage.evaluationIncludeTotal,
         evaluationIncludeAnalysis=stage.evaluationIncludeAnalysis,
         dueDate=stage.dueDate,
-        extendToNextWorkingDay=stage.extendToNextWorkingDay,
+        extendToNextWorkingDay=False,
         evaluationCategories=[
             _serialize_category(category)
             for category in sorted(stage.evaluationCategories or [], key=lambda item: item.order)
@@ -314,7 +341,10 @@ def _serialize_detail(application: CandidateApplication) -> CandidateApplication
         candidate=_serialize_candidate(application.candidate),
         source=application.source,
         score=application.score,
-        notes=application.notes,
+        rating=application.rating,
+        coverLetter=application.notes,
+        internalNotes=application.internalNotes,
+        status=_application_status(application, application.pipelineStage),
         resumeUrl=application.candidate.resumeUrl,
         appliedAt=application.appliedAt,
         lastActivityAt=application.lastActivityAt,
@@ -364,6 +394,8 @@ def _serialize_workspace_assignment(event: StageEvent | None) -> StageWorkspaceA
         interviewer=interviewer,
         scheduledStartAt=event.scheduledStartAt,
         scheduledEndAt=event.scheduledEndAt,
+        meetLink=event.meetingUrl,
+        status=event.status.value,
         emailSentAt=event.emailSentAt,
     )
 
@@ -378,6 +410,7 @@ def _serialize_workspace_candidate(
         jobTitle=application.jobPosting.title,
         source=application.source,
         score=application.score,
+        rating=application.rating,
         appliedAt=application.appliedAt,
         currentAssignment=_serialize_workspace_assignment(
             _latest_assignment_event(application, stage.id)
@@ -395,6 +428,7 @@ def _serialize_stage_workspace(stage: PipelineStage) -> StageWorkspaceRead:
         stage=_serialize_stage(stage),
         jobPosting=PipelineJobPostingRead(
             id=stage.jobPosting.id,
+            slug=stage.jobPosting.slug,
             title=stage.jobPosting.title,
             status=stage.jobPosting.status.value,
         ),
@@ -418,11 +452,14 @@ async def _ensure_default_stages(
             organizationId=organization_id,
             jobPostingId=job_posting_id,
             name=str(stage["name"]),
-            slug=await _generate_stage_slug(repository, organization_id, str(stage["name"])),
-            order=int(stage["order"]),
-            color=str(stage["color"]),
+            slug=await _generate_stage_slug(repository, organization_id, job_posting_id, str(stage["name"])),
+            order=float(stage["order"]),
+            color=stage["color"],
             isDefault=bool(stage["isDefault"]),
             isFinal=bool(stage["isFinal"]),
+            stageType=stage["stageType"],
+            meetingEnabled=bool(stage["stageType"] == StageType.INTERVIEW),
+            offerLetterEnabled=bool(stage["stageType"] == StageType.OFFER),
         )
         for stage in DEFAULT_PIPELINE_STAGES
     ]
@@ -433,11 +470,11 @@ async def _ensure_default_stages(
 
 async def _normalize_stage_order(db: AsyncSession, stages: list[PipelineStage]) -> None:
     for index, stage in enumerate(stages, start=1):
-        stage.order = -(index + 1000)
+        stage.order = float(-(index + 1000))
         db.add(stage)
     await db.flush()
     for index, stage in enumerate(stages, start=1):
-        stage.order = index
+        stage.order = float(index)
         db.add(stage)
     await db.flush()
 
@@ -500,30 +537,23 @@ async def _apply_stage_config(
     stage: PipelineStage,
     body: PipelineStageCreateRequest | PipelineStageUpdateRequest,
 ) -> None:
-    if body.meetingEnabled is not None:
-        stage.meetingEnabled = body.meetingEnabled
-    if body.offerLetterEnabled is not None:
-        stage.offerLetterEnabled = body.offerLetterEnabled
+    next_stage_type = stage.stageType
+    if getattr(body, "stageType", None) is not None:
+        next_stage_type = StageType(str(body.stageType).strip().upper())
+    stage.stageType = next_stage_type
+    stage.meetingEnabled = next_stage_type == StageType.INTERVIEW
+    stage.offerLetterEnabled = next_stage_type == StageType.OFFER
+    stage.isFinal = next_stage_type in {StageType.HIRED, StageType.REJECTED}
+
     if body.evaluationEnabled is not None:
         stage.evaluationEnabled = body.evaluationEnabled
-    if body.evaluationType is not None:
-        stage.evaluationType = body.evaluationType
-    if body.evaluationIncludeTotal is not None:
-        stage.evaluationIncludeTotal = body.evaluationIncludeTotal
-    if body.evaluationIncludeAnalysis is not None:
-        stage.evaluationIncludeAnalysis = body.evaluationIncludeAnalysis
 
     if isinstance(body, PipelineStageUpdateRequest) and body.dueDateEnabled is False:
         stage.dueDate = None
-        stage.extendToNextWorkingDay = False
     elif body.dueDate is not None:
         stage.dueDate = body.dueDate
 
-    if body.extendToNextWorkingDay is not None:
-        stage.extendToNextWorkingDay = body.extendToNextWorkingDay and stage.dueDate is not None
-
-    if stage.meetingEnabled and stage.dueDate is None:
-        raise HTTPException(status_code=400, detail="Due date is required when online meeting is enabled")
+    stage.extendToNextWorkingDay = False
 
     if not stage.evaluationEnabled:
         stage.evaluationType = None
@@ -546,7 +576,12 @@ async def list_job_postings(
     repository = CandidatePipelineRepository(db)
     postings = await repository.list_job_postings(organization_id)
     return [
-        PipelineJobPostingRead(id=posting.id, title=posting.title, status=posting.status.value)
+        PipelineJobPostingRead(
+            id=posting.id,
+            slug=posting.slug,
+            title=posting.title,
+            status=posting.status.value,
+        )
         for posting in postings
     ]
 
@@ -566,6 +601,18 @@ async def get_pipeline_board(
         jobPostingId=job_posting_id,
         stages=[_serialize_stage(stage) for stage in stages],
     )
+
+
+async def get_pipeline_board_by_job_slug(
+    db: AsyncSession,
+    organization_id: str,
+    job_slug: str,
+) -> PipelineBoardRead:
+    repository = CandidatePipelineRepository(db)
+    posting = await repository.get_job_posting_by_slug(organization_id, job_slug)
+    if posting is None:
+        raise HTTPException(status_code=404, detail="Job posting not found")
+    return await get_pipeline_board(db, organization_id, posting.id)
 
 
 async def move_application_stage(
@@ -654,28 +701,23 @@ async def create_stage(
         raise HTTPException(status_code=404, detail="Job posting not found")
 
     stages = await _ensure_default_stages(db, repository, organization_id, body.jobPostingId)
-    insert_index = len(stages)
-    if body.afterStageId is not None:
-        after_stage = next((stage for stage in stages if stage.id == body.afterStageId), None)
-        if after_stage is not None:
-            insert_index = sorted(stages, key=lambda stage: stage.order).index(after_stage) + 1
+    ordered_stages = sorted(stages, key=lambda item: item.order)
+    next_order = (ordered_stages[-1].order + 1.0) if ordered_stages else 1.0
 
     new_stage = PipelineStage(
         organizationId=organization_id,
         jobPostingId=body.jobPostingId,
         jobPosting=posting,
         name=body.name.strip(),
-        slug=await _generate_stage_slug(repository, organization_id, body.name),
-        order=10_000,
+        slug=await _generate_stage_slug(repository, organization_id, body.jobPostingId, body.name),
+        order=next_order,
         color=None,
         isDefault=False,
-        isFinal=False,
+        isFinal=body.stageType in {"HIRED", "REJECTED"},
+        stageType=StageType(body.stageType),
     )
     await repository.add_stage(new_stage)
     await _apply_stage_config(db, organization_id, new_stage, body)
-    ordered = sorted(stages, key=lambda stage: stage.order)
-    ordered.insert(insert_index, new_stage)
-    await _normalize_stage_order(db, ordered)
     await _sync_stage_evaluation_workspace_if_needed(
         db,
         repository,
@@ -707,14 +749,9 @@ async def update_stage(
 
     if body.name is not None:
         stage.name = body.name.strip()
-        stage.slug = await _generate_stage_slug(repository, organization_id, stage.name, stage.id)
     await _apply_stage_config(db, organization_id, stage, body)
     if body.order is not None:
-        stages = await repository.list_stages_for_job(organization_id, stage.jobPostingId)
-        ordered = [item for item in sorted(stages, key=lambda item: item.order) if item.id != stage.id]
-        target_index = min(max(body.order, 1), len(ordered) + 1) - 1
-        ordered.insert(target_index, stage)
-        await _normalize_stage_order(db, ordered)
+        stage.order = body.order
 
     db.add(stage)
     await _sync_stage_evaluation_workspace_if_needed(
@@ -799,6 +836,26 @@ async def get_stage_workspace(
     stage = await repository.get_stage_by_slug(organization_id, stage_slug)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if stage.stageType != StageType.INTERVIEW:
+        raise HTTPException(status_code=409, detail="Only interview stages have a workspace")
+    return _serialize_stage_workspace(stage)
+
+
+async def get_stage_workspace_by_job_slug(
+    db: AsyncSession,
+    organization_id: str,
+    job_slug: str,
+    stage_slug: str,
+) -> StageWorkspaceRead:
+    repository = CandidatePipelineRepository(db)
+    posting = await repository.get_job_posting_by_slug(organization_id, job_slug)
+    if posting is None:
+        raise HTTPException(status_code=404, detail="Job posting not found")
+    stage = await repository.get_stage_by_job_and_slug(organization_id, posting.id, stage_slug)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if stage.stageType != StageType.INTERVIEW:
+        raise HTTPException(status_code=409, detail="Only interview stages have a workspace")
     return _serialize_stage_workspace(stage)
 
 
@@ -812,6 +869,34 @@ async def search_interviewers(
     return InterviewerSearchResponse(
         items=[_serialize_interviewer(member, department) for member, department in rows]
     )
+
+
+async def update_candidate_application(
+    db: AsyncSession,
+    organization_id: str,
+    application_id: str,
+    body: CandidateApplicationUpdateRequest,
+) -> CandidateApplicationDetailRead:
+    repository = CandidatePipelineRepository(db)
+    application = await repository.get_application_detail(organization_id, application_id)
+    if application is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    if body.internalNotes is not None:
+        application.internalNotes = body.internalNotes.strip() or None
+    if body.rating is not None:
+        application.rating = body.rating
+    if body.resumeUrl is not None:
+        application.candidate.resumeUrl = body.resumeUrl.strip() or None
+
+    db.add(application)
+    db.add(application.candidate)
+    await db.commit()
+
+    refreshed = await repository.get_application_detail(organization_id, application_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return _serialize_detail(refreshed)
 
 
 def _assignment_date(value: datetime) -> date:
@@ -905,6 +990,8 @@ async def assign_stage_interviews(
     stage = await repository.get_stage_by_slug(organization_id, stage_slug)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if stage.stageType != StageType.INTERVIEW:
+        raise HTTPException(status_code=400, detail="Assignments can only be created for interview stages")
 
     applications_by_id = {application.id: application for application in stage.applications}
     member_ids = list({assignment.interviewerMemberId for assignment in body.assignments})
@@ -935,7 +1022,17 @@ async def assign_stage_interviews(
         candidate_name = _candidate_display_name(application)
         interviewer_name = interviewer.user.name or interviewer.user.email
 
-        event = StageEvent(
+        existing_event = await repository.get_latest_stage_event(
+            organization_id,
+            application.id,
+            stage.id,
+        )
+        is_reassignment = existing_event is not None and existing_event.status in {
+            EventStatus.SCHEDULED,
+            EventStatus.RESCHEDULED,
+        }
+
+        event = existing_event or StageEvent(
             organizationId=organization_id,
             applicationId=application.id,
             stageId=stage.id,
@@ -943,16 +1040,31 @@ async def assign_stage_interviews(
             title=f"{stage.name} interview - {candidate_name}",
             description=f"Interview for {application.jobPosting.title}",
             interviewType=InterviewType.OTHER,
-            status=EventStatus.SCHEDULED,
-            scheduledStartAt=starts_at,
-            scheduledEndAt=ends_at,
         )
-        await repository.add_stage_event(event)
+        event.title = f"{stage.name} interview - {candidate_name}"
+        event.description = f"Interview for {application.jobPosting.title}"
+        event.interviewType = InterviewType.OTHER
+        event.assignmentMode = "DIRECT"
+        event.teamId = None
+        event.status = EventStatus.RESCHEDULED if is_reassignment else EventStatus.SCHEDULED
+        event.scheduledStartAt = starts_at
+        event.scheduledEndAt = ends_at
+        event.meetingUrl = assignment.meetLink or None
+
+        if existing_event is None:
+            await repository.add_stage_event(event)
+        else:
+            for participant in list(existing_event.participants or []):
+                await db.delete(participant)
+            await db.flush()
+
         await repository.add_stage_event_participant(
             StageEventParticipant(
                 eventId=event.id,
                 memberId=interviewer.id,
                 role="INTERVIEWER",
+                isBackup=False,
+                approvalStatus="PENDING",
             )
         )
 
@@ -1227,6 +1339,7 @@ async def list_my_interviews(
                 status=_computed_interview_status(event),
                 role=participant.role or "INTERVIEWER",
                 isBackup=is_backup,
+                meetingUrl=event.meetingUrl,
             )
         )
     return MyInterviewListResponse(items=items)

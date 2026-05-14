@@ -222,6 +222,12 @@ class JobRequisitionRepository:
         await self.db.flush()
         return posting
 
+    async def list_job_postings_for_org(self, organization_id: str) -> list[JobPosting]:
+        result = await self.db.execute(
+            select(JobPosting).where(JobPosting.organizationId == organization_id)
+        )
+        return list(result.scalars().all())
+
     async def add_pipeline_stages(self, stages: list[PipelineStage]) -> None:
         self.db.add_all(stages)
         await self.db.flush()

@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.candidates import service
 from app.modules.candidates.schema import (
     CandidateApplicationDetailRead,
+    CandidateApplicationUpdateRequest,
     InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
@@ -44,6 +45,14 @@ async def handle_get_pipeline_board(
     job_posting_id: str,
 ) -> PipelineBoardRead:
     return await service.get_pipeline_board(db, ctx.organization.id, job_posting_id)
+
+
+async def handle_get_pipeline_board_by_job_slug(
+    ctx: MemberContext,
+    db: AsyncSession,
+    job_slug: str,
+) -> PipelineBoardRead:
+    return await service.get_pipeline_board_by_job_slug(db, ctx.organization.id, job_slug)
 
 
 async def handle_move_application_stage(
@@ -119,12 +128,30 @@ async def handle_get_application_detail(
     return await service.get_application_detail(db, ctx.organization.id, application_id)
 
 
+async def handle_update_application_detail(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    body: CandidateApplicationUpdateRequest,
+) -> CandidateApplicationDetailRead:
+    return await service.update_candidate_application(db, ctx.organization.id, application_id, body)
+
+
 async def handle_get_stage_workspace(
     ctx: MemberContext,
     db: AsyncSession,
     stage_slug: str,
 ) -> StageWorkspaceRead:
     return await service.get_stage_workspace(db, ctx.organization.id, stage_slug)
+
+
+async def handle_get_stage_workspace_by_job_slug(
+    ctx: MemberContext,
+    db: AsyncSession,
+    job_slug: str,
+    stage_slug: str,
+) -> StageWorkspaceRead:
+    return await service.get_stage_workspace_by_job_slug(db, ctx.organization.id, job_slug, stage_slug)
 
 
 async def handle_list_interviewers(

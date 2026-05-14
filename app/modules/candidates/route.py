@@ -18,17 +18,21 @@ from app.modules.candidates.controller import (
     handle_get_application_detail,
     handle_get_evaluation_workspace,
     handle_get_pipeline_board,
+    handle_get_pipeline_board_by_job_slug,
     handle_get_stage_workspace,
+    handle_get_stage_workspace_by_job_slug,
     handle_list_interviewers,
     handle_list_job_postings,
     handle_list_my_interviews,
     handle_move_application_stage,
     handle_preview_stage_interview_warnings,
     handle_reshuffle_interview_assignment,
+    handle_update_application_detail,
     handle_update_stage,
 )
 from app.modules.candidates.schema import (
     CandidateApplicationDetailRead,
+    CandidateApplicationUpdateRequest,
     InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
@@ -76,6 +80,15 @@ async def get_pipeline_board(
     return await handle_get_pipeline_board(ctx, db, jobPostingId)
 
 
+@router.get("/pipeline/jobs/{job_slug}", response_model=PipelineBoardRead)
+async def get_pipeline_board_by_job_slug(
+    job_slug: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    db: AsyncSession = Depends(get_db),
+) -> PipelineBoardRead:
+    return await handle_get_pipeline_board_by_job_slug(ctx, db, job_slug)
+
+
 @router.get("/pipeline/interviewers", response_model=InterviewerSearchResponse)
 async def list_interviewers(
     ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
@@ -92,6 +105,16 @@ async def get_stage_workspace(
     db: AsyncSession = Depends(get_db),
 ) -> StageWorkspaceRead:
     return await handle_get_stage_workspace(ctx, db, stage_slug)
+
+
+@router.get("/pipeline/jobs/{job_slug}/stages/{stage_slug}/workspace", response_model=StageWorkspaceRead)
+async def get_stage_workspace_by_job_slug(
+    job_slug: str,
+    stage_slug: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    db: AsyncSession = Depends(get_db),
+) -> StageWorkspaceRead:
+    return await handle_get_stage_workspace_by_job_slug(ctx, db, job_slug, stage_slug)
 
 
 @router.post(
@@ -137,6 +160,16 @@ async def get_application_detail(
     db: AsyncSession = Depends(get_db),
 ) -> CandidateApplicationDetailRead:
     return await handle_get_application_detail(ctx, db, application_id)
+
+
+@router.patch("/applications/{application_id}", response_model=CandidateApplicationDetailRead)
+async def update_application_detail(
+    application_id: str,
+    body: CandidateApplicationUpdateRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> CandidateApplicationDetailRead:
+    return await handle_update_application_detail(ctx, db, application_id, body)
 
 
 @router.post("/applications/{application_id}/interview-meetings", response_model=InterviewMeetingRead)

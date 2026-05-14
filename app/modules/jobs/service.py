@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,7 @@ from app.models.recruitment import (
     PipelineStage,
     RequisitionApproval,
     RequisitionApprovalDecision,
+    StageType,
 )
 from app.modules.jobs.repository import JobRequisitionRepository
 from app.modules.jobs.schema import (
@@ -35,15 +37,46 @@ from app.modules.jobs.schema import (
 
 
 DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
-    {"name": "Applied", "order": 1, "color": "#6366f1", "isDefault": True, "isFinal": False},
-    {"name": "Screening", "order": 2, "color": "#f59e0b", "isDefault": True, "isFinal": False},
-    {"name": "Interview Round 1", "order": 3, "color": "#3b82f6", "isDefault": True, "isFinal": False},
-    {"name": "Interview Round 2", "order": 4, "color": "#8b5cf6", "isDefault": False, "isFinal": False},
-    {"name": "Offer", "order": 5, "color": "#10b981", "isDefault": True, "isFinal": False},
-    {"name": "Hired", "order": 6, "color": "#22c55e", "isDefault": True, "isFinal": True},
-    {"name": "Onboarded", "order": 7, "color": "#06b6d4", "isDefault": True, "isFinal": True},
-    {"name": "Rejected", "order": 8, "color": "#ef4444", "isDefault": True, "isFinal": True},
+    {"name": "Applied", "order": 1.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.DEFAULT},
+    {"name": "Screening", "order": 2.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.DEFAULT},
+    {"name": "Interview Round 1", "order": 3.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.INTERVIEW},
+    {"name": "Interview Round 2", "order": 4.0, "color": None, "isDefault": False, "isFinal": False, "stageType": StageType.INTERVIEW},
+    {"name": "Offer", "order": 5.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.OFFER},
+    {"name": "Hired", "order": 6.0, "color": None, "isDefault": True, "isFinal": True, "stageType": StageType.HIRED},
+    {"name": "Rejected", "order": 7.0, "color": None, "isDefault": True, "isFinal": True, "stageType": StageType.REJECTED},
 ]
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or "item"
+
+
+async def _generate_job_slug(
+    repository: JobRequisitionRepository,
+    organization_id: str,
+    title: str,
+) -> str:
+    jobs = await repository.list_job_postings_for_org(organization_id)
+    used = {job.slug for job in jobs if job.slug}
+    base_slug = _slugify(title)
+    candidate = base_slug
+    suffix = 2
+    while candidate in used:
+        candidate = f"{base_slug}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _generate_stage_slug(name: str, used: set[str]) -> str:
+    base_slug = _slugify(name)
+    candidate = base_slug
+    suffix = 2
+    while candidate in used:
+        candidate = f"{base_slug}-{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
 
 
 def _to_utc_datetime(value: datetime | None) -> datetime | None:
@@ -179,6 +212,7 @@ async def _create_job_posting_for_requisition(
     posting = JobPosting(
         organizationId=requisition.organizationId,
         title=requisition.title,
+        slug=await _generate_job_slug(repository, requisition.organizationId, requisition.title),
         description=(requisition.description or "").strip() or requisition.title.strip(),
         requirements=requisition.requirements,
         status=JobPostingStatus.PUBLISHED,
@@ -186,15 +220,20 @@ async def _create_job_posting_for_requisition(
     )
     posting = await repository.add_job_posting(posting)
 
+    used_stage_slugs: set[str] = set()
     stages = [
         PipelineStage(
             organizationId=requisition.organizationId,
             jobPostingId=posting.id,
             name=stage["name"],
+            slug=_generate_stage_slug(str(stage["name"]), used_stage_slugs),
             order=stage["order"],
             color=stage["color"],
             isDefault=stage["isDefault"],
             isFinal=stage["isFinal"],
+            stageType=stage["stageType"],
+            meetingEnabled=bool(stage["stageType"] == StageType.INTERVIEW),
+            offerLetterEnabled=bool(stage["stageType"] == StageType.OFFER),
         )
         for stage in DEFAULT_PIPELINE_STAGES
     ]
