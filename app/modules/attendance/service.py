@@ -42,7 +42,7 @@ _DEFAULT_STANDARD_HOURS: float = 8.0
 _DEFAULT_OVERTIME_THRESHOLD: float = 8.0
 _DEFAULT_HALF_DAY_MAX_HOURS: float = 4.0
 _REMOTE_PLAN_LOCATIONS: frozenset[str] = frozenset({"WFH"})
-_NON_WORKING_PLAN_LOCATIONS: frozenset[str] = frozenset({"LEAVE", "HOLIDAY"})
+_NON_WORKING_PLAN_LOCATIONS: frozenset[str] = frozenset({"HOLIDAY"})
 
 
 # ---------------------------------------------------------------------------
@@ -156,9 +156,9 @@ def _validate_clock_in_location(
     office_radius_meters: float,
 ) -> LocationValidationResult:
     if office_latitude is None or office_longitude is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Office coordinates are not configured for this organization",
+        return LocationValidationResult(
+            actual_location=declared_location,
+            distance_meters=None,
         )
 
     distance_meters = _haversine_distance_meters(
@@ -212,6 +212,29 @@ def _plan_matches_actual_location(plan_location: str | None, actual_location: st
     if plan_location in _NON_WORKING_PLAN_LOCATIONS:
         return False
     return False
+
+
+async def _check_day_has_approved_leave(
+    db: AsyncSession,
+    organization_id: str,
+    member_id: str,
+    day: date,
+) -> bool:
+    """Return True if the member has an approved leave request covering this day."""
+    from app.models.leave import LeaveRequest
+    from app.shared.utils.enums import LeaveRequestStatus
+
+    result = await db.execute(
+        select(LeaveRequest).where(
+            LeaveRequest.organizationId == organization_id,
+            LeaveRequest.memberId == member_id,
+            LeaveRequest.deletedAt.is_(None),
+            LeaveRequest.status == LeaveRequestStatus.APPROVED,
+            LeaveRequest.startDate <= day,
+            LeaveRequest.endDate >= day,
+        ).limit(1)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 def _derive_status(total_hours: float, half_day_max: float) -> str:
@@ -569,7 +592,7 @@ async def clock_in(
             ),
         )
 
-    return await _upsert_day_row(
+    record = await _upsert_day_row(
         db=db,
         organization_id=organization_id,
         employee_id=target_member_id,
@@ -584,6 +607,66 @@ async def clock_in(
         status="PRESENT",
         entered_by_manager_id=None,
     )
+
+    # ── If today was a leave day, restore quota + update plan ───────────
+    if await _check_day_has_approved_leave(db, organization_id, target_member_id, today):
+        from app.models.leave import LeaveBalance as _LeaveBalance
+        from app.models.leave import LeaveRequest as _LeaveRequest
+        from app.models.weekly_plan import WeeklyPlan as _WeeklyPlan
+        from app.shared.utils.enums import LeaveRequestStatus as _LeaveRequestStatus
+
+        # Fetch approved leave requests covering today
+        leave_q = await db.execute(
+            select(_LeaveRequest).where(
+                _LeaveRequest.organizationId == organization_id,
+                _LeaveRequest.memberId == target_member_id,
+                _LeaveRequest.deletedAt.is_(None),
+                _LeaveRequest.status == _LeaveRequestStatus.APPROVED,
+                _LeaveRequest.startDate <= today,
+                _LeaveRequest.endDate >= today,
+            )
+        )
+        covering_leaves: list[_LeaveRequest] = leave_q.unique().scalars().all()
+
+        for lr in covering_leaves:
+            if lr.days <= 0:
+                continue
+
+            leave_type_id = lr.leaveTypeId
+            lr.days = max(0.0, lr.days - 1.0)
+
+            # Restore 1 day to leave balance
+            balance_q = await db.execute(
+                select(_LeaveBalance).where(
+                    _LeaveBalance.organizationId == organization_id,
+                    _LeaveBalance.memberId == target_member_id,
+                    _LeaveBalance.leaveTypeId == leave_type_id,
+                    _LeaveBalance.year == today.year,
+                )
+            )
+            balance: _LeaveBalance | None = balance_q.scalar_one_or_none()
+            if balance is not None and balance.used > 0:
+                balance.used = max(0.0, balance.used - 1.0)
+                balance.remaining = balance.allocated + balance.carriedForward - balance.used - balance.lapsed
+
+        # Update weekly plan from LEAVE to actual clock-in location
+        actual_plan_value = "WFH" if validation_result.actual_location == "REMOTE" else "OFFICE"
+        wp_result = await db.execute(
+            select(_WeeklyPlan).where(
+                _WeeklyPlan.organization_id == uuid.UUID(organization_id),
+                _WeeklyPlan.user_id == target_member.userId,
+                _WeeklyPlan.date == today,
+                _WeeklyPlan.deleted_at.is_(None),
+            )
+        )
+        wp_entry: _WeeklyPlan | None = wp_result.scalar_one_or_none()
+        if wp_entry is not None and wp_entry.work_location == "LEAVE":
+            wp_entry.work_location = actual_plan_value
+
+        await db.commit()
+        await db.refresh(record)
+
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -704,6 +787,12 @@ async def upsert_manual_day(
     """
     enforce_scope(actor_member_id, target_member_id, scope)
 
+    if await _check_day_has_approved_leave(db, organization_id, target_member_id, day):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot manually edit attendance for a day with approved leave. The member must clock in/out instead.",
+        )
+
     total_hours: float | None = None
     overtime_hours: float | None = None
     status = "ABSENT"
@@ -758,6 +847,12 @@ async def delete_day_entry(
     Raises 404 if the row does not exist.
     """
     enforce_scope(actor_member_id, target_member_id, scope)
+
+    if await _check_day_has_approved_leave(db, organization_id, target_member_id, day):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete attendance for a day with approved leave.",
+        )
 
     result = await db.execute(
         select(AttendanceRecord).where(
@@ -1238,6 +1333,12 @@ async def upsert_bulk_work_logs(
         for day_payload in days:
             day: date = day_payload.date
             raw_logs = day_payload.logs
+
+            if await _check_day_has_approved_leave(db, organization_id, target_member_id, day):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot modify attendance for {day.isoformat()} — it has an approved leave.",
+                )
 
             if not raw_logs:
                 # Empty logs → treat as deletion of that day.
