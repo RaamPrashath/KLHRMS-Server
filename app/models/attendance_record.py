@@ -18,6 +18,9 @@ class AttendanceRecord(Base):
 
     clockIn: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     clockOut: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    projectId: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    projectTaskId: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     totalHours: Mapped[float | None] = mapped_column(Float, nullable=True)
     overtimeHours: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -37,4 +40,6 @@ class AttendanceRecord(Base):
         Index("attendanceRecord_organizationId_idx", "organizationId"),
         Index("attendanceRecord_organizationId_date_idx", "organizationId", "date"),
         Index("attendanceRecord_organizationId_employeeId_idx", "organizationId", "employeeId"),
+        Index("attendanceRecord_projectId_idx", "projectId"),
+        Index("attendanceRecord_projectTaskId_idx", "projectTaskId"),
     )

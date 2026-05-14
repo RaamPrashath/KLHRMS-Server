@@ -431,6 +431,34 @@ async def _get_or_create_leave_balance(
     return balance
 
 
+async def _count_working_days(
+    db: AsyncSession,
+    organization_id: str,
+    start_date: dt.date,
+    end_date: dt.date,
+) -> int:
+    """Count calendar days between start_date and end_date, excluding weekends and holidays."""
+    total = 0
+    current = start_date
+    # Fetch holidays in range
+    result = await db.execute(
+        select(Holiday).where(
+            Holiday.organizationId == organization_id,
+            Holiday.deletedAt.is_(None),
+            Holiday.isHoliday.is_(True),
+            Holiday.holidayDate >= start_date,
+            Holiday.holidayDate <= end_date,
+        )
+    )
+    holiday_dates = {row.holidayDate for row in result.scalars().all()}
+
+    while current <= end_date:
+        if current.weekday() < 5 and current not in holiday_dates:
+            total += 1
+        current += dt.timedelta(days=1)
+    return total
+
+
 async def create_leave_request(
     db: AsyncSession,
     organization_id: str,
@@ -452,6 +480,15 @@ async def create_leave_request(
 
     await resolve_target_member(db, organization_id, target_member_id)
     await _ensure_no_overlapping_request(db, organization_id, target_member_id, start_date, end_date)
+
+    # Validate days — must not exceed actual working days in range
+    max_working_days = await _count_working_days(db, organization_id, start_date, end_date)
+    if days > max_working_days:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Leave days ({days}) exceeds working days ({max_working_days}) in the selected range. "
+                   f"Weekends and holidays are automatically excluded.",
+        )
 
     if leave_type.isPaid:
         balance = await _get_or_create_leave_balance(

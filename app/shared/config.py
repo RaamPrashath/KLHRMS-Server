@@ -116,6 +116,16 @@ class Settings(BaseSettings):
         alias="RESEND_FROM_EMAIL",
     )
 
+    mode: str = Field(
+        default=os.getenv("MODE", "development"),
+        alias="MODE",
+    )
+
+    secondary_receiver: str = Field(
+        default=os.getenv("SECONDARY_RECEIVER", ""),
+        alias="SECONDARY_RECEIVER",
+    )
+
     @field_validator("database_url", mode="before")
     @classmethod
     def validate_database_url(cls, value: str) -> str:

@@ -49,6 +49,9 @@ class ClockInRequest(BaseModel):
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
     accuracy_meters: float | None = Field(default=None, ge=0)
+    project_id: str | None = Field(default=None, max_length=36)
+    project_task_id: str | None = Field(default=None, max_length=36)
+    description: str | None = Field(default=None, max_length=1000)
 
 
 class ClockOutRequest(BaseModel):
@@ -196,6 +199,8 @@ class BulkWorkLogItem(BaseModel):
         ...,
         description="End of the work block (timezone-aware).",
     )
+    projectId: str | None = Field(default=None, max_length=36)
+    projectTaskId: str | None = Field(default=None, max_length=36)
     title: str | None = Field(default=None, max_length=255)
     notes: str | None = Field(default=None, max_length=1000)
 
@@ -275,6 +280,8 @@ class WorkLogResponse(BaseModel):
     id: str
     startTime: dt.datetime | None
     endTime: dt.datetime | None
+    projectId: str | None
+    projectTaskId: str | None
     title: str | None
     notes: str | None
 

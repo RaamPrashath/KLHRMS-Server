@@ -1,23 +1,22 @@
+import enum
+
 from sqlalchemy import (
     ARRAY,
     Boolean,
     DateTime,
     Enum,
-    ForeignKey,
     Float,
+    ForeignKey,
+    Index,
     Integer,
     String,
     Text,
-    func,
     UniqueConstraint,
-    Index,
+    func,
 )
-from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, generate_uuid
-
-import enum
-
 
 # =========================================================
 # ENUMS
@@ -348,6 +347,14 @@ class Candidate(Base):
 
     linkedinUrl: Mapped[str | None] = mapped_column(String)
 
+    portfolioUrl: Mapped[str | None] = mapped_column(String)
+
+    currentCompany: Mapped[str | None] = mapped_column(String)
+
+    currentTitle: Mapped[str | None] = mapped_column(String)
+
+    totalExperience: Mapped[str | None] = mapped_column(String)
+
     resumeUrl: Mapped[str | None] = mapped_column(Text)
 
     createdAt: Mapped[DateTime] = mapped_column(
@@ -413,6 +420,11 @@ class JobPosting(Base):
         nullable=False,
     )
 
+    slug: Mapped[str] = mapped_column(
+        String(160),
+        nullable=False,
+    )
+
     description: Mapped[str] = mapped_column(
         Text,
         nullable=False,
@@ -461,6 +473,20 @@ class JobPosting(Base):
         cascade="all, delete-orphan",
     )
 
+    hiringTeams = relationship(
+        "HiringTeam",
+        back_populates="jobPosting",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organizationId",
+            "slug",
+            name="uq_job_posting_org_slug",
+        ),
+    )
+
 
 # =========================================================
 # PIPELINE STAGE
@@ -489,13 +515,25 @@ class PipelineStage(Base):
         index=True,
     )
 
+    stageId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("pipeline_stage.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
     name: Mapped[str] = mapped_column(
         String,
         nullable=False,
     )
 
-    order: Mapped[int] = mapped_column(
-        Integer,
+    slug: Mapped[str] = mapped_column(
+        String(160),
+        nullable=False,
+    )
+
+    order: Mapped[float] = mapped_column(
+        Float,
         nullable=False,
     )
 
@@ -625,6 +663,11 @@ class PipelineStage(Base):
             "jobPostingId",
             "order",
             name="uq_pipeline_stage_order",
+        ),
+        UniqueConstraint(
+            "jobPostingId",
+            "slug",
+            name="uq_pipeline_stage_job_slug",
         ),
     )
 
@@ -839,6 +882,10 @@ class CandidateApplication(Base):
 
     notes: Mapped[str | None] = mapped_column(Text)
 
+    internalNotes: Mapped[str | None] = mapped_column(Text)
+
+    rating: Mapped[int | None] = mapped_column(Integer)
+
     appliedAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -1043,6 +1090,15 @@ class StageEvent(Base):
         nullable=True,
     )
 
+    assignmentMode: Mapped[str | None] = mapped_column(String(32))
+
+    teamId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("hiring_team.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     status: Mapped[EventStatus] = mapped_column(
         Enum(EventStatus),
         nullable=False,
@@ -1112,6 +1168,8 @@ class StageEvent(Base):
         cascade="all, delete-orphan",
     )
 
+    hiringTeam = relationship("HiringTeam")
+
     feedbacks = relationship(
         "InterviewFeedback",
         back_populates="event",
@@ -1148,6 +1206,24 @@ class StageEventParticipant(Base):
     )
 
     role: Mapped[str | None] = mapped_column(String)
+
+    isBackup: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    approvalStatus: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="PENDING",
+    )
+
+    approvedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
+    rejectedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
+    scheduledTime: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
@@ -1363,4 +1439,150 @@ class OfferLetter(Base):
         "Member",
         foreign_keys=[createdByMemberId],
         back_populates="createdOfferLetters",
+    )
+
+
+# =========================================================
+# HIRING TEAM
+# =========================================================
+
+
+class HiringTeam(Base):
+    __tablename__ = "hiring_team"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    jobPostingId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("job_posting.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    stageId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("pipeline_stage.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
+    name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    description: Mapped[str | None] = mapped_column(Text)
+
+    isActive: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # RELATIONSHIPS
+
+    organization = relationship(
+        "Organization",
+        back_populates="hiringTeams",
+    )
+
+    jobPosting = relationship(
+        "JobPosting",
+        back_populates="hiringTeams",
+    )
+
+    stage = relationship("PipelineStage", foreign_keys=[stageId])
+
+    members = relationship(
+        "HiringTeamMember",
+        back_populates="hiringTeam",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("hiring_team_organizationId_idx", "organizationId"),
+        Index("hiring_team_jobPostingId_idx", "jobPostingId"),
+        Index("hiring_team_organizationId_isActive_idx", "organizationId", "isActive"),
+    )
+
+
+class HiringTeamMember(Base):
+    __tablename__ = "hiring_team_member"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    hiringTeamId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("hiring_team.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    memberId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    role: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+    )
+
+    order: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    # RELATIONSHIPS
+
+    hiringTeam = relationship(
+        "HiringTeam",
+        back_populates="members",
+    )
+
+    member = relationship(
+        "Member",
+        back_populates="hiringTeamMemberships",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "hiringTeamId",
+            "memberId",
+            name="uq_hiring_team_member",
+        ),
     )

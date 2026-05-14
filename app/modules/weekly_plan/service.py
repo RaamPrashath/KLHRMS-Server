@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from datetime import date
 from collections import defaultdict
+from typing import Iterable
 
 from fastapi import HTTPException
 
+from app.models.monthly_plan import MonthlyPlan
+from app.models.weekly_plan import WeeklyPlan
 from app.modules.weekly_plan.locations import PlanLocationValue
 from app.modules.weekly_plan.permissions import WeeklyPlanAccessContext
 from app.modules.weekly_plan.repository import MonthlyPlanRepository, WeeklyPlanRepository
@@ -39,6 +42,20 @@ class WeeklyPlanService:
         self.monthly_repo = monthly_repo
         self.auth = auth
 
+    def _merge_entries_by_date(
+        self,
+        weekly_entries: Iterable[WeeklyPlan],
+        monthly_entries: Iterable[MonthlyPlan],
+    ) -> list[WeeklyPlan | MonthlyPlan]:
+        merged_by_date: dict[date, WeeklyPlan | MonthlyPlan] = {}
+
+        for entry in list(monthly_entries) + list(weekly_entries):
+            current = merged_by_date.get(entry.date)
+            if current is None or entry.updatedAt >= current.updatedAt:
+                merged_by_date[entry.date] = entry
+
+        return [merged_by_date[key] for key in sorted(merged_by_date)]
+
     async def _sync_weekly_days_to_monthly(self, days: list[dict]) -> None:
         days_by_month: dict[tuple[int, int], list[dict]] = defaultdict(list)
         for day in days:
@@ -53,20 +70,53 @@ class WeeklyPlanService:
                 days=month_days,
             )
 
+    async def _sync_monthly_days_to_weekly(self, days: list[dict]) -> None:
+        days_by_week: dict[tuple[int, int], list[dict]] = defaultdict(list)
+        for day in days:
+            iso = day["date"].isocalendar()
+            week_key = (iso.year, iso.week)
+            days_by_week[week_key].append(day)
+
+        for (year, week), week_days in days_by_week.items():
+            monday = date.fromisocalendar(year, week, 1)
+            friday = date.fromisocalendar(year, week, 5)
+            await self.weekly_repo.replace_range(
+                user_id=self.auth.user.id,
+                start_date=monday,
+                end_date=friday,
+                days=week_days,
+            )
+
     async def get_my_week(self, year: int, week: int) -> list[WeeklyPlanRead]:
-        entries = await self.weekly_repo.list_by_week(
+        monthly_monday = date.fromisocalendar(year, week, 1)
+        monthly_friday = date.fromisocalendar(year, week, 5)
+        weekly_entries = await self.weekly_repo.list_by_week(
             user_id=self.auth.user.id,
             year=year,
             week=week,
         )
+        monthly_entries = await self.monthly_repo.list_by_range(
+            user_id=self.auth.user.id,
+            start_date=monthly_monday,
+            end_date=monthly_friday,
+        )
+        entries = self._merge_entries_by_date(weekly_entries, monthly_entries)
         return [WeeklyPlanRead.model_validate(entry) for entry in entries]
 
     async def get_my_month(self, year: int, month: int) -> list[WeeklyPlanRead]:
-        entries = await self.monthly_repo.list_by_month(
+        month_start = _month_start(year, month)
+        month_end = _month_end(year, month)
+        weekly_entries = await self.weekly_repo.list_by_range(
+            user_id=self.auth.user.id,
+            start_date=month_start,
+            end_date=month_end,
+        )
+        monthly_entries = await self.monthly_repo.list_by_month(
             user_id=self.auth.user.id,
             year=year,
             month=month,
         )
+        entries = self._merge_entries_by_date(weekly_entries, monthly_entries)
         return [WeeklyPlanRead.model_validate(entry) for entry in entries]
 
     async def get_team_week(self, year: int, week: int) -> list[WeeklyPlanRead]:
@@ -146,17 +196,20 @@ class WeeklyPlanService:
             if day.date.year != year or day.date.month != month:
                 raise HTTPException(status_code=422, detail="All submitted dates must belong to the requested month")
 
-        saved = await self.monthly_repo.replace_range(
+        month_days = [
+            {
+                "date": day.date,
+                "work_location": day.work_location.value if day.work_location is not None else None,
+                "project": day.project,
+            }
+            for day in body.days
+        ]
+
+        await self.monthly_repo.replace_range(
             user_id=self.auth.user.id,
             start_date=date(year, month, 1),
             end_date=_month_end(year, month),
-            days=[
-                {
-                    "date": day.date,
-                    "work_location": day.work_location.value if day.work_location is not None else None,
-                    "project": day.project,
-                }
-                for day in body.days
-            ],
+            days=month_days,
         )
-        return [WeeklyPlanRead.model_validate(entry) for entry in saved]
+        await self._sync_monthly_days_to_weekly(month_days)
+        return await self.get_my_month(year=year, month=month)

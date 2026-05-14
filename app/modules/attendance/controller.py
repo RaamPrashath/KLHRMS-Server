@@ -62,6 +62,9 @@ async def handle_clock_in(
         latitude=body.latitude,
         longitude=body.longitude,
         accuracy_meters=body.accuracy_meters,
+        project_id=body.project_id,
+        project_task_id=body.project_task_id,
+        description=body.description,
         office_latitude=access.organization.latitude,
         office_longitude=access.organization.longitude,
         office_radius_meters=get_settings().attendance_office_radius_meters,
@@ -282,6 +285,8 @@ async def handle_upsert_bulk_work_logs(
                         id=log.id,
                         startTime=log.startTime,
                         endTime=log.endTime,
+                        projectId=log.projectId,
+                        projectTaskId=log.projectTaskId,
                         title=log.title,
                         notes=log.notes,
                     )
@@ -329,6 +334,8 @@ async def handle_get_bulk_work_logs_range(
                     id=log.id,
                     startTime=log.startTime,
                     endTime=log.endTime,
+                    projectId=log.projectId,
+                    projectTaskId=log.projectTaskId,
                     title=log.title,
                     notes=log.notes,
                 )
@@ -378,6 +385,8 @@ async def handle_get_bulk_work_logs_day(
                     id=log.id,
                     startTime=log.startTime,
                     endTime=log.endTime,
+                    projectId=log.projectId,
+                    projectTaskId=log.projectTaskId,
                     title=log.title,
                     notes=log.notes,
                 )

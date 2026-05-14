@@ -6,6 +6,7 @@ from app.modules.projects.schema import (
     ProjectDetailResponse,
     ProjectFilters,
     ProjectListResponse,
+    ProjectMemberAssignBulkRequest,
     ProjectMemberAssignRequest,
     ProjectMetaResponse,
     ProjectTaskCreateRequest,
@@ -14,12 +15,14 @@ from app.modules.projects.schema import (
 )
 from app.modules.projects.service import (
     add_project_member,
+    bulk_assign_project_members,
     create_project_task,
     delete_project,
     get_project,
     get_project_meta,
     list_project_tasks,
     list_projects,
+    list_projects_for_attendance,
     remove_project_member,
     upsert_project,
 )
@@ -58,6 +61,12 @@ async def handle_assign_member(
     return await add_project_member(db, ctx, project_id, payload)
 
 
+async def handle_bulk_assign_members(
+    ctx: MemberContext, db: AsyncSession, project_id: str, payload: ProjectMemberAssignBulkRequest
+) -> ProjectDetailResponse:
+    return await bulk_assign_project_members(db, ctx, project_id, payload)
+
+
 async def handle_revoke_member(
     ctx: MemberContext, db: AsyncSession, project_id: str, member_id: str
 ) -> ProjectDetailResponse:
@@ -78,3 +87,7 @@ async def handle_create_task(
 
 async def handle_get_meta(ctx: MemberContext, db: AsyncSession) -> ProjectMetaResponse:
     return await get_project_meta(db, ctx)
+
+
+async def handle_list_projects_for_attendance(ctx: MemberContext, db: AsyncSession):
+    return await list_projects_for_attendance(db, ctx)

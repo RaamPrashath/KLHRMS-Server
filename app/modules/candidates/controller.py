@@ -5,16 +5,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.candidates import service
 from app.modules.candidates.schema import (
     CandidateApplicationDetailRead,
+    CandidateApplicationUpdateRequest,
+    InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
     MoveApplicationStageRequest,
+    MyInterviewListResponse,
     PipelineApplicationRead,
     PipelineBoardRead,
     PipelineJobPostingRead,
     PipelineStageCreateRequest,
     PipelineStageRead,
     PipelineStageUpdateRequest,
+    ReassignmentRequestCreate,
+    ReshuffleRequest,
+    ReshuffleResponse,
     StageEvaluationWorkspaceRead,
+    StageInterviewAssignmentRequest,
+    StageInterviewAssignmentResponse,
+    StageInterviewWarningRequest,
+    StageInterviewWarningResponse,
+    StageWorkspaceRead,
+    TeamDistributionRequest,
+    TeamDistributionResponse,
 )
 from app.shared.deps.organization_member import MemberContext
 
@@ -32,6 +45,14 @@ async def handle_get_pipeline_board(
     job_posting_id: str,
 ) -> PipelineBoardRead:
     return await service.get_pipeline_board(db, ctx.organization.id, job_posting_id)
+
+
+async def handle_get_pipeline_board_by_job_slug(
+    ctx: MemberContext,
+    db: AsyncSession,
+    job_slug: str,
+) -> PipelineBoardRead:
+    return await service.get_pipeline_board_by_job_slug(db, ctx.organization.id, job_slug)
 
 
 async def handle_move_application_stage(
@@ -107,6 +128,65 @@ async def handle_get_application_detail(
     return await service.get_application_detail(db, ctx.organization.id, application_id)
 
 
+async def handle_update_application_detail(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    body: CandidateApplicationUpdateRequest,
+) -> CandidateApplicationDetailRead:
+    return await service.update_candidate_application(db, ctx.organization.id, application_id, body)
+
+
+async def handle_get_stage_workspace(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_slug: str,
+) -> StageWorkspaceRead:
+    return await service.get_stage_workspace(db, ctx.organization.id, stage_slug)
+
+
+async def handle_get_stage_workspace_by_job_slug(
+    ctx: MemberContext,
+    db: AsyncSession,
+    job_slug: str,
+    stage_slug: str,
+) -> StageWorkspaceRead:
+    return await service.get_stage_workspace_by_job_slug(db, ctx.organization.id, job_slug, stage_slug)
+
+
+async def handle_list_interviewers(
+    ctx: MemberContext,
+    db: AsyncSession,
+    search: str | None,
+) -> InterviewerSearchResponse:
+    return await service.search_interviewers(db, ctx.organization.id, search)
+
+
+async def handle_preview_stage_interview_warnings(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_slug: str,
+    body: StageInterviewWarningRequest,
+) -> StageInterviewWarningResponse:
+    return await service.preview_stage_interview_warnings(db, ctx.organization.id, stage_slug, body)
+
+
+async def handle_assign_stage_interviews(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_slug: str,
+    body: StageInterviewAssignmentRequest,
+) -> StageInterviewAssignmentResponse:
+    return await service.assign_stage_interviews(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        stage_slug,
+        body,
+    )
+
+
 async def handle_create_interview_meeting(
     ctx: MemberContext,
     db: AsyncSession,
@@ -157,4 +237,63 @@ async def handle_generate_evaluation_workspace(
         ctx.member.id,
         ctx.member.userId,
         stage_id,
+    )
+
+
+async def handle_distribute_stage_interviews(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_slug: str,
+    body: TeamDistributionRequest,
+) -> TeamDistributionResponse:
+    return await service.distribute_stage_interviews(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        stage_slug,
+        body,
+    )
+
+
+async def handle_reshuffle_interview_assignment(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    event_id: str,
+    body: ReshuffleRequest,
+) -> ReshuffleResponse:
+    return await service.reshuffle_interview_assignment(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        application_id,
+        event_id,
+        body,
+    )
+
+
+async def handle_list_my_interviews(
+    ctx: MemberContext,
+    db: AsyncSession,
+) -> MyInterviewListResponse:
+    return await service.list_my_interviews(
+        db,
+        ctx.organization.id,
+        ctx.member.id,
+    )
+
+
+async def handle_create_reassignment_request(
+    ctx: MemberContext,
+    db: AsyncSession,
+    body: ReassignmentRequestCreate,
+) -> None:
+    return await service.create_reassignment_request(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        body,
     )
