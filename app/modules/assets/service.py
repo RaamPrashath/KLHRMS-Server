@@ -59,6 +59,7 @@ from app.modules.assets.schema import (
     CustomFieldValueResponse,
     MonthlyTrend,
     RecentActivityItem,
+    TicketAlertItem,
 )
 from app.shared.deps.organization_member import MemberContext
 
@@ -1408,6 +1409,7 @@ async def get_dashboard(db: AsyncSession, ctx: MemberContext) -> AssetDashboardR
             assetName=p.asset.name if p.asset else "",
             memberName=p.member.user.name if p.member and p.member.user else None,
             date=p.providedDate.isoformat() if p.providedDate else "",
+            detail=p.provideNotes.strip() if p.provideNotes else None,
         ))
 
     returns = await db.execute(
@@ -1431,6 +1433,7 @@ async def get_dashboard(db: AsyncSession, ctx: MemberContext) -> AssetDashboardR
             assetName=r.asset.name if r.asset else "",
             memberName=r.member.user.name if r.member and r.member.user else None,
             date=r.returnDate.isoformat() if r.returnDate else "",
+            detail=r.returnNotes.strip() if r.returnNotes else None,
         ))
 
     maintenance = await db.execute(
@@ -1452,10 +1455,39 @@ async def get_dashboard(db: AsyncSession, ctx: MemberContext) -> AssetDashboardR
             assetName=m.asset.name if m.asset else "",
             memberName=None,
             date=m.createdAt.isoformat() if m.createdAt else "",
+            detail=m.issueDescription.strip() if m.issueDescription else None,
         ))
 
     recent_activity.sort(key=lambda x: x.date, reverse=True)
     recent_activity = recent_activity[:8]
+
+    open_tickets_result = await db.execute(
+        select(AssetMaintenanceLog)
+        .join(Asset, Asset.id == AssetMaintenanceLog.assetId)
+        .where(
+            Asset.organizationId == org_id,
+            Asset.deletedAt.is_(None),
+            AssetMaintenanceLog.status.in_(["OPEN", "IN_PROGRESS"]),
+        )
+        .options(
+            joinedload(AssetMaintenanceLog.asset),
+        )
+        .order_by(AssetMaintenanceLog.createdAt.desc())
+        .limit(5)
+    )
+    open_tickets = open_tickets_result.unique().scalars().all()
+
+    recent_tickets = [
+        TicketAlertItem(
+            id=t.id,
+            assetName=t.asset.name if t.asset else "",
+            maintenanceType=t.maintenanceType,
+            status=t.status,
+            issueDescription=t.issueDescription.strip() if t.issueDescription else "",
+            createdAt=t.createdAt.isoformat() if t.createdAt else "",
+        )
+        for t in open_tickets
+    ]
 
     return AssetDashboardResponse(
         totalAssets=total,
@@ -1464,7 +1496,9 @@ async def get_dashboard(db: AsyncSession, ctx: MemberContext) -> AssetDashboardR
         maintenanceCount=_c("UNDER_MAINTENANCE"),
         damagedCount=_c("DAMAGED"),
         retiredCount=_c("RETIRED"),
+        openTicketCount=len(open_tickets),
         statusDistribution=status_distribution,
         monthlyTrends=monthly_trends,
         recentActivity=recent_activity,
+        recentTickets=recent_tickets,
     )

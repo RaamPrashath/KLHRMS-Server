@@ -471,6 +471,16 @@ class RecentActivityItem(BaseModel):
     assetName: str
     memberName: str | None = None
     date: str
+    detail: str | None = None
+
+
+class TicketAlertItem(BaseModel):
+    id: str
+    assetName: str
+    maintenanceType: str
+    status: str
+    issueDescription: str
+    createdAt: str
 
 
 class AssetDashboardResponse(BaseModel):
@@ -480,6 +490,8 @@ class AssetDashboardResponse(BaseModel):
     maintenanceCount: int
     damagedCount: int
     retiredCount: int
+    openTicketCount: int
     statusDistribution: list[AssetStatusCount]
     monthlyTrends: list[MonthlyTrend]
     recentActivity: list[RecentActivityItem]
+    recentTickets: list[TicketAlertItem]
