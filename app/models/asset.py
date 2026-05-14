@@ -16,6 +16,7 @@ class Asset(Base):
     assetCode: Mapped[str] = mapped_column(String(120), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[str] = mapped_column(String(40), nullable=False)
+    categoryDefinitionId: Mapped[str | None] = mapped_column(String(36), nullable=True)
     serialNumber: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     purchaseDate: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -26,7 +27,6 @@ class Asset(Base):
     status: Mapped[str] = mapped_column(String(40), nullable=False, server_default="AVAILABLE")
     location: Mapped[str | None] = mapped_column(String(160), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     deletedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updatedAt: Mapped[datetime] = mapped_column(
@@ -38,6 +38,8 @@ class Asset(Base):
 
     provisions = relationship("AssetAssignment", back_populates="asset", cascade="all, delete-orphan")
     maintenanceLogs = relationship("AssetMaintenanceLog", back_populates="asset", cascade="all, delete-orphan")
+    units = relationship("AssetUnit", back_populates="asset", cascade="all, delete-orphan")
+    customFieldValues = relationship("AssetCustomFieldValue", back_populates="asset", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("asset_organizationId_idx", "organizationId"),

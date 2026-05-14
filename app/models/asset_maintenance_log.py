@@ -13,6 +13,7 @@ class AssetMaintenanceLog(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     assetId: Mapped[str] = mapped_column(String(36), ForeignKey("asset.id", ondelete="CASCADE"), nullable=False)
+    assetUnitId: Mapped[str | None] = mapped_column(String(36), ForeignKey("asset_unit.id", ondelete="SET NULL"), nullable=True)
     loggedByMemberId: Mapped[str | None] = mapped_column(String(36), ForeignKey("member.id", ondelete="SET NULL"))
     maintenanceType: Mapped[str] = mapped_column(String(40), nullable=False)
     issueDescription: Mapped[str] = mapped_column(Text, nullable=False)

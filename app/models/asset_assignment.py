@@ -13,6 +13,7 @@ class AssetAssignment(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     assetId: Mapped[str] = mapped_column(String(36), ForeignKey("asset.id", ondelete="CASCADE"), nullable=False)
+    assetUnitId: Mapped[str | None] = mapped_column(String(36), ForeignKey("asset_unit.id", ondelete="SET NULL"), nullable=True)
     memberId: Mapped[str] = mapped_column(String(36), ForeignKey("member.id", ondelete="CASCADE"), nullable=False)
     providedByMemberId: Mapped[str | None] = mapped_column(String(36), ForeignKey("member.id", ondelete="SET NULL"))
     providedDate: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

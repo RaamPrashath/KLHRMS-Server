@@ -19,6 +19,11 @@ from app.models.project_task import ProjectTask
 from app.models.asset import Asset
 from app.models.asset_assignment import AssetAssignment
 from app.models.asset_maintenance_log import AssetMaintenanceLog
+from app.models.asset_category_definition import AssetCategoryDefinition
+from app.models.asset_category_field_definition import AssetCategoryFieldDefinition
+from app.models.asset_custom_field_value import AssetCustomFieldValue
+from app.models.asset_unit import AssetUnit
+from app.models.asset_id_definition import AssetIdDefinition
 from app.models.team import Team
 from app.models.team_member import TeamMember
 from app.models.base import Base

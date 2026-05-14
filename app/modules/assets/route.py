@@ -7,19 +7,38 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.assets.controller import (
     handle_create_asset,
+    handle_create_asset_id,
+    handle_create_category,
+    handle_create_category_field,
     handle_create_maintenance,
     handle_delete_asset,
+    handle_delete_category,
+    handle_delete_category_field,
     handle_export_report,
     handle_export_report_pdf,
     handle_get_asset,
+    handle_get_dashboard,
     handle_get_meta,
+    handle_list_asset_ids,
     handle_list_assets,
+    handle_list_categories,
     handle_provide_asset,
     handle_return_asset,
     handle_update_asset,
+    handle_update_asset_id,
+    handle_delete_asset_id,
+    handle_update_category,
+    handle_update_category_field,
     handle_update_maintenance,
 )
 from app.modules.assets.schema import (
+    AssetIdCreate,
+    AssetIdUpdate,
+    AssetIdResponse,
+    AssetCategoryCreate,
+    AssetCategoryResponse,
+    AssetCategoryUpdate,
+    AssetDashboardResponse,
     AssetDetailResponse,
     AssetFilters,
     AssetListResponse,
@@ -30,6 +49,9 @@ from app.modules.assets.schema import (
     AssetReportRequest,
     AssetReturnRequest,
     AssetUpsertRequest,
+    CategoryFieldDefinitionCreate,
+    CategoryFieldDefinitionResponse,
+    CategoryFieldDefinitionUpdate,
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
@@ -42,6 +64,7 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 def _filters(
     search: str | None = Query(default=None),
     category: str | None = Query(default=None),
+    category_definition_id: str | None = Query(default=None, alias="category_definition_id"),
     status_filter: str | None = Query(default=None, alias="status"),
     current_holder_member_id: str | None = Query(default=None, alias="current_holder_member_id"),
     page: int = Query(default=1, ge=1),
@@ -50,11 +73,124 @@ def _filters(
     return AssetFilters(
         search=search,
         category=category,
+        categoryDefinitionId=category_definition_id,
         status=status_filter,
         currentHolderMemberId=current_holder_member_id,
         page=page,
         page_size=page_size,
     )
+
+
+# ── Asset ID Endpoints ────────────────────────────────────────────────────────
+
+@router.get("/asset-ids", response_model=list[AssetIdResponse])
+async def list_asset_ids_route(
+    access: Annotated[MemberContext, Depends(require_permission("assets", "view", allow_self=True))],
+    db: DbSession,
+) -> list[AssetIdResponse]:
+    return await handle_list_asset_ids(access, db)
+
+@router.post("/asset-ids", response_model=AssetIdResponse, status_code=status.HTTP_201_CREATED)
+async def create_asset_id_route(
+    body: AssetIdCreate,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> AssetIdResponse:
+    return await handle_create_asset_id(access, db, body)
+
+@router.patch("/asset-ids/{asset_id_id}", response_model=AssetIdResponse)
+async def update_asset_id_route(
+    asset_id_id: str,
+    body: AssetIdUpdate,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> AssetIdResponse:
+    return await handle_update_asset_id(access, db, asset_id_id, body)
+
+@router.delete("/asset-ids/{asset_id_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_asset_id_route(
+    asset_id_id: str,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> Response:
+    await handle_delete_asset_id(access, db, asset_id_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── Category Endpoints ─────────────────────────────────────────────────────────
+
+
+@router.get("/categories", response_model=list[AssetCategoryResponse])
+async def list_categories_route(
+    access: Annotated[MemberContext, Depends(require_permission("assets", "view", allow_self=True))],
+    db: DbSession,
+) -> list[AssetCategoryResponse]:
+    return await handle_list_categories(access, db)
+
+
+@router.post("/categories", response_model=AssetCategoryResponse, status_code=status.HTTP_201_CREATED)
+async def create_category_route(
+    body: AssetCategoryCreate,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> AssetCategoryResponse:
+    return await handle_create_category(access, db, body)
+
+
+@router.patch("/categories/{category_id}", response_model=AssetCategoryResponse)
+async def update_category_route(
+    category_id: str,
+    body: AssetCategoryUpdate,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> AssetCategoryResponse:
+    return await handle_update_category(access, db, category_id, body)
+
+
+@router.delete("/categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_category_route(
+    category_id: str,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> Response:
+    await handle_delete_category(access, db, category_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── Category Field Endpoints ───────────────────────────────────────────────────
+
+
+@router.post("/categories/{category_id}/fields", response_model=CategoryFieldDefinitionResponse, status_code=status.HTTP_201_CREATED)
+async def create_category_field_route(
+    category_id: str,
+    body: CategoryFieldDefinitionCreate,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> CategoryFieldDefinitionResponse:
+    return await handle_create_category_field(access, db, category_id, body)
+
+
+@router.patch("/categories/fields/{field_id}", response_model=CategoryFieldDefinitionResponse)
+async def update_category_field_route(
+    field_id: str,
+    body: CategoryFieldDefinitionUpdate,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> CategoryFieldDefinitionResponse:
+    return await handle_update_category_field(access, db, field_id, body)
+
+
+@router.delete("/categories/fields/{field_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_category_field_route(
+    field_id: str,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> Response:
+    await handle_delete_category_field(access, db, field_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── Asset Endpoints ────────────────────────────────────────────────────────────
 
 
 @router.get("", response_model=AssetListResponse)
@@ -64,6 +200,14 @@ async def list_assets_route(
     db: DbSession,
 ) -> AssetListResponse:
     return await handle_list_assets(access, db, filters)
+
+
+@router.get("/dashboard", response_model=AssetDashboardResponse)
+async def get_asset_dashboard(
+    access: Annotated[MemberContext, Depends(require_permission("assets", "view", allow_self=True))],
+    db: DbSession,
+) -> AssetDashboardResponse:
+    return await handle_get_dashboard(access, db)
 
 
 @router.get("/meta", response_model=AssetMetaResponse)

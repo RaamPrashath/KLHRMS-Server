@@ -4,7 +4,6 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-ASSET_CATEGORIES = {"ELECTRONICS", "ID_CARD", "OTHER"}
 ASSET_STATUSES = {
     "AVAILABLE",
     "PROVIDED",
@@ -28,38 +27,147 @@ MAINTENANCE_STATUSES = {"OPEN", "IN_PROGRESS", "COMPLETED", "CANCELLED"}
 REPORT_TYPES = {
     "ALL_ASSETS",
     "AVAILABLE_ASSETS",
+    "PROVIDED_ASSETS",
+    "DAMAGED_ASSETS",
+    "RETURNED_ASSETS",
     "MAINTENANCE_HISTORY",
+    "EMPLOYEE_ASSET_REPORT",
+    "OFFBOARDING_PENDING_RETURN",
 }
+CATEGORY_FIELD_TYPES = {"TEXT", "NUMBER", "DATE", "BOOLEAN", "SELECT"}
 
 
 def _normalize_enum(value: str) -> str:
     return value.strip().upper().replace("-", "_").replace(" ", "_")
 
 
-def _normalize_category(value: str) -> str:
-    normalized = _normalize_enum(value)
-    if normalized in {"LAPTOP", "PHONE", "ACCESS_CARD", "PERIPHERAL"}:
-        return "ELECTRONICS"
-    return normalized
+# ── Asset ID Schemas ─────────────────────────────────────────────────────────
+
+class AssetIdCreate(BaseModel):
+    assetIdName: str = Field(min_length=1, max_length=120)
+
+class AssetIdUpdate(BaseModel):
+    assetIdName: str | None = Field(default=None, min_length=1, max_length=120)
+
+class AssetIdResponse(BaseModel):
+    id: str
+    assetIdName: str
+    isActive: bool
+
+
+# ── Category & Field Schemas ─────────────────────────────────────────────────
+
+
+class CategoryFieldDefinitionCreate(BaseModel):
+    fieldName: str = Field(min_length=1, max_length=100)
+    fieldType: str
+    fieldOptions: list[str] | None = None
+    isRequired: bool = False
+    displayOrder: int = 0
+
+    @field_validator("fieldType")
+    @classmethod
+    def validate_field_type(cls, value: str) -> str:
+        normalized = _normalize_enum(value)
+        if normalized not in CATEGORY_FIELD_TYPES:
+            raise ValueError(f"Invalid field type. Must be one of: {', '.join(sorted(CATEGORY_FIELD_TYPES))}")
+        return normalized
+
+
+class CategoryFieldDefinitionUpdate(BaseModel):
+    fieldName: str | None = Field(default=None, min_length=1, max_length=100)
+    fieldType: str | None = None
+    fieldOptions: list[str] | None = None
+    isRequired: bool | None = None
+    displayOrder: int | None = None
+
+    @field_validator("fieldType")
+    @classmethod
+    def validate_field_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = _normalize_enum(value)
+        if normalized not in CATEGORY_FIELD_TYPES:
+            raise ValueError(f"Invalid field type. Must be one of: {', '.join(sorted(CATEGORY_FIELD_TYPES))}")
+        return normalized
+
+
+class CategoryFieldDefinitionResponse(BaseModel):
+    id: str
+    categoryId: str
+    fieldName: str
+    fieldType: str
+    fieldOptions: dict | None = None
+    isRequired: bool
+    displayOrder: int
+
+
+class AssetCategoryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class AssetCategoryUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class AssetCategoryResponse(BaseModel):
+    id: str
+    name: str
+    isActive: bool
+    fields: list[CategoryFieldDefinitionResponse] = []
+
+
+# ── Custom Field Value Schemas ────────────────────────────────────────────────
+
+
+class CustomFieldValueInput(BaseModel):
+    fieldDefinitionId: str
+    value: str | None = None
+
+
+class CustomFieldValueResponse(BaseModel):
+    fieldDefinitionId: str
+    fieldName: str
+    fieldType: str
+    value: str | None
+
+
+# ── Unit Schemas ──────────────────────────────────────────────────────────────
+
+
+class AssetUnitInput(BaseModel):
+    serialNumber: str | None = None
+
+
+class AssetUnitResponse(BaseModel):
+    id: str
+    assetId: str
+    serialNumber: str | None
+    status: str
+    currentHolderMemberId: str | None
+    currentHolderName: str | None
+    condition: str | None
+
+
+class AssetUnitSummary(BaseModel):
+    total: int = 0
+    available: int = 0
+    provided: int = 0
+    underMaintenance: int = 0
+    damaged: int = 0
+
+
+# ── Existing Asset Schemas (modified) ─────────────────────────────────────────
 
 
 class AssetFilters(BaseModel):
     search: str | None = None
     category: str | None = None
+    categoryDefinitionId: str | None = None
     status: str | None = None
     currentHolderMemberId: str | None = None
     page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=20, ge=1, le=100)
-
-    @field_validator("category")
-    @classmethod
-    def validate_category(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = _normalize_category(value)
-        if normalized not in ASSET_CATEGORIES:
-            raise ValueError("Invalid asset category")
-        return normalized
+    page_size: int = Field(default=20, ge=1, le=5000)
 
     @field_validator("status")
     @classmethod
@@ -75,7 +183,8 @@ class AssetFilters(BaseModel):
 class AssetUpsertRequest(BaseModel):
     assetCode: str = Field(min_length=1, max_length=120)
     name: str = Field(min_length=1, max_length=255)
-    category: str
+    category: str | None = None
+    categoryDefinitionId: str | None = None
     serialNumber: str | None = Field(default=None, max_length=255)
     model: str | None = Field(default=None, max_length=120)
     purchaseDate: date | None = None
@@ -86,14 +195,8 @@ class AssetUpsertRequest(BaseModel):
     location: str | None = Field(default=None, max_length=160)
     notes: str | None = None
     quantity: int = Field(default=1, ge=1)
-
-    @field_validator("category")
-    @classmethod
-    def validate_category(cls, value: str) -> str:
-        normalized = _normalize_category(value)
-        if normalized not in ASSET_CATEGORIES:
-            raise ValueError("Invalid asset category")
-        return normalized
+    customFields: list[CustomFieldValueInput] = []
+    units: list[AssetUnitInput] = []
 
     @field_validator("condition")
     @classmethod
@@ -120,6 +223,7 @@ class AssetUpsertRequest(BaseModel):
 
 class AssetProvideRequest(BaseModel):
     memberId: str
+    assetUnitId: str | None = None
     providedDate: datetime | None = None
     conditionWhileProviding: str
     providedByMemberId: str | None = None
@@ -136,6 +240,7 @@ class AssetProvideRequest(BaseModel):
 
 class AssetReturnRequest(BaseModel):
     memberId: str
+    assetUnitId: str | None = None
     returnDate: datetime | None = None
     returnedCondition: str
     receivedByMemberId: str | None = None
@@ -170,6 +275,7 @@ class AssetMaintenanceCreateRequest(BaseModel):
     status: str = Field(default="OPEN")
     conditionBeforeMaintenance: str | None = None
     notes: str | None = None
+    assetUnitId: str | None = None
 
     @field_validator("maintenanceType")
     @classmethod
@@ -265,6 +371,7 @@ class AssetLookupOption(BaseModel):
 
 class AssetProvideRecordSummary(BaseModel):
     id: str
+    assetUnitId: str | None
     memberId: str
     memberName: str | None
     memberEmail: str | None
@@ -282,6 +389,7 @@ class AssetProvideRecordSummary(BaseModel):
 
 class AssetMaintenanceSummary(BaseModel):
     id: str
+    assetUnitId: str | None
     maintenanceType: str
     issueDescription: str
     serviceDate: date
@@ -301,6 +409,7 @@ class AssetSummary(BaseModel):
     assetCode: str
     name: str
     category: str
+    categoryDefinitionId: str | None
     serialNumber: str | None
     model: str | None
     purchaseDate: date | None
@@ -317,12 +426,15 @@ class AssetSummary(BaseModel):
     currentHolderName: str | None
     currentHolderEmail: str | None
     openMaintenanceCount: int
+    unitSummary: AssetUnitSummary | None = None
+    customFields: list[CustomFieldValueResponse] = []
 
 
 class AssetDetailResponse(AssetSummary):
     activeProvision: AssetProvideRecordSummary | None
     assetHistory: list[AssetProvideRecordSummary]
     maintenanceHistory: list[AssetMaintenanceSummary]
+    units: list[AssetUnitResponse] = []
 
 
 class AssetListResponse(BaseModel):
@@ -335,9 +447,39 @@ class AssetListResponse(BaseModel):
 
 class AssetMetaResponse(BaseModel):
     members: list[AssetLookupOption]
-    categories: list[str]
+    categories: list[AssetCategoryResponse]
     statuses: list[str]
     conditions: list[str]
     maintenanceTypes: list[str]
     maintenanceStatuses: list[str]
     reportTypes: list[str]
+
+
+class AssetStatusCount(BaseModel):
+    name: str
+    value: int
+    color: str
+
+
+class MonthlyTrend(BaseModel):
+    month: str
+    count: int
+
+
+class RecentActivityItem(BaseModel):
+    type: str
+    assetName: str
+    memberName: str | None = None
+    date: str
+
+
+class AssetDashboardResponse(BaseModel):
+    totalAssets: int
+    availableCount: int
+    providedCount: int
+    maintenanceCount: int
+    damagedCount: int
+    retiredCount: int
+    statusDistribution: list[AssetStatusCount]
+    monthlyTrends: list[MonthlyTrend]
+    recentActivity: list[RecentActivityItem]
