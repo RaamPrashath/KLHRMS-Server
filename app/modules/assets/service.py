@@ -58,6 +58,8 @@ from app.modules.assets.schema import (
     CategoryFieldDefinitionUpdate,
     CustomFieldValueResponse,
     MonthlyTrend,
+    MaintenanceTicketResponse,
+    MyTicketResponse,
     RecentActivityItem,
     TicketAlertItem,
 )
@@ -1039,10 +1041,7 @@ async def create_maintenance_record(
         )
     )
 
-    if asset.units and len(asset.units) > 0:
-        asset.status = _derive_asset_status(asset.units)
-    else:
-        asset.status = "UNDER_MAINTENANCE"
+    asset.status = "UNDER_MAINTENANCE"
 
     await db.commit()
     return await get_asset(db, ctx, asset.id)
@@ -1502,3 +1501,68 @@ async def get_dashboard(db: AsyncSession, ctx: MemberContext) -> AssetDashboardR
         recentActivity=recent_activity,
         recentTickets=recent_tickets,
     )
+
+
+
+async def list_my_tickets(db: AsyncSession, ctx: MemberContext) -> list[MyTicketResponse]:
+    result = await db.execute(
+        select(AssetMaintenanceLog)
+        .join(Asset, Asset.id == AssetMaintenanceLog.assetId)
+        .where(
+            Asset.organizationId == ctx.organization.id,
+            Asset.deletedAt.is_(None),
+            AssetMaintenanceLog.loggedByMemberId == ctx.member.id,
+        )
+        .options(joinedload(AssetMaintenanceLog.asset))
+        .order_by(AssetMaintenanceLog.createdAt.desc())
+    )
+    logs = result.unique().scalars().all()
+    return [
+        MyTicketResponse(
+            id=log.id,
+            assetId=log.assetId,
+            assetName=log.asset.name if log.asset else "",
+            assetCode=log.asset.assetCode if log.asset else "",
+            maintenanceType=log.maintenanceType,
+            issueDescription=log.issueDescription,
+            status=log.status,
+            serviceDate=log.serviceDate.isoformat() if log.serviceDate else "",
+            createdAt=log.createdAt.isoformat() if log.createdAt else "",
+        )
+        for log in logs
+    ]
+
+
+
+async def list_tickets(db: AsyncSession, ctx: MemberContext) -> list[MaintenanceTicketResponse]:
+    result = await db.execute(
+        select(AssetMaintenanceLog)
+        .join(Asset, Asset.id == AssetMaintenanceLog.assetId)
+        .where(
+            Asset.organizationId == ctx.organization.id,
+            Asset.deletedAt.is_(None),
+        )
+        .options(
+            joinedload(AssetMaintenanceLog.asset),
+            joinedload(AssetMaintenanceLog.loggedByMember).joinedload(Member.user),
+        )
+        .order_by(AssetMaintenanceLog.createdAt.desc())
+    )
+    logs = result.unique().scalars().all()
+    return [
+        MaintenanceTicketResponse(
+            id=log.id,
+            assetId=log.assetId,
+            assetName=log.asset.name if log.asset else "",
+            assetCode=log.asset.assetCode if log.asset else "",
+            assetCondition=log.asset.condition if log.asset else "",
+            maintenanceType=log.maintenanceType,
+            issueDescription=log.issueDescription,
+            status=log.status,
+            serviceDate=log.serviceDate.isoformat() if log.serviceDate else "",
+            createdAt=log.createdAt.isoformat() if log.createdAt else "",
+            loggedByMemberId=log.loggedByMemberId,
+            loggedByName=log.loggedByMember.user.name if log.loggedByMember and log.loggedByMember.user else None,
+        )
+        for log in logs
+    ]

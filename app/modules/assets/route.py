@@ -22,6 +22,8 @@ from app.modules.assets.controller import (
     handle_list_asset_ids,
     handle_list_assets,
     handle_list_categories,
+    handle_list_my_tickets,
+    handle_list_tickets,
     handle_provide_asset,
     handle_return_asset,
     handle_update_asset,
@@ -52,6 +54,8 @@ from app.modules.assets.schema import (
     CategoryFieldDefinitionCreate,
     CategoryFieldDefinitionResponse,
     CategoryFieldDefinitionUpdate,
+    MaintenanceTicketResponse,
+    MyTicketResponse,
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
@@ -210,6 +214,22 @@ async def get_asset_dashboard(
     return await handle_get_dashboard(access, db)
 
 
+@router.get("/tickets", response_model=list[MaintenanceTicketResponse])
+async def list_tickets_route(
+    access: Annotated[MemberContext, Depends(require_permission("assets", "view", allow_self=True))],
+    db: DbSession,
+) -> list[MaintenanceTicketResponse]:
+    return await handle_list_tickets(access, db)
+
+
+@router.get("/tickets/mine", response_model=list[MyTicketResponse])
+async def list_my_tickets_route(
+    access: Annotated[MemberContext, Depends(require_permission("assets", "view", allow_self=True))],
+    db: DbSession,
+) -> list[MyTicketResponse]:
+    return await handle_list_my_tickets(access, db)
+
+
 @router.get("/meta", response_model=AssetMetaResponse)
 async def get_asset_meta(
     access: Annotated[MemberContext, Depends(require_permission("assets", "view", allow_self=True))],
@@ -318,7 +338,7 @@ async def return_asset_route(
 async def create_maintenance_route(
     asset_id: str,
     body: AssetMaintenanceCreateRequest,
-    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    access: Annotated[MemberContext, Depends(require_permission("assets", "view", allow_self=True))],
     db: DbSession,
 ) -> AssetDetailResponse:
     return await handle_create_maintenance(access, db, asset_id, body)

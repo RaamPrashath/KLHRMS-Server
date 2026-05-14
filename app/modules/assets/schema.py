@@ -495,3 +495,30 @@ class AssetDashboardResponse(BaseModel):
     monthlyTrends: list[MonthlyTrend]
     recentActivity: list[RecentActivityItem]
     recentTickets: list[TicketAlertItem]
+
+
+class MyTicketResponse(BaseModel):
+    id: str
+    assetId: str
+    assetName: str
+    assetCode: str
+    maintenanceType: str
+    issueDescription: str
+    status: str
+    serviceDate: str
+    createdAt: str
+
+
+class MaintenanceTicketResponse(BaseModel):
+    id: str
+    assetId: str
+    assetName: str
+    assetCode: str
+    assetCondition: str
+    maintenanceType: str
+    issueDescription: str
+    status: str
+    serviceDate: str
+    createdAt: str
+    loggedByMemberId: str | None = None
+    loggedByName: str | None = None

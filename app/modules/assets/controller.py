@@ -16,6 +16,8 @@ from app.modules.assets.schema import (
     AssetMaintenanceCreateRequest,
     AssetMaintenanceUpdateRequest,
     AssetMetaResponse,
+    MaintenanceTicketResponse,
+    MyTicketResponse,
     AssetProvideRequest,
     AssetReportRequest,
     AssetReturnRequest,
@@ -42,6 +44,8 @@ from app.modules.assets.service import (
     get_asset_meta,
     list_categories,
     list_assets,
+    list_my_tickets,
+    list_tickets,
     provide_asset,
     return_asset,
     update_category,
@@ -120,6 +124,14 @@ async def handle_get_dashboard(ctx: MemberContext, db: AsyncSession) -> AssetDas
 
 async def handle_get_meta(ctx: MemberContext, db: AsyncSession) -> AssetMetaResponse:
     return await get_asset_meta(db, ctx)
+
+
+async def handle_list_my_tickets(ctx: MemberContext, db: AsyncSession) -> list[MyTicketResponse]:
+    return await list_my_tickets(db, ctx)
+
+
+async def handle_list_tickets(ctx: MemberContext, db: AsyncSession) -> list[MaintenanceTicketResponse]:
+    return await list_tickets(db, ctx)
 
 
 async def handle_export_report(ctx: MemberContext, db: AsyncSession, payload: AssetReportRequest) -> str:
