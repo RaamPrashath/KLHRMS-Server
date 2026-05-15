@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.assets.controller import (
+    handle_available_groups,
+    handle_bulk_create_assets,
     handle_create_asset,
     handle_create_asset_id,
     handle_create_category,
@@ -19,12 +21,12 @@ from app.modules.assets.controller import (
     handle_get_asset,
     handle_get_dashboard,
     handle_get_meta,
+    handle_issue_assets,
     handle_list_asset_ids,
     handle_list_assets,
     handle_list_categories,
     handle_list_my_tickets,
     handle_list_tickets,
-    handle_provide_asset,
     handle_return_asset,
     handle_update_asset,
     handle_update_asset_id,
@@ -43,14 +45,17 @@ from app.modules.assets.schema import (
     AssetDashboardResponse,
     AssetDetailResponse,
     AssetFilters,
+    AssetIssueRequest,
+    AssetIssueResponse,
     AssetListResponse,
     AssetMaintenanceCreateRequest,
     AssetMaintenanceUpdateRequest,
     AssetMetaResponse,
-    AssetProvideRequest,
     AssetReportRequest,
     AssetReturnRequest,
     AssetUpsertRequest,
+    AvailableAssetGroupResponse,
+    BulkAssetCreateRequest,
     CategoryFieldDefinitionCreate,
     CategoryFieldDefinitionResponse,
     CategoryFieldDefinitionUpdate,
@@ -72,7 +77,7 @@ def _filters(
     status_filter: str | None = Query(default=None, alias="status"),
     current_holder_member_id: str | None = Query(default=None, alias="current_holder_member_id"),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
+    page_size: int = Query(default=20, ge=1, le=5000),
 ) -> AssetFilters:
     return AssetFilters(
         search=search,
@@ -276,6 +281,32 @@ async def export_asset_report_pdf_route(
     )
 
 
+@router.post("/bulk-create", response_model=list[AssetDetailResponse], status_code=status.HTTP_201_CREATED)
+async def bulk_create_assets(
+    body: BulkAssetCreateRequest,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "create"))],
+    db: DbSession,
+) -> list[AssetDetailResponse]:
+    return await handle_bulk_create_assets(access, db, body)
+
+
+@router.get("/available-groups", response_model=list[AvailableAssetGroupResponse])
+async def available_groups_route(
+    access: Annotated[MemberContext, Depends(require_permission("assets", "view", allow_self=True))],
+    db: DbSession,
+) -> list[AvailableAssetGroupResponse]:
+    return await handle_available_groups(access, db)
+
+
+@router.post("/issue", response_model=AssetIssueResponse, status_code=status.HTTP_201_CREATED)
+async def issue_assets_route(
+    body: AssetIssueRequest,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> AssetIssueResponse:
+    return await handle_issue_assets(access, db, body)
+
+
 @router.get("/{asset_id}", response_model=AssetDetailResponse)
 async def get_asset_detail(
     asset_id: str,
@@ -312,16 +343,6 @@ async def delete_asset_route(
 ) -> Response:
     await handle_delete_asset(access, db, asset_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.post("/{asset_id}/provide", response_model=AssetDetailResponse)
-async def provide_asset_route(
-    asset_id: str,
-    body: AssetProvideRequest,
-    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
-    db: DbSession,
-) -> AssetDetailResponse:
-    return await handle_provide_asset(access, db, asset_id, body)
 
 
 @router.post("/{asset_id}/return", response_model=AssetDetailResponse)

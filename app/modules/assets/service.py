@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import csv
 import io
+import hashlib
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
-from sqlalchemy import Select, extract, func, or_, select
+from sqlalchemy import Select, extract, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -38,6 +39,8 @@ from app.modules.assets.schema import (
     AssetDashboardResponse,
     AssetDetailResponse,
     AssetFilters,
+    AssetIssueRequest,
+    AssetIssueResponse,
     AssetListResponse,
     AssetLookupOption,
     AssetMaintenanceCreateRequest,
@@ -45,7 +48,6 @@ from app.modules.assets.schema import (
     AssetMaintenanceUpdateRequest,
     AssetMetaResponse,
     AssetProvideRecordSummary,
-    AssetProvideRequest,
     AssetReportRequest,
     AssetReturnRequest,
     AssetStatusCount,
@@ -53,6 +55,8 @@ from app.modules.assets.schema import (
     AssetUnitResponse,
     AssetUnitSummary,
     AssetUpsertRequest,
+    AvailableAssetGroupResponse,
+    BulkAssetCreateRequest,
     CategoryFieldDefinitionCreate,
     CategoryFieldDefinitionResponse,
     CategoryFieldDefinitionUpdate,
@@ -422,6 +426,8 @@ async def create_category(
     category = AssetCategoryDefinition(
         organizationId=ctx.organization.id,
         name=payload.name.strip(),
+        assetCode=payload.assetCode.strip() if payload.assetCode else None,
+        description=payload.description.strip() if payload.description else None,
     )
     db.add(category)
     await db.commit()
@@ -429,6 +435,8 @@ async def create_category(
     return AssetCategoryResponse(
         id=category.id,
         name=category.name,
+        assetCode=category.assetCode,
+        description=category.description,
         isActive=category.isActive,
         fields=[],
     )
@@ -449,6 +457,8 @@ async def list_categories(db: AsyncSession, ctx: MemberContext) -> list[AssetCat
         AssetCategoryResponse(
             id=c.id,
             name=c.name,
+            assetCode=c.assetCode,
+            description=c.description,
             isActive=c.isActive,
             fields=[
                 CategoryFieldDefinitionResponse(
@@ -487,6 +497,8 @@ async def update_category(
         category.name = payload.name.strip()
     if payload.description is not None:
         category.description = payload.description.strip() if payload.description else None
+    if payload.assetCode is not None:
+        category.assetCode = payload.assetCode.strip() if payload.assetCode else None
     await db.commit()
 
     fields = [
@@ -504,6 +516,8 @@ async def update_category(
     return AssetCategoryResponse(
         id=category.id,
         name=category.name,
+        assetCode=category.assetCode,
+        description=category.description,
         isActive=category.isActive,
         fields=fields,
     )
@@ -766,17 +780,6 @@ async def upsert_asset(
     else:
         asset = await _get_asset_or_404(db, ctx.organization.id, asset_id)
 
-    duplicate_query = select(Asset).where(
-        Asset.organizationId == ctx.organization.id,
-        Asset.assetCode == payload.assetCode.strip(),
-        Asset.deletedAt.is_(None),
-    )
-    if asset_id:
-        duplicate_query = duplicate_query.where(Asset.id != asset_id)
-    duplicate = (await db.execute(duplicate_query)).scalar_one_or_none()
-    if duplicate is not None:
-        raise HTTPException(status_code=409, detail="Asset code already exists in this organization")
-
     # Check active provision via query to avoid lazy relationship access
     if not is_new:
         provision_result = await db.execute(
@@ -821,7 +824,9 @@ async def upsert_asset(
     asset.purchasePrice = payload.purchasePrice
     asset.warrantyExpiryDate = payload.warrantyExpiryDate
     asset.condition = payload.condition
-    asset.status = payload.status
+    # New assets always land in the register as available. Lifecycle transitions
+    # into issued/provided or under maintenance must happen through those flows.
+    asset.status = "AVAILABLE" if is_new else payload.status
     asset.location = payload.location.strip() if payload.location else None
     asset.notes = payload.notes.strip() if payload.notes else None
     asset.quantity = payload.quantity
@@ -893,6 +898,207 @@ async def upsert_asset(
     return await get_asset(db, ctx, asset.id)
 
 
+# ── Bulk Asset Creation ──────────────────────────────────────────────────────
+
+
+async def bulk_create_assets(
+    db: AsyncSession,
+    ctx: MemberContext,
+    payload: BulkAssetCreateRequest,
+) -> list[AssetDetailResponse]:
+    org_id = ctx.organization.id
+    quantity = len(payload.serialNumbers)
+
+    if quantity == 0:
+        raise HTTPException(status_code=422, detail="At least one serial number is required")
+
+    # Validate category exists if provided
+    category_name = "OTHER"
+    if payload.categoryDefinitionId:
+        cat = await _get_category_or_404(db, org_id, payload.categoryDefinitionId)
+        category_name = cat.name.upper().replace(" ", "_")
+
+    # Validate custom field definitions if provided
+    if payload.customFields:
+        for cf in payload.customFields:
+            result = await db.execute(
+                select(AssetCategoryFieldDefinition).where(
+                    AssetCategoryFieldDefinition.id == cf.fieldDefinitionId,
+                )
+            )
+            field_def = result.scalar_one_or_none()
+            if field_def is None:
+                raise HTTPException(status_code=422, detail=f"Custom field definition {cf.fieldDefinitionId} not found")
+            if field_def.isRequired and (not cf.value or not cf.value.strip()):
+                raise HTTPException(status_code=422, detail=f"Required field '{field_def.fieldName}' is missing")
+
+    asset_code = payload.assetCode.strip()
+    condition = payload.condition
+    location = payload.location.strip() if payload.location else None
+
+    created_assets: list[Asset] = []
+
+    for serial in payload.serialNumbers:
+        serial_val = serial.strip()
+        asset = Asset(
+            organizationId=org_id,
+            assetCode=asset_code,
+            name=payload.name.strip(),
+            category=category_name,
+            categoryDefinitionId=payload.categoryDefinitionId,
+            serialNumber=serial_val,
+            condition=condition,
+            status="AVAILABLE",
+            location=location,
+            quantity=1,
+        )
+        db.add(asset)
+        await db.flush()
+
+        # Create custom field values
+        for cf in (payload.customFields or []):
+            db.add(AssetCustomFieldValue(
+                assetId=asset.id,
+                fieldDefinitionId=cf.fieldDefinitionId,
+                value=cf.value,
+            ))
+
+        created_assets.append(asset)
+
+    await db.commit()
+
+    # Refresh and return
+    results = []
+    for asset in created_assets:
+        result = await get_asset(db, ctx, asset.id)
+        results.append(result)
+    return results
+
+
+# ── Available Groups ─────────────────────────────────────────────────────────
+
+
+def _group_key(name: str, cat_def_id: str | None, asset_code: str) -> str:
+    raw = f"{name}|{cat_def_id or ''}|{asset_code}"
+    return hashlib.md5(raw.encode()).hexdigest()[:16]
+
+
+async def list_available_groups(
+    db: AsyncSession,
+    ctx: MemberContext,
+) -> list[AvailableAssetGroupResponse]:
+    org_id = ctx.organization.id
+    result = await db.execute(
+        select(Asset)
+        .where(
+            Asset.organizationId == org_id,
+            Asset.deletedAt.is_(None),
+            Asset.status == "AVAILABLE",
+        )
+        .order_by(Asset.name.asc(), Asset.assetCode.asc())
+    )
+    assets = result.scalars().all()
+
+    groups: dict[str, dict] = {}
+    for asset in assets:
+        key = _group_key(asset.name, asset.categoryDefinitionId, asset.assetCode)
+        if key not in groups:
+            cat_name = None
+            if asset.categoryDefinitionId:
+                cat_result = await db.execute(
+                    select(AssetCategoryDefinition.name).where(
+                        AssetCategoryDefinition.id == asset.categoryDefinitionId,
+                    )
+                )
+                cat_name = cat_result.scalar_one_or_none()
+
+            groups[key] = {
+                "groupKey": key,
+                "assetName": asset.name,
+                "categoryName": cat_name,
+                "categoryDefinitionId": asset.categoryDefinitionId,
+                "assetCode": asset.assetCode,
+                "model": asset.model,
+                "availableQuantity": 0,
+            }
+        groups[key]["availableQuantity"] += 1
+
+    return [
+        AvailableAssetGroupResponse(**g)
+        for g in sorted(groups.values(), key=lambda x: (-x["availableQuantity"], x["assetName"]))
+    ]
+
+
+# ── Issue Assets ─────────────────────────────────────────────────────────────
+
+
+async def issue_assets(
+    db: AsyncSession,
+    ctx: MemberContext,
+    payload: AssetIssueRequest,
+) -> AssetIssueResponse:
+    org_id = ctx.organization.id
+
+    # Validate member exists
+    await _get_member_or_404(db, org_id, payload.memberId)
+
+    provider_id = payload.providedByMemberId or ctx.member.id
+    if provider_id != payload.memberId:
+        await _get_member_or_404(db, org_id, provider_id)
+
+    # Lock available assets matching the group key
+    # We need to find the group definition from any matching asset
+    # Search all available assets and match by group key
+    all_available = await db.execute(
+        select(Asset)
+        .where(
+            Asset.organizationId == org_id,
+            Asset.deletedAt.is_(None),
+            Asset.status == "AVAILABLE",
+        )
+        .order_by(Asset.name.asc(), Asset.assetCode.asc())
+        .with_for_update(skip_locked=True)
+    )
+    candidates = all_available.scalars().all()
+
+    # Filter by group key
+    matching = []
+    for asset in candidates:
+        key = _group_key(asset.name, asset.categoryDefinitionId, asset.assetCode)
+        if key == payload.groupKey:
+            matching.append(asset)
+
+    if len(matching) < payload.quantity:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Only {len(matching)} assets available in this group, but {payload.quantity} requested",
+        )
+
+    to_issue = matching[: payload.quantity]
+    issued_ids: list[str] = []
+    assignment_ids: list[str] = []
+
+    for asset in to_issue:
+        assignment = AssetAssignment(
+            assetId=asset.id,
+            memberId=payload.memberId,
+            providedByMemberId=provider_id,
+            providedDate=datetime.now(UTC),
+            conditionWhileProviding=payload.conditionWhileProviding,
+            provideNotes=payload.notes.strip() if payload.notes else None,
+        )
+        db.add(assignment)
+        await db.flush()
+
+        asset.status = "PROVIDED"
+
+        issued_ids.append(asset.id)
+        assignment_ids.append(assignment.id)
+
+    await db.commit()
+    return AssetIssueResponse(issuedAssetIds=issued_ids, assignmentIds=assignment_ids)
+
+
 async def delete_asset(db: AsyncSession, ctx: MemberContext, asset_id: str) -> None:
     asset = await _get_asset_or_404(db, ctx.organization.id, asset_id)
     active_provision = next((record for record in asset.provisions if record.returnDate is None), None)
@@ -903,58 +1109,6 @@ async def delete_asset(db: AsyncSession, ctx: MemberContext, asset_id: str) -> N
 
 
 # ── Unit-based Provide/Return ──────────────────────────────────────────────────
-
-
-async def provide_asset(
-    db: AsyncSession,
-    ctx: MemberContext,
-    asset_id: str,
-    payload: AssetProvideRequest,
-) -> AssetDetailResponse:
-    asset = await _get_asset_or_404(db, ctx.organization.id, asset_id)
-    if asset.status != "AVAILABLE":
-        raise HTTPException(status_code=422, detail="Only available assets can be provided")
-    if any(record.returnDate is None for record in asset.provisions if record.returnDate is None):
-        raise HTTPException(status_code=422, detail="This asset is already provided")
-
-    await _get_member_or_404(db, ctx.organization.id, payload.memberId)
-    provider_id = payload.providedByMemberId or ctx.member.id
-    await _get_member_or_404(db, ctx.organization.id, provider_id)
-
-    # Find the specific unit to provide
-    unit_to_provide: AssetUnit | None = None
-    if payload.assetUnitId:
-        unit_to_provide = next((u for u in (asset.units or []) if u.id == payload.assetUnitId), None)
-        if unit_to_provide is None:
-            raise HTTPException(status_code=422, detail="Asset unit not found")
-        if unit_to_provide.status != "AVAILABLE":
-            raise HTTPException(status_code=422, detail="This unit is not available for providing")
-        unit_to_provide.status = "PROVIDED"
-        unit_to_provide.currentHolderMemberId = payload.memberId
-    else:
-        # Legacy: provide entire asset (no units)
-        pass
-
-    db.add(
-        AssetAssignment(
-            assetId=asset.id,
-            assetUnitId=payload.assetUnitId,
-            memberId=payload.memberId,
-            providedByMemberId=provider_id,
-            providedDate=payload.providedDate or datetime.now(UTC),
-            conditionWhileProviding=payload.conditionWhileProviding,
-            provideNotes=payload.notes.strip() if payload.notes else None,
-        )
-    )
-
-    # Recalculate status
-    if unit_to_provide and (asset.units and len(asset.units) > 0):
-        asset.status = _derive_asset_status(asset.units)
-    else:
-        asset.status = "PROVIDED"
-
-    await db.commit()
-    return await get_asset(db, ctx, asset.id)
 
 
 async def return_asset(
@@ -1134,6 +1288,8 @@ async def get_asset_meta(db: AsyncSession, ctx: MemberContext) -> AssetMetaRespo
         AssetCategoryResponse(
             id=c.id,
             name=c.name,
+            assetCode=c.assetCode,
+            description=c.description,
             isActive=c.isActive,
             fields=[
                 CategoryFieldDefinitionResponse(
