@@ -38,6 +38,8 @@ class ApplicationInterviewMeetingRead(BaseModel):
     scheduledStartAt: datetime
     scheduledEndAt: datetime
     meetingUrl: str | None
+    interviewerName: str | None = None
+    completedAt: datetime | None = None
 
 
 class PipelineApplicationRead(BaseModel):

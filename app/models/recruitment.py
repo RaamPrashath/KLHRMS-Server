@@ -1078,6 +1078,13 @@ class StageEvent(Base):
         index=True,
     )
 
+    completedByMemberId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     title: Mapped[str] = mapped_column(
         String,
         nullable=False,
@@ -1160,6 +1167,11 @@ class StageEvent(Base):
         "Member",
         foreign_keys=[createdByMemberId],
         back_populates="createdStageEvents",
+    )
+
+    completedBy = relationship(
+        "Member",
+        foreign_keys=[completedByMemberId],
     )
 
     participants = relationship(

@@ -214,6 +214,7 @@ async def handle_complete_interview_meeting(
         ctx.organization.id,
         application_id,
         event_id,
+        ctx.member.id,
     )
 
 

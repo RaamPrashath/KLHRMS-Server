@@ -79,7 +79,17 @@ class CandidatePipelineRepository:
                 ),
                 selectinload(PipelineStage.applications).selectinload(
                     CandidateApplication.stageEvents
-                ).selectinload(StageEvent.participants),
+                ).selectinload(StageEvent.createdBy)
+                .joinedload(Member.user),
+                selectinload(PipelineStage.applications).selectinload(
+                    CandidateApplication.stageEvents
+                ).selectinload(StageEvent.completedBy)
+                .joinedload(Member.user),
+                selectinload(PipelineStage.applications).selectinload(
+                    CandidateApplication.stageEvents
+                ).selectinload(StageEvent.participants)
+                .joinedload(StageEventParticipant.member)
+                .joinedload(Member.user),
                 selectinload(PipelineStage.evaluationCategories),
                 selectinload(PipelineStage.evaluationWorkspace),
             )
