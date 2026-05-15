@@ -21,7 +21,10 @@ from app.models.recruitment import (
     ApplicationStageHistory,
     Candidate,
     CandidateApplication,
+    CandidateApplicationNote,
     EventStatus,
+    InterviewFeedback,
+    InterviewFeedbackValue,
     InterviewType,
     PipelineStage,
     StageType,
@@ -34,10 +37,18 @@ from app.modules.candidates.repository import CandidatePipelineRepository
 from app.modules.candidates.schema import (
     ApplicationInterviewMeetingRead,
     CandidateApplicationDetailRead,
+    CandidateApplicationNoteCreateRequest,
+    CandidateApplicationNoteRead,
+    CandidateApplicationNoteUpdateRequest,
     CandidateApplicationUpdateRequest,
     CandidateSummaryRead,
+    ApplicationInterviewEventRead,
+    InterviewFeedbackRead,
+    InterviewFeedbackValueRead,
+    InterviewParticipantRead,
     InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
+    InterviewMeetingCompleteRequest,
     InterviewMeetingRead,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
@@ -131,6 +142,7 @@ def _serialize_category(category: StageEvaluationCategory) -> StageEvaluationCat
         id=category.id,
         stageId=category.stageId,
         name=category.name,
+        type=category.valueType or "NUMERIC",
         order=category.order,
     )
 
@@ -280,6 +292,110 @@ def _serialize_interview_meeting(event: StageEvent) -> InterviewMeetingRead:
     )
 
 
+def _member_display(member: Member | None) -> tuple[str | None, str | None]:
+    if member is None or member.user is None:
+        return None, None
+    return member.user.name or member.user.email, member.user.email
+
+
+def _serialize_note(note: CandidateApplicationNote, actor_member_id: str) -> CandidateApplicationNoteRead:
+    author_name, author_email = _member_display(note.author)
+    return CandidateApplicationNoteRead(
+        id=note.id,
+        authorMemberId=note.authorMemberId,
+        authorName=author_name or "Unknown",
+        authorEmail=author_email,
+        body=note.body,
+        canEdit=note.authorMemberId == actor_member_id,
+        createdAt=note.createdAt,
+        updatedAt=note.updatedAt,
+    )
+
+
+def _serialize_interview_participant(participant: StageEventParticipant) -> InterviewParticipantRead:
+    name, email = _member_display(participant.member)
+    return InterviewParticipantRead(
+        memberId=participant.memberId,
+        name=name or "Unknown",
+        email=email,
+        role=participant.role,
+        isBackup=participant.isBackup,
+    )
+
+
+def _serialize_feedback_value(value: InterviewFeedbackValue) -> InterviewFeedbackValueRead:
+    category = value.category
+    category_type = category.valueType if category is not None and category.valueType else "NUMERIC"
+    display_value: str | float | bool | None
+    if category_type == "CHECKBOX":
+        display_value = value.booleanValue
+    elif category_type == "TEXT":
+        display_value = value.textValue
+    else:
+        display_value = value.numericValue
+    return InterviewFeedbackValueRead(
+        categoryId=value.categoryId,
+        categoryName=category.name if category is not None else "Score",
+        categoryType=category_type,
+        value=display_value,
+    )
+
+
+def _serialize_feedback(feedback: InterviewFeedback) -> InterviewFeedbackRead:
+    name, _email = _member_display(feedback.member)
+    return InterviewFeedbackRead(
+        id=feedback.id,
+        memberId=feedback.memberId,
+        memberName=name or "Unknown",
+        outcome=feedback.outcome.value if hasattr(feedback.outcome, "value") else str(feedback.outcome),
+        score=feedback.score,
+        notes=feedback.notes,
+        values=[
+            _serialize_feedback_value(value)
+            for value in sorted(
+                feedback.values or [],
+                key=lambda item: item.category.order if item.category is not None else 0,
+            )
+        ],
+        createdAt=feedback.createdAt,
+    )
+
+
+def _serialize_interview_event(event: StageEvent) -> ApplicationInterviewEventRead:
+    created_by_name, _created_by_email = _member_display(event.createdBy)
+    completed_by_name, _completed_by_email = _member_display(event.completedBy)
+    duration_minutes = None
+    if event.scheduledStartAt is not None and event.scheduledEndAt is not None:
+        duration_minutes = max(
+            0,
+            round((event.scheduledEndAt - event.scheduledStartAt).total_seconds() / 60),
+        )
+    return ApplicationInterviewEventRead(
+        id=event.id,
+        stageId=event.stageId,
+        stageName=event.stage.name if event.stage is not None else None,
+        title=event.title,
+        status=_computed_interview_status(event),
+        scheduledStartAt=event.scheduledStartAt,
+        scheduledEndAt=event.scheduledEndAt,
+        completedAt=event.scheduledEndAt if event.status == EventStatus.COMPLETED else None,
+        durationMinutes=duration_minutes,
+        meetingUrl=event.meetingUrl,
+        createdByName=created_by_name,
+        completedByName=completed_by_name,
+        participants=[
+            _serialize_interview_participant(participant)
+            for participant in sorted(event.participants or [], key=lambda item: (item.isBackup, item.createdAt))
+        ],
+        feedbacks=[
+            _serialize_feedback(feedback)
+            for feedback in sorted(event.feedbacks or [], key=lambda item: item.createdAt)
+        ],
+        notes=event.notes,
+        createdAt=event.createdAt,
+    )
+
+
 def _latest_stage_event(application: CandidateApplication, stage_id: str) -> StageEvent | None:
     events = [
         event
@@ -308,9 +424,7 @@ def _computed_interview_status(event: StageEvent, now: datetime | None = None) -
         end = end.replace(tzinfo=UTC)
     if current < start.astimezone(UTC):
         return "PENDING"
-    if current <= end.astimezone(UTC):
-        return "ONGOING"
-    return "COMPLETED"
+    return "ONGOING"
 
 
 def _serialize_application_interview_meeting(
@@ -320,10 +434,14 @@ def _serialize_application_interview_meeting(
         return None
     status = _computed_interview_status(event)
     interviewer_name = None
-    if status == "COMPLETED" and event.completedBy is not None and event.completedBy.user is not None:
-        interviewer_name = event.completedBy.user.name or event.completedBy.user.email
-    elif event.createdBy is not None and event.createdBy.user is not None:
-        interviewer_name = event.createdBy.user.name or event.createdBy.user.email
+    completed_by = event.__dict__.get("completedBy")
+    created_by = event.__dict__.get("createdBy")
+    if status == "COMPLETED" and completed_by is not None and completed_by.__dict__.get("user") is not None:
+        user = completed_by.__dict__["user"]
+        interviewer_name = user.name or user.email
+    elif created_by is not None and created_by.__dict__.get("user") is not None:
+        user = created_by.__dict__["user"]
+        interviewer_name = user.name or user.email
     return ApplicationInterviewMeetingRead(
         id=event.id,
         status=status,
@@ -335,7 +453,7 @@ def _serialize_application_interview_meeting(
     )
 
 
-def _serialize_detail(application: CandidateApplication) -> CandidateApplicationDetailRead:
+def _serialize_detail(application: CandidateApplication, actor_member_id: str) -> CandidateApplicationDetailRead:
     histories = sorted(
         application.stageHistory or [],
         key=lambda history: history.createdAt,
@@ -358,6 +476,23 @@ def _serialize_detail(application: CandidateApplication) -> CandidateApplication
         appliedAt=application.appliedAt,
         lastActivityAt=application.lastActivityAt,
         stageHistory=[_serialize_history(history) for history in histories],
+        interviewEvents=[
+            _serialize_interview_event(event)
+            for event in sorted(
+                application.stageEvents or [],
+                key=lambda item: item.scheduledStartAt or item.createdAt,
+                reverse=True,
+            )
+            if event.scheduledStartAt is not None or event.feedbacks
+        ],
+        notes=[
+            _serialize_note(note, actor_member_id)
+            for note in sorted(
+                application.internalNoteEntries or [],
+                key=lambda item: item.createdAt,
+                reverse=True,
+            )
+        ],
     )
 
 
@@ -573,6 +708,7 @@ async def _sync_evaluation_categories(
         if category_input.id is not None and category_input.id in existing_by_id:
             category = existing_by_id[category_input.id]
             category.name = category_input.name.strip()
+            category.valueType = category_input.type
             category.order = index
             db.add(category)
         else:
@@ -581,6 +717,7 @@ async def _sync_evaluation_categories(
                     organizationId=organization_id,
                     stageId=stage.id,
                     name=category_input.name.strip(),
+                    valueType=category_input.type,
                     order=index,
                 )
             )
@@ -625,7 +762,16 @@ async def _apply_stage_config(
         await _clear_evaluation_categories(db, stage)
         return
 
+    requested_evaluation_type = getattr(body, "evaluationType", None)
+    if requested_evaluation_type is not None:
+        stage.evaluationType = str(requested_evaluation_type).strip().upper()
     stage.evaluationType = stage.evaluationType or "NUMERIC"
+    requested_include_total = getattr(body, "evaluationIncludeTotal", None)
+    if requested_include_total is not None:
+        stage.evaluationIncludeTotal = bool(requested_include_total)
+    requested_include_analysis = getattr(body, "evaluationIncludeAnalysis", None)
+    if requested_include_analysis is not None:
+        stage.evaluationIncludeAnalysis = bool(requested_include_analysis)
     if stage.evaluationType != "NUMERIC":
         stage.evaluationIncludeTotal = False
     if body.evaluationCategories is not None:
@@ -697,6 +843,11 @@ async def move_application_stage(
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
     if target_stage.jobPostingId != application.jobPostingId:
         raise HTTPException(status_code=400, detail="Target stage does not belong to this job posting")
+    if target_stage.id == application.pipelineStageId:
+        return _serialize_application(application, application.pipelineStage)
+    current_event = _latest_stage_event(application, application.pipelineStageId)
+    if _computed_interview_status(current_event) == "ONGOING":
+        raise HTTPException(status_code=400, detail="Candidate cannot be moved while an interview is ongoing")
 
     from_stage_id = application.pipelineStageId
     application.pipelineStageId = target_stage.id
@@ -885,13 +1036,14 @@ async def delete_stage(
 async def get_application_detail(
     db: AsyncSession,
     organization_id: str,
+    actor_member_id: str,
     application_id: str,
 ) -> CandidateApplicationDetailRead:
     repository = CandidatePipelineRepository(db)
     application = await repository.get_application_detail(organization_id, application_id)
     if application is None:
         raise HTTPException(status_code=404, detail="Application not found")
-    return _serialize_detail(application)
+    return _serialize_detail(application, actor_member_id)
 
 
 async def get_stage_workspace(
@@ -941,6 +1093,7 @@ async def search_interviewers(
 async def update_candidate_application(
     db: AsyncSession,
     organization_id: str,
+    actor_member_id: str,
     application_id: str,
     body: CandidateApplicationUpdateRequest,
 ) -> CandidateApplicationDetailRead:
@@ -963,7 +1116,55 @@ async def update_candidate_application(
     refreshed = await repository.get_application_detail(organization_id, application_id)
     if refreshed is None:
         raise HTTPException(status_code=404, detail="Application not found")
-    return _serialize_detail(refreshed)
+    return _serialize_detail(refreshed, actor_member_id)
+
+
+async def create_application_note(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    application_id: str,
+    body: CandidateApplicationNoteCreateRequest,
+) -> CandidateApplicationDetailRead:
+    repository = CandidatePipelineRepository(db)
+    application = await repository.get_application_detail(organization_id, application_id)
+    if application is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    note = CandidateApplicationNote(
+        organizationId=organization_id,
+        applicationId=application_id,
+        authorMemberId=actor_member_id,
+        body=body.body.strip(),
+    )
+    await repository.add_application_note(note)
+    await db.commit()
+    refreshed = await repository.get_application_detail(organization_id, application_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return _serialize_detail(refreshed, actor_member_id)
+
+
+async def update_application_note(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    application_id: str,
+    note_id: str,
+    body: CandidateApplicationNoteUpdateRequest,
+) -> CandidateApplicationDetailRead:
+    repository = CandidatePipelineRepository(db)
+    note = await repository.get_application_note(organization_id, application_id, note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="Note not found")
+    if note.authorMemberId != actor_member_id:
+        raise HTTPException(status_code=403, detail="you dont have permission")
+    note.body = body.body.strip()
+    db.add(note)
+    await db.commit()
+    refreshed = await repository.get_application_detail(organization_id, application_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return _serialize_detail(refreshed, actor_member_id)
 
 
 def _assignment_date(value: datetime) -> date:
@@ -1613,6 +1814,8 @@ async def complete_interview_meeting(
     application_id: str,
     event_id: str,
     actor_member_id: str,
+    actor_user_id: str,
+    body: InterviewMeetingCompleteRequest,
 ) -> InterviewMeetingRead:
     repository = CandidatePipelineRepository(db)
     event = await repository.get_stage_event(organization_id, application_id, event_id)
@@ -1621,15 +1824,78 @@ async def complete_interview_meeting(
     if event.scheduledStartAt is None or event.scheduledEndAt is None:
         raise HTTPException(status_code=400, detail="Interview meeting is missing schedule metadata")
 
+    stage = event.stage
+    categories = _ordered_stage_categories(stage) if stage is not None else []
+    values_by_category = {item.categoryId: item.value for item in body.values}
+
+    feedback = next(
+        (
+            item
+            for item in event.__dict__.get("feedbacks", [])
+            if item.memberId == actor_member_id
+        ),
+        None,
+    )
+    existing_values: dict[str, InterviewFeedbackValue] = {}
+    if feedback is None:
+        feedback = InterviewFeedback(
+            organizationId=organization_id,
+            eventId=event.id,
+            memberId=actor_member_id,
+        )
+        db.add(feedback)
+        await db.flush()
+    else:
+        existing_values = {
+            item.categoryId: item
+            for item in feedback.__dict__.get("values", [])
+        }
+
+    feedback.notes = body.notes
+    numeric_scores: list[float] = []
+    for category in categories:
+        raw_value = values_by_category.get(category.id)
+        value = existing_values.get(category.id)
+        if value is None:
+            value = InterviewFeedbackValue(
+                feedbackId=feedback.id,
+                categoryId=category.id,
+            )
+            db.add(value)
+        value.numericValue = None
+        value.textValue = None
+        value.booleanValue = None
+        if category.valueType == "CHECKBOX":
+            value.booleanValue = bool(raw_value)
+        elif category.valueType == "TEXT":
+            value.textValue = "" if raw_value is None else str(raw_value)
+        else:
+            try:
+                numeric_value = float(raw_value) if raw_value not in (None, "") else None
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"Invalid numeric score for {category.name}") from None
+            value.numericValue = numeric_value
+            if numeric_value is not None:
+                numeric_scores.append(numeric_value)
+    feedback.score = round(sum(numeric_scores)) if numeric_scores else None
+
     event.status = EventStatus.COMPLETED
     event.completedByMemberId = actor_member_id
     now = datetime.now(UTC)
-    end = event.scheduledEndAt
-    if end.tzinfo is None:
-        end = end.replace(tzinfo=UTC)
-    if end.astimezone(UTC) > now:
-        event.scheduledEndAt = now
+    event.scheduledEndAt = now
     db.add(event)
+    await db.flush()
+
+    if stage is not None and stage.evaluationWorkspace is not None:
+        await _write_feedback_to_stage_sheet(
+            db,
+            actor_user_id,
+            stage,
+            event.application,
+            body.values,
+            body.notes,
+        )
+
     await db.commit()
     return _serialize_interview_meeting(event)
 
@@ -1653,7 +1919,7 @@ def _stage_headers(stage: PipelineStage) -> list[str]:
     categories = _ordered_stage_categories(stage)
     headers = ["Candidate", "Email"]
     headers.extend(category.name for category in categories)
-    if stage.evaluationType == "NUMERIC" and stage.evaluationIncludeTotal:
+    if stage.evaluationIncludeTotal:
         headers.append("Total")
     headers.append("Notes")
     return headers
@@ -1679,7 +1945,7 @@ def _stage_candidate_row(
         application.candidate.email,
     ]
     row.extend("" for _ in categories)
-    if stage.evaluationType == "NUMERIC" and stage.evaluationIncludeTotal:
+    if stage.evaluationIncludeTotal:
         if categories and row_number is not None:
             start = _column_letter(2)
             end = _column_letter(1 + len(categories))
@@ -1688,6 +1954,84 @@ def _stage_candidate_row(
             row.append("")
     row.append("")
     return row
+
+
+def _feedback_sheet_value(category: StageEvaluationCategory, raw_value: object) -> str:
+    if raw_value is None:
+        return ""
+    if category.valueType == "CHECKBOX":
+        return "TRUE" if bool(raw_value) else "FALSE"
+    return str(raw_value)
+
+
+async def _write_feedback_to_stage_sheet(
+    db: AsyncSession,
+    user_id: str,
+    stage: PipelineStage,
+    application: CandidateApplication,
+    feedback_values: list[object],
+    notes: str | None,
+) -> None:
+    workspace = stage.evaluationWorkspace
+    if workspace is None:
+        return
+
+    values_by_category = {
+        item.categoryId: item.value
+        for item in feedback_values
+        if hasattr(item, "categoryId")
+    }
+    categories = _ordered_stage_categories(stage)
+    row_values = [_feedback_sheet_value(category, values_by_category.get(category.id)) for category in categories]
+    if stage.evaluationIncludeTotal:
+        numeric_values = []
+        for category in categories:
+            if category.valueType != "NUMERIC":
+                continue
+            raw_value = values_by_category.get(category.id)
+            try:
+                if raw_value not in (None, ""):
+                    numeric_values.append(float(raw_value))
+            except (TypeError, ValueError):
+                pass
+        row_values.append(str(sum(numeric_values)) if numeric_values else "")
+    row_values.append(notes or "")
+
+    sheets_service = GoogleSheetsService(db)
+    sheet_values = await sheets_service.get_values(
+        user_id,
+        workspace.googleSpreadsheetId,
+        workspace.googleSheetTitle,
+    )
+    candidate_email = application.candidate.email.strip().lower()
+    target_row = next(
+        (
+            index
+            for index, row in enumerate(sheet_values, start=1)
+            if index > 1 and len(row) >= 2 and row[1].strip().lower() == candidate_email
+        ),
+        None,
+    )
+    if target_row is None:
+        target_row = len(sheet_values) + 1
+        await sheets_service.append_values(
+            user_id,
+            workspace.googleSpreadsheetId,
+            workspace.googleSheetTitle,
+            [_stage_candidate_row(stage, application, row_number=target_row)],
+        )
+
+    await sheets_service.write_values(
+        user_id,
+        workspace.googleSpreadsheetId,
+        [
+            SheetValueBlock(
+                sheet_title=workspace.googleSheetTitle,
+                values=[row_values],
+                start_cell=f"C{target_row}",
+            )
+        ],
+    )
 
 
 def _stage_sheet_values(stage: PipelineStage) -> list[list[str]]:
@@ -1743,7 +2087,7 @@ def _analysis_sheet_values(stages: list[PipelineStage]) -> AnalysisSheetData:
     for stage in evaluation_stages:
         categories = _ordered_stage_categories(stage)
         stage_headers = [category.name for category in categories]
-        if stage.evaluationType == "NUMERIC" and stage.evaluationIncludeTotal:
+        if stage.evaluationIncludeTotal:
             stage_headers.append("Total")
         if not stage_headers:
             stage_headers = ["Evaluation"]

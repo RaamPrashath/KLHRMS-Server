@@ -796,6 +796,12 @@ class StageEvaluationCategory(Base):
         nullable=False,
     )
 
+    valueType: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="NUMERIC",
+    )
+
     order: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -931,6 +937,12 @@ class CandidateApplication(Base):
         cascade="all, delete-orphan",
     )
 
+    internalNoteEntries = relationship(
+        "CandidateApplicationNote",
+        back_populates="application",
+        cascade="all, delete-orphan",
+    )
+
     offerLetter = relationship(
         "OfferLetter",
         back_populates="application",
@@ -949,6 +961,72 @@ class CandidateApplication(Base):
             "organizationId",
             "pipelineStageId",
         ),
+    )
+
+
+# =========================================================
+# CANDIDATE APPLICATION NOTE
+# =========================================================
+
+
+class CandidateApplicationNote(Base):
+    __tablename__ = "candidate_application_note"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    applicationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("candidate_application.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    authorMemberId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization = relationship("Organization")
+
+    application = relationship(
+        "CandidateApplication",
+        back_populates="internalNoteEntries",
+    )
+
+    author = relationship(
+        "Member",
+        back_populates="candidateApplicationNotes",
+    )
+
+    __table_args__ = (
+        Index("ix_candidate_note_org_application", "organizationId", "applicationId"),
+        Index("ix_candidate_note_org_author", "organizationId", "authorMemberId"),
     )
 
 
@@ -1329,6 +1407,12 @@ class InterviewFeedback(Base):
         back_populates="feedbacks",
     )
 
+    values = relationship(
+        "InterviewFeedbackValue",
+        back_populates="feedback",
+        cascade="all, delete-orphan",
+    )
+
     member = relationship(
         "Member",
         back_populates="interviewFeedbacks",
@@ -1339,6 +1423,67 @@ class InterviewFeedback(Base):
             "eventId",
             "memberId",
             name="uq_interview_feedback_event_member",
+        ),
+    )
+
+
+# =========================================================
+# INTERVIEW FEEDBACK VALUE
+# =========================================================
+
+
+class InterviewFeedbackValue(Base):
+    __tablename__ = "interview_feedback_value"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    feedbackId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("interview_feedback.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    categoryId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stage_evaluation_category.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    numericValue: Mapped[float | None] = mapped_column(Float)
+
+    textValue: Mapped[str | None] = mapped_column(Text)
+
+    booleanValue: Mapped[bool | None] = mapped_column(Boolean)
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    feedback = relationship(
+        "InterviewFeedback",
+        back_populates="values",
+    )
+
+    category = relationship("StageEvaluationCategory")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "feedbackId",
+            "categoryId",
+            name="uq_interview_feedback_value_category",
         ),
     )
 

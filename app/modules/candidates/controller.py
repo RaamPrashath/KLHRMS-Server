@@ -5,9 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.candidates import service
 from app.modules.candidates.schema import (
     CandidateApplicationDetailRead,
+    CandidateApplicationNoteCreateRequest,
+    CandidateApplicationNoteUpdateRequest,
     CandidateApplicationUpdateRequest,
     InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
+    InterviewMeetingCompleteRequest,
     InterviewMeetingRead,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
@@ -125,7 +128,7 @@ async def handle_get_application_detail(
     db: AsyncSession,
     application_id: str,
 ) -> CandidateApplicationDetailRead:
-    return await service.get_application_detail(db, ctx.organization.id, application_id)
+    return await service.get_application_detail(db, ctx.organization.id, ctx.member.id, application_id)
 
 
 async def handle_update_application_detail(
@@ -134,7 +137,39 @@ async def handle_update_application_detail(
     application_id: str,
     body: CandidateApplicationUpdateRequest,
 ) -> CandidateApplicationDetailRead:
-    return await service.update_candidate_application(db, ctx.organization.id, application_id, body)
+    return await service.update_candidate_application(db, ctx.organization.id, ctx.member.id, application_id, body)
+
+
+async def handle_create_application_note(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    body: CandidateApplicationNoteCreateRequest,
+) -> CandidateApplicationDetailRead:
+    return await service.create_application_note(
+        db,
+        ctx.organization.id,
+        ctx.member.id,
+        application_id,
+        body,
+    )
+
+
+async def handle_update_application_note(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    note_id: str,
+    body: CandidateApplicationNoteUpdateRequest,
+) -> CandidateApplicationDetailRead:
+    return await service.update_application_note(
+        db,
+        ctx.organization.id,
+        ctx.member.id,
+        application_id,
+        note_id,
+        body,
+    )
 
 
 async def handle_get_stage_workspace(
@@ -208,6 +243,7 @@ async def handle_complete_interview_meeting(
     db: AsyncSession,
     application_id: str,
     event_id: str,
+    body: InterviewMeetingCompleteRequest,
 ) -> InterviewMeetingRead:
     return await service.complete_interview_meeting(
         db,
@@ -215,6 +251,8 @@ async def handle_complete_interview_meeting(
         application_id,
         event_id,
         ctx.member.id,
+        ctx.member.userId,
+        body,
     )
 
 

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.candidates.controller import (
     handle_assign_stage_interviews,
     handle_complete_interview_meeting,
+    handle_create_application_note,
     handle_create_interview_meeting,
     handle_create_reassignment_request,
     handle_create_stage,
@@ -28,13 +29,17 @@ from app.modules.candidates.controller import (
     handle_preview_stage_interview_warnings,
     handle_reshuffle_interview_assignment,
     handle_update_application_detail,
+    handle_update_application_note,
     handle_update_stage,
 )
 from app.modules.candidates.schema import (
     CandidateApplicationDetailRead,
+    CandidateApplicationNoteCreateRequest,
+    CandidateApplicationNoteUpdateRequest,
     CandidateApplicationUpdateRequest,
     InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
+    InterviewMeetingCompleteRequest,
     InterviewMeetingRead,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
@@ -172,6 +177,27 @@ async def update_application_detail(
     return await handle_update_application_detail(ctx, db, application_id, body)
 
 
+@router.post("/applications/{application_id}/notes", response_model=CandidateApplicationDetailRead)
+async def create_application_note(
+    application_id: str,
+    body: CandidateApplicationNoteCreateRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> CandidateApplicationDetailRead:
+    return await handle_create_application_note(ctx, db, application_id, body)
+
+
+@router.patch("/applications/{application_id}/notes/{note_id}", response_model=CandidateApplicationDetailRead)
+async def update_application_note(
+    application_id: str,
+    note_id: str,
+    body: CandidateApplicationNoteUpdateRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> CandidateApplicationDetailRead:
+    return await handle_update_application_note(ctx, db, application_id, note_id, body)
+
+
 @router.post("/applications/{application_id}/interview-meetings", response_model=InterviewMeetingRead)
 async def create_interview_meeting(
     application_id: str,
@@ -186,10 +212,11 @@ async def create_interview_meeting(
 async def complete_interview_meeting(
     application_id: str,
     event_id: str,
+    body: InterviewMeetingCompleteRequest,
     ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
     db: AsyncSession = Depends(get_db),
 ) -> InterviewMeetingRead:
-    return await handle_complete_interview_meeting(ctx, db, application_id, event_id)
+    return await handle_complete_interview_meeting(ctx, db, application_id, event_id, body)
 
 
 @router.post("/pipeline/stages", response_model=PipelineStageRead)

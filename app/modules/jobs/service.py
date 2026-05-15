@@ -246,10 +246,14 @@ async def list_requisitions(
     organization_id: str,
     actor_member_id: str,
     view_scope: str,
-    owned_only: bool = False,
 ) -> list[JobRequisitionListItemRead]:
     repository = JobRequisitionRepository(db)
-    raised_by_id = actor_member_id if owned_only or view_scope == "self" else None
+    if view_scope == "organization":
+        raised_by_id = None
+    elif view_scope == "self":
+        raised_by_id = actor_member_id
+    else:
+        raise HTTPException(status_code=403, detail="you dont have permission")
     requisitions = await repository.list_requisitions(organization_id, raised_by_id=raised_by_id)
     return [_serialize_requisition(requisition, actor_member_id) for requisition in requisitions]
 
@@ -266,6 +270,8 @@ async def get_requisition(
     if requisition is None:
         raise HTTPException(status_code=404, detail="Job requisition not found")
     if view_scope == "self" and requisition.raisedById != actor_member_id:
+        raise HTTPException(status_code=403, detail="you dont have permission")
+    if view_scope != "self" and view_scope != "organization":
         raise HTTPException(status_code=403, detail="you dont have permission")
     return JobRequisitionDetailRead(**_serialize_requisition(requisition, actor_member_id).model_dump())
 
@@ -496,12 +502,17 @@ async def close_requisition(
     db: AsyncSession,
     organization_id: str,
     actor_member_id: str,
+    delete_scope: str,
     requisition_id: str,
 ) -> JobRequisitionDetailRead:
     repository = JobRequisitionRepository(db)
     requisition = await repository.get_requisition(organization_id, requisition_id)
     if requisition is None:
         raise HTTPException(status_code=404, detail="Job requisition not found")
+    if delete_scope == "self" and requisition.raisedById != actor_member_id:
+        raise HTTPException(status_code=403, detail="you dont have permission")
+    if delete_scope != "self" and delete_scope != "organization":
+        raise HTTPException(status_code=403, detail="you dont have permission")
 
     requisition.status = JobRequisitionStatus.CLOSED
     requisition.closedAt = datetime.now(timezone.utc)

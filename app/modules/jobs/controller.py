@@ -20,14 +20,12 @@ from app.shared.deps.organization_member import MemberContext
 async def handle_list_requisitions(
     ctx: MemberContext,
     db: AsyncSession,
-    owned_only: bool,
 ) -> list[JobRequisitionListItemRead]:
     return await service.list_requisitions(
         db=db,
         organization_id=ctx.organization.id,
         actor_member_id=ctx.member.id,
         view_scope=ctx.scope,  # type: ignore[attr-defined]
-        owned_only=owned_only,
     )
 
 
@@ -112,6 +110,7 @@ async def handle_close_requisition(
         db=db,
         organization_id=ctx.organization.id,
         actor_member_id=ctx.member.id,
+        delete_scope=ctx.scope,  # type: ignore[attr-defined]
         requisition_id=requisition_id,
     )
 

@@ -13,8 +13,11 @@ from app.models.member import Member
 from app.models.recruitment import (
     ApplicationStageHistory,
     CandidateApplication,
+    CandidateApplicationNote,
     HiringTeam,
     HiringTeamMember,
+    InterviewFeedback,
+    InterviewFeedbackValue,
     JobPosting,
     PipelineStage,
     StageEvaluationCategory,
@@ -330,6 +333,25 @@ class CandidatePipelineRepository:
                 .selectinload(StageEvent.participants)
                 .joinedload(StageEventParticipant.member)
                 .joinedload(Member.user),
+                selectinload(CandidateApplication.stageEvents)
+                .joinedload(StageEvent.stage),
+                selectinload(CandidateApplication.stageEvents)
+                .joinedload(StageEvent.createdBy)
+                .joinedload(Member.user),
+                selectinload(CandidateApplication.stageEvents)
+                .joinedload(StageEvent.completedBy)
+                .joinedload(Member.user),
+                selectinload(CandidateApplication.stageEvents)
+                .selectinload(StageEvent.feedbacks)
+                .joinedload(InterviewFeedback.member)
+                .joinedload(Member.user),
+                selectinload(CandidateApplication.stageEvents)
+                .selectinload(StageEvent.feedbacks)
+                .selectinload(InterviewFeedback.values)
+                .joinedload(InterviewFeedbackValue.category),
+                selectinload(CandidateApplication.internalNoteEntries)
+                .joinedload(CandidateApplicationNote.author)
+                .joinedload(Member.user),
                 selectinload(CandidateApplication.stageHistory).options(
                     joinedload(ApplicationStageHistory.fromStage),
                     joinedload(ApplicationStageHistory.toStage),
@@ -342,6 +364,28 @@ class CandidatePipelineRepository:
             )
         )
         return result.unique().scalar_one_or_none()
+
+    async def get_application_note(
+        self,
+        organization_id: str,
+        application_id: str,
+        note_id: str,
+    ) -> CandidateApplicationNote | None:
+        result = await self.db.execute(
+            select(CandidateApplicationNote)
+            .options(joinedload(CandidateApplicationNote.author).joinedload(Member.user))
+            .where(
+                CandidateApplicationNote.organizationId == organization_id,
+                CandidateApplicationNote.applicationId == application_id,
+                CandidateApplicationNote.id == note_id,
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
+    async def add_application_note(self, note: CandidateApplicationNote) -> CandidateApplicationNote:
+        self.db.add(note)
+        await self.db.flush()
+        return note
 
     async def count_stage_applications(
         self,
@@ -489,7 +533,15 @@ class CandidatePipelineRepository:
         event_id: str,
     ) -> StageEvent | None:
         result = await self.db.execute(
-            select(StageEvent).where(
+            select(StageEvent)
+            .options(
+                joinedload(StageEvent.application).joinedload(CandidateApplication.candidate),
+                joinedload(StageEvent.stage).selectinload(PipelineStage.evaluationCategories),
+                joinedload(StageEvent.stage).joinedload(PipelineStage.evaluationWorkspace),
+                selectinload(StageEvent.feedbacks)
+                .selectinload(InterviewFeedback.values),
+            )
+            .where(
                 StageEvent.organizationId == organization_id,
                 StageEvent.applicationId == application_id,
                 StageEvent.id == event_id,

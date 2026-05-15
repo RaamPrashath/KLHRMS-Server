@@ -78,6 +78,12 @@ class Member(Base):
         back_populates="member",
     )
 
+    candidateApplicationNotes = relationship(
+        "CandidateApplicationNote",
+        foreign_keys="CandidateApplicationNote.authorMemberId",
+        back_populates="author",
+    )
+
     createdOfferLetters = relationship(
         "OfferLetter",
         foreign_keys="OfferLetter.createdByMemberId",

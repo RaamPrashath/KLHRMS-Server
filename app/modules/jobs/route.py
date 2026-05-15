@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.jobs.controller import (
@@ -38,9 +38,8 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 async def list_requisitions(
     ctx: Annotated[MemberContext, Depends(require_permission("jobs", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
-    owned_only: bool = Query(default=False),
 ) -> list[JobRequisitionListItemRead]:
-    return await handle_list_requisitions(ctx, db, owned_only)
+    return await handle_list_requisitions(ctx, db)
 
 
 @router.get("/requisitions/{requisition_id}", response_model=JobRequisitionDetailRead)
@@ -55,7 +54,7 @@ async def get_requisition(
 @router.post("/requisitions", response_model=JobRequisitionDetailRead)
 async def create_requisition(
     body: JobRequisitionCreateRequest,
-    ctx: Annotated[MemberContext, Depends(require_permission("jobs", "create"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("jobs", "create", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> JobRequisitionDetailRead:
     return await handle_create_requisition(ctx, db, body)
@@ -64,7 +63,7 @@ async def create_requisition(
 @router.post("/requisitions/{requisition_id}/submit", response_model=JobRequisitionDetailRead)
 async def submit_requisition(
     requisition_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("jobs", "create"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("jobs", "create", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> JobRequisitionDetailRead:
     return await handle_submit_requisition(ctx, db, requisition_id)
@@ -93,7 +92,7 @@ async def reject_requisition(
 @router.patch("/requisitions/{requisition_id}/close", response_model=JobRequisitionDetailRead)
 async def close_requisition(
     requisition_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("jobs", "delete"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("jobs", "delete", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> JobRequisitionDetailRead:
     return await handle_close_requisition(ctx, db, requisition_id)
