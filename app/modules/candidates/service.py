@@ -78,6 +78,7 @@ DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
     {"name": "Hired", "order": 6.0, "color": None, "isDefault": True, "isFinal": True, "stageType": StageType.HIRED},
     {"name": "Rejected", "order": 7.0, "color": None, "isDefault": True, "isFinal": True, "stageType": StageType.REJECTED},
 ]
+STAGE_ORDER_MIN_GAP = 1e-6
 
 
 @dataclass(frozen=True)
@@ -317,12 +318,20 @@ def _serialize_application_interview_meeting(
 ) -> ApplicationInterviewMeetingRead | None:
     if event is None or event.scheduledStartAt is None or event.scheduledEndAt is None:
         return None
+    status = _computed_interview_status(event)
+    interviewer_name = None
+    if status == "COMPLETED" and event.completedBy is not None and event.completedBy.user is not None:
+        interviewer_name = event.completedBy.user.name or event.completedBy.user.email
+    elif event.createdBy is not None and event.createdBy.user is not None:
+        interviewer_name = event.createdBy.user.name or event.createdBy.user.email
     return ApplicationInterviewMeetingRead(
         id=event.id,
-        status=_computed_interview_status(event),
+        status=status,
         scheduledStartAt=event.scheduledStartAt,
         scheduledEndAt=event.scheduledEndAt,
         meetingUrl=event.meetingUrl,
+        interviewerName=interviewer_name,
+        completedAt=event.scheduledEndAt if status == "COMPLETED" else None,
     )
 
 
@@ -477,6 +486,60 @@ async def _normalize_stage_order(db: AsyncSession, stages: list[PipelineStage]) 
         stage.order = float(index)
         db.add(stage)
     await db.flush()
+
+
+def _midpoint_order(previous_order: float | None, next_order: float | None) -> float:
+    if previous_order is None and next_order is None:
+        return 1.0
+    if previous_order is None:
+        return next_order - 1.0
+    if next_order is None:
+        return previous_order + 1.0
+    return (previous_order + next_order) / 2.0
+
+
+async def _ensure_stage_order_gap(
+    db: AsyncSession,
+    stages: list[PipelineStage],
+    previous_order: float | None,
+    next_order: float | None,
+) -> list[PipelineStage]:
+    if previous_order is None or next_order is None:
+        return stages
+    if abs(next_order - previous_order) > STAGE_ORDER_MIN_GAP:
+        return stages
+    await _normalize_stage_order(db, sorted(stages, key=lambda item: item.order))
+    return sorted(stages, key=lambda item: item.order)
+
+
+async def _resolve_inserted_stage_order(
+    db: AsyncSession,
+    stages: list[PipelineStage],
+    after_stage_id: str | None,
+) -> float:
+    ordered_stages = sorted(stages, key=lambda item: item.order)
+    if not ordered_stages:
+        return 1.0
+
+    if after_stage_id is None:
+        return ordered_stages[-1].order + 1.0
+
+    insert_after_index = next((index for index, item in enumerate(ordered_stages) if item.id == after_stage_id), None)
+    if insert_after_index is None:
+        raise HTTPException(status_code=404, detail="Reference stage not found")
+
+    previous_order = ordered_stages[insert_after_index].order
+    next_stage = ordered_stages[insert_after_index + 1] if insert_after_index + 1 < len(ordered_stages) else None
+    next_order = next_stage.order if next_stage is not None else None
+    ordered_stages = await _ensure_stage_order_gap(db, ordered_stages, previous_order, next_order)
+
+    if next_order is not None and ordered_stages:
+        insert_after_index = next(index for index, item in enumerate(ordered_stages) if item.id == after_stage_id)
+        previous_order = ordered_stages[insert_after_index].order
+        next_stage = ordered_stages[insert_after_index + 1] if insert_after_index + 1 < len(ordered_stages) else None
+        next_order = next_stage.order if next_stage is not None else None
+
+    return _midpoint_order(previous_order, next_order)
 
 
 async def _sync_evaluation_categories(
@@ -701,8 +764,7 @@ async def create_stage(
         raise HTTPException(status_code=404, detail="Job posting not found")
 
     stages = await _ensure_default_stages(db, repository, organization_id, body.jobPostingId)
-    ordered_stages = sorted(stages, key=lambda item: item.order)
-    next_order = (ordered_stages[-1].order + 1.0) if ordered_stages else 1.0
+    next_order = await _resolve_inserted_stage_order(db, stages, body.afterStageId)
 
     new_stage = PipelineStage(
         organizationId=organization_id,
@@ -751,6 +813,11 @@ async def update_stage(
         stage.name = body.name.strip()
     await _apply_stage_config(db, organization_id, stage, body)
     if body.order is not None:
+        stages = await repository.list_stages_for_job(organization_id, stage.jobPostingId)
+        other_stages = [item for item in stages if item.id != stage.id]
+        previous_order = max((item.order for item in other_stages if item.order < body.order), default=None)
+        next_order = min((item.order for item in other_stages if item.order > body.order), default=None)
+        stages = await _ensure_stage_order_gap(db, stages, previous_order, next_order)
         stage.order = body.order
 
     db.add(stage)
@@ -1545,6 +1612,7 @@ async def complete_interview_meeting(
     organization_id: str,
     application_id: str,
     event_id: str,
+    actor_member_id: str,
 ) -> InterviewMeetingRead:
     repository = CandidatePipelineRepository(db)
     event = await repository.get_stage_event(organization_id, application_id, event_id)
@@ -1554,6 +1622,7 @@ async def complete_interview_meeting(
         raise HTTPException(status_code=400, detail="Interview meeting is missing schedule metadata")
 
     event.status = EventStatus.COMPLETED
+    event.completedByMemberId = actor_member_id
     now = datetime.now(UTC)
     end = event.scheduledEndAt
     if end.tzinfo is None:
