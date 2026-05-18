@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -15,6 +15,7 @@ from app.models.recruitment import (
     JobRequisition,
     PipelineStage,
     RequisitionApproval,
+    RequisitionActivityLog,
 )
 from app.shared.utils.permissions import get_permission_scope
 
@@ -31,8 +32,10 @@ class JobRequisitionRepository:
         query = (
             select(JobRequisition)
             .options(
+                joinedload(JobRequisition.organization),
                 joinedload(JobRequisition.department),
                 joinedload(JobRequisition.raisedBy).joinedload(Member.user),
+                joinedload(JobRequisition.replacementFor).joinedload(Member.user),
                 selectinload(JobRequisition.approvals)
                 .joinedload(RequisitionApproval.approver)
                 .joinedload(Member.user),
@@ -54,8 +57,10 @@ class JobRequisitionRepository:
         result = await self.db.execute(
             select(JobRequisition)
             .options(
+                joinedload(JobRequisition.organization),
                 joinedload(JobRequisition.department),
                 joinedload(JobRequisition.raisedBy).joinedload(Member.user),
+                joinedload(JobRequisition.replacementFor).joinedload(Member.user),
                 selectinload(JobRequisition.approvals)
                 .joinedload(RequisitionApproval.approver)
                 .joinedload(Member.user),
@@ -72,6 +77,14 @@ class JobRequisitionRepository:
         await self.db.commit()
         await self.db.refresh(requisition)
         return requisition
+
+    async def get_max_requisition_number(self, organization_id: str) -> int | None:
+        result = await self.db.execute(
+            select(func.max(JobRequisition.requisitionNumber)).where(
+                JobRequisition.organizationId == organization_id,
+            )
+        )
+        return result.scalar()
 
     async def save(self, requisition: JobRequisition) -> JobRequisition:
         self.db.add(requisition)
@@ -110,10 +123,26 @@ class JobRequisitionRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_member(
+        self,
+        organization_id: str,
+        member_id: str,
+    ) -> Member | None:
+        result = await self.db.execute(
+            select(Member).where(
+                Member.organizationId == organization_id,
+                Member.id == member_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def list_public_postings(self) -> list[JobPosting]:
         result = await self.db.execute(
             select(JobPosting)
-            .options(joinedload(JobPosting.organization))
+            .options(
+                joinedload(JobPosting.organization),
+                joinedload(JobPosting.requisition).joinedload(JobRequisition.department),
+            )
             .where(JobPosting.status == JobPostingStatus.PUBLISHED)
             .order_by(JobPosting.publishedAt.desc(), JobPosting.createdAt.desc())
         )
@@ -122,7 +151,10 @@ class JobRequisitionRepository:
     async def get_public_posting(self, posting_id: str) -> JobPosting | None:
         result = await self.db.execute(
             select(JobPosting)
-            .options(joinedload(JobPosting.organization))
+            .options(
+                joinedload(JobPosting.organization),
+                joinedload(JobPosting.requisition).joinedload(JobRequisition.department),
+            )
             .where(
                 JobPosting.id == posting_id,
                 JobPosting.status == JobPostingStatus.PUBLISHED,
@@ -231,3 +263,26 @@ class JobRequisitionRepository:
     async def add_pipeline_stages(self, stages: list[PipelineStage]) -> None:
         self.db.add_all(stages)
         await self.db.flush()
+
+    async def add_activity_log(self, log: RequisitionActivityLog) -> RequisitionActivityLog:
+        self.db.add(log)
+        await self.db.flush()
+        return log
+
+    async def list_activity_logs(
+        self,
+        organization_id: str,
+        requisition_id: str,
+    ) -> list[RequisitionActivityLog]:
+        result = await self.db.execute(
+            select(RequisitionActivityLog)
+            .options(
+                joinedload(RequisitionActivityLog.actor).joinedload(Member.user),
+            )
+            .where(
+                RequisitionActivityLog.organizationId == organization_id,
+                RequisitionActivityLog.requisitionId == requisition_id,
+            )
+            .order_by(RequisitionActivityLog.createdAt.desc())
+        )
+        return list(result.unique().scalars().all())

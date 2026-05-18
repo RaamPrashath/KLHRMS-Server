@@ -9,6 +9,7 @@ from app.modules.jobs.schema import (
     JobRequisitionDecisionRequest,
     JobRequisitionDetailRead,
     JobRequisitionListItemRead,
+    JobRequisitionUpdateRequest,
     PublicJobApplicationRead,
     PublicJobApplicationRequest,
     PublicJobPostingDetailRead,
@@ -52,6 +53,21 @@ async def handle_create_requisition(
         db=db,
         organization_id=ctx.organization.id,
         raised_by_id=ctx.member.id,
+        body=body,
+    )
+
+
+async def handle_update_requisition(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+    body: JobRequisitionUpdateRequest,
+) -> JobRequisitionDetailRead:
+    return await service.update_requisition(
+        db=db,
+        organization_id=ctx.organization.id,
+        actor_member_id=ctx.member.id,
+        requisition_id=requisition_id,
         body=body,
     )
 
@@ -111,6 +127,34 @@ async def handle_close_requisition(
         organization_id=ctx.organization.id,
         actor_member_id=ctx.member.id,
         delete_scope=ctx.scope,  # type: ignore[attr-defined]
+        requisition_id=requisition_id,
+    )
+
+
+async def handle_reopen_requisition(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+) -> JobRequisitionDetailRead:
+    return await service.reopen_requisition(
+        db=db,
+        organization_id=ctx.organization.id,
+        actor_member_id=ctx.member.id,
+        create_scope=ctx.scope,  # type: ignore[attr-defined]
+        requisition_id=requisition_id,
+    )
+
+
+async def handle_get_requisition_activity(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+) -> list[dict]:
+    return await service.get_requisition_activity(
+        db=db,
+        organization_id=ctx.organization.id,
+        actor_member_id=ctx.member.id,
+        view_scope=ctx.scope,  # type: ignore[attr-defined]
         requisition_id=requisition_id,
     )
 

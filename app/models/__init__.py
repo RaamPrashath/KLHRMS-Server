@@ -36,6 +36,7 @@ from app.models.recruitment import (
     CandidateApplication,
     ApplicationStageHistory,
     RequisitionApproval,
+    RequisitionActivityLog,
     HiringTeam,
     HiringTeamMember,
 )

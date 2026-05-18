@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.jobs.controller import (
@@ -10,33 +10,52 @@ from app.modules.jobs.controller import (
     handle_apply_public_posting,
     handle_close_requisition,
     handle_create_requisition,
+    handle_get_requisition_activity,
     handle_get_public_posting,
     handle_get_requisition,
     handle_list_public_postings,
     handle_list_requisitions,
     handle_reject_requisition,
+    handle_reopen_requisition,
     handle_submit_requisition,
+    handle_update_requisition,
 )
 from app.modules.jobs.schema import (
     JobRequisitionCreateRequest,
     JobRequisitionDecisionRequest,
     JobRequisitionDetailRead,
     JobRequisitionListItemRead,
+    JobRequisitionUpdateRequest,
     PublicJobApplicationRead,
     PublicJobApplicationRequest,
     PublicJobPostingDetailRead,
     PublicJobPostingListItemRead,
 )
 from app.shared.database import get_db
-from app.shared.deps.organization_member import MemberContext
+from app.shared.deps.organization_member import MemberContext, get_member_context
 from app.shared.deps.permissions import require_permission
+from app.shared.utils.permissions import get_member_permission_scope
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
+def require_requisition_view_or_approve(
+    ctx: MemberContext = Depends(get_member_context),
+) -> MemberContext:
+    view_scope = get_member_permission_scope(ctx.member, "jobs", "view")
+    approve_scope = get_member_permission_scope(ctx.member, "jobs", "approve")
+    if approve_scope == "organization" or view_scope == "organization":
+        ctx.scope = "organization"  # type: ignore[attr-defined]
+        return ctx
+    if view_scope == "self":
+        ctx.scope = "self"  # type: ignore[attr-defined]
+        return ctx
+    raise HTTPException(status_code=403, detail="you dont have permission")
+
+
 @router.get("/requisitions", response_model=list[JobRequisitionListItemRead])
 async def list_requisitions(
-    ctx: Annotated[MemberContext, Depends(require_permission("jobs", "view", allow_self=True))],
+    ctx: Annotated[MemberContext, Depends(require_requisition_view_or_approve)],
     db: AsyncSession = Depends(get_db),
 ) -> list[JobRequisitionListItemRead]:
     return await handle_list_requisitions(ctx, db)
@@ -45,7 +64,7 @@ async def list_requisitions(
 @router.get("/requisitions/{requisition_id}", response_model=JobRequisitionDetailRead)
 async def get_requisition(
     requisition_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("jobs", "view", allow_self=True))],
+    ctx: Annotated[MemberContext, Depends(require_requisition_view_or_approve)],
     db: AsyncSession = Depends(get_db),
 ) -> JobRequisitionDetailRead:
     return await handle_get_requisition(ctx, db, requisition_id)
@@ -58,6 +77,16 @@ async def create_requisition(
     db: AsyncSession = Depends(get_db),
 ) -> JobRequisitionDetailRead:
     return await handle_create_requisition(ctx, db, body)
+
+
+@router.patch("/requisitions/{requisition_id}", response_model=JobRequisitionDetailRead)
+async def update_requisition(
+    requisition_id: str,
+    body: JobRequisitionUpdateRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("jobs", "create", allow_self=True))],
+    db: AsyncSession = Depends(get_db),
+) -> JobRequisitionDetailRead:
+    return await handle_update_requisition(ctx, db, requisition_id, body)
 
 
 @router.post("/requisitions/{requisition_id}/submit", response_model=JobRequisitionDetailRead)
@@ -96,6 +125,24 @@ async def close_requisition(
     db: AsyncSession = Depends(get_db),
 ) -> JobRequisitionDetailRead:
     return await handle_close_requisition(ctx, db, requisition_id)
+
+
+@router.post("/requisitions/{requisition_id}/reopen", response_model=JobRequisitionDetailRead)
+async def reopen_requisition(
+    requisition_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("jobs", "create", allow_self=True))],
+    db: AsyncSession = Depends(get_db),
+) -> JobRequisitionDetailRead:
+    return await handle_reopen_requisition(ctx, db, requisition_id)
+
+
+@router.get("/requisitions/{requisition_id}/activity")
+async def get_requisition_activity(
+    requisition_id: str,
+    ctx: Annotated[MemberContext, Depends(require_requisition_view_or_approve)],
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    return await handle_get_requisition_activity(ctx, db, requisition_id)
 
 
 @router.get("/public/postings", response_model=list[PublicJobPostingListItemRead])

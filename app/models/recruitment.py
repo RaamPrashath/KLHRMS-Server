@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -47,9 +48,48 @@ class EmploymentType(str, enum.Enum):
 class JobRequisitionStatus(str, enum.Enum):
     DRAFT = "DRAFT"
     PENDING = "PENDING"
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    PARTIALLY_APPROVED = "PARTIALLY_APPROVED"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+    PUBLISHED = "PUBLISHED"
+    ACTIVE_HIRING = "ACTIVE_HIRING"
+    FILLED = "FILLED"
     CLOSED = "CLOSED"
+    ARCHIVED = "ARCHIVED"
+
+
+class HiringReason(str, enum.Enum):
+    NEW_ROLE = "NEW_ROLE"
+    REPLACEMENT = "REPLACEMENT"
+    TEAM_EXPANSION = "TEAM_EXPANSION"
+    URGENT_REQUIREMENT = "URGENT_REQUIREMENT"
+    INTERNAL_TRANSFER = "INTERNAL_TRANSFER"
+    CLIENT_REQUIREMENT = "CLIENT_REQUIREMENT"
+
+
+class RequisitionPriority(str, enum.Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+class SalaryVisibility(str, enum.Enum):
+    INTERNAL_ONLY = "INTERNAL_ONLY"
+    PUBLIC = "PUBLIC"
+
+
+class ExperienceLevel(str, enum.Enum):
+    ENTRY = "ENTRY"
+    JUNIOR = "JUNIOR"
+    MID = "MID"
+    SENIOR = "SENIOR"
+    STAFF = "STAFF"
+    PRINCIPAL = "PRINCIPAL"
+    LEAD = "LEAD"
+    HEAD = "HEAD"
+    EXECUTIVE = "EXECUTIVE"
 
 class RequisitionApprovalDecision(str, enum.Enum):
     PENDING = "PENDING"
@@ -180,6 +220,44 @@ class JobRequisition(Base):
 
     targetDate: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
+    # HIRING CONTEXT
+    hiringReason: Mapped[str | None] = mapped_column(String, nullable=True)
+    priority: Mapped[str] = mapped_column(String, nullable=False, default="MEDIUM")
+    replacementForId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    businessJustification: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # COMPENSATION
+    salaryVisibility: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="INTERNAL_ONLY",
+    )
+
+    # CANDIDATE REQUIREMENTS
+    experienceLevel: Mapped[str | None] = mapped_column(String, nullable=True)
+    minExperience: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    education: Mapped[str | None] = mapped_column(String, nullable=True)
+    certifications: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String),
+        nullable=True,
+        default=list,
+    )
+
+    # POSTING CONTENT (Tiptap HTML)
+    roleSummary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    responsibilities: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requirementsRich: Mapped[str | None] = mapped_column(Text, nullable=True)
+    benefits: Mapped[str | None] = mapped_column(Text, nullable=True)
+    aboutTeam: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # REQUISITION NUMBER
+    requisitionNumber: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     status: Mapped[JobRequisitionStatus] = mapped_column(
         Enum(JobRequisitionStatus),
         nullable=False,
@@ -213,15 +291,29 @@ class JobRequisition(Base):
         back_populates="raisedJobRequisitions",
     )
 
+    replacementFor = relationship(
+        "Member",
+        foreign_keys=[replacementForId],
+        uselist=False,
+    )
+
     approvals = relationship(
         "RequisitionApproval",
         back_populates="requisition",
         cascade="all, delete-orphan",
     )
 
+    activityLogs = relationship(
+        "RequisitionActivityLog",
+        back_populates="requisition",
+        cascade="all, delete-orphan",
+        order_by="RequisitionActivityLog.createdAt.desc()",
+    )
+
     __table_args__ = (
         Index("ix_job_requisition_org_status", "organizationId", "status"),
         Index("ix_job_requisition_org_raised_by", "organizationId", "raisedById"),
+        Index("ix_job_requisition_org_replacement", "organizationId", "replacementForId"),
     )
 
 
@@ -298,6 +390,58 @@ class RequisitionApproval(Base):
             "approverId",
             name="uq_requisition_approval_requisition_approver",
         ),
+    )
+
+
+class RequisitionActivityLog(Base):
+    __tablename__ = "requisition_activity_log"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    requisitionId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("job_requisition.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    actorId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    action: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    # action values: "CREATED", "SUBMITTED", "APPROVED", "REJECTED",
+    #                "EDITED", "CLOSED", "REOPENED", "PUBLISHED", "ARCHIVED"
+    fieldChanges: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        index=True,
+    )
+
+    organization = relationship(
+        "Organization",
+        back_populates="requisitionActivityLogs",
+    )
+    requisition = relationship(
+        "JobRequisition",
+        back_populates="activityLogs",
+    )
+    actor = relationship(
+        "Member",
+        foreign_keys=[actorId],
+    )
+
+    __table_args__ = (
+        Index("ix_requisition_activity_log_org_action", "organizationId", "action"),
     )
 
 
@@ -415,6 +559,13 @@ class JobPosting(Base):
         index=True,
     )
 
+    requisitionId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("job_requisition.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     title: Mapped[str] = mapped_column(
         String,
         nullable=False,
@@ -460,6 +611,8 @@ class JobPosting(Base):
         "Organization",
         back_populates="jobPostings",
     )
+
+    requisition = relationship("JobRequisition", foreign_keys=[requisitionId])
 
     applications = relationship(
         "CandidateApplication",

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import re
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
@@ -10,26 +12,93 @@ from app.models.recruitment import (
     RequisitionApprovalDecision,
 )
 
+_SALARY_UNITS = {
+    "crore": 10000000,
+    "crores": 10000000,
+    "cr": 10000000,
+    "lakh": 100000,
+    "lakhs": 100000,
+    "lac": 100000,
+    "lacs": 100000,
+    "l": 100000,
+    "thousand": 1000,
+    "thousands": 1000,
+    "k": 1000,
+}
+
+
+def parse_salary_amount(value: Any) -> float | None:
+    if value is None or isinstance(value, (int, float)):
+        return value
+    if not isinstance(value, str):
+        raise ValueError("Salary must be a valid amount")
+
+    normalized = (
+        value.strip()
+        .lower()
+        .replace(",", "")
+        .replace("₹", "")
+    )
+    if not normalized:
+        return None
+
+    token_pattern = re.compile(
+        r"(\d+(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?|lakh|lac|l|thousands?|k)?"
+    )
+    total = 0.0
+    consumed: list[str] = []
+    for match in token_pattern.finditer(normalized):
+        amount = float(match.group(1))
+        unit = match.group(2) or ""
+        total += amount * _SALARY_UNITS.get(unit, 1)
+        consumed.append(match.group(0))
+
+    compact_consumed = "".join(consumed).replace(" ", "")
+    compact_normalized = normalized.replace(" ", "")
+    if not consumed or compact_consumed != compact_normalized:
+        raise ValueError("Salary must be a valid amount")
+    return round(total, 2)
+
 
 class JobRequisitionCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     departmentId: str | None = None
     employmentType: EmploymentType = EmploymentType.FULL_TIME
     openings: int = Field(default=1, ge=1)
+
+    hiringReason: str | None = None
+    priority: str = "MEDIUM"
+    replacementForId: str | None = None
+    businessJustification: str | None = None
+
     salaryMin: float | None = None
     salaryMax: float | None = None
     currency: str = Field(default="INR", min_length=1, max_length=10)
+    salaryVisibility: str = "INTERNAL_ONLY"
+
+    skills: list[str] = Field(default_factory=list)
+    experienceLevel: str | None = None
+    minExperience: int | None = None
+    education: str | None = None
+    certifications: list[str] = Field(default_factory=list)
+
+    roleSummary: str | None = None
+    responsibilities: str | None = None
+    requirementsRich: str | None = None
+    benefits: str | None = None
+    aboutTeam: str | None = None
+
     description: str | None = None
     requirements: str | None = None
-    skills: list[str] = Field(default_factory=list)
+
     location: str | None = None
     isRemote: bool = False
     targetDate: date | None = None
 
-    @field_validator("skills")
+    @field_validator("skills", "certifications")
     @classmethod
-    def normalize_skills(cls, value: list[str]) -> list[str]:
-        return [skill.strip() for skill in value if skill.strip()]
+    def normalize_list_fields(cls, value: list[str]) -> list[str]:
+        return [item.strip() for item in value if item.strip()]
 
     @field_validator("salaryMax")
     @classmethod
@@ -39,9 +108,211 @@ class JobRequisitionCreateRequest(BaseModel):
             raise ValueError("salaryMax must be greater than or equal to salaryMin")
         return value
 
+    @field_validator("salaryMin", "salaryMax", mode="before")
+    @classmethod
+    def parse_salary(cls, value: Any) -> float | None:
+        return parse_salary_amount(value)
+
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, value: str) -> str:
+        allowed = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+        if value not in allowed:
+            raise ValueError(f"priority must be one of {allowed}")
+        return value
+
+    @field_validator("hiringReason")
+    @classmethod
+    def validate_hiring_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        allowed = {
+            "NEW_ROLE",
+            "REPLACEMENT",
+            "TEAM_EXPANSION",
+            "URGENT_REQUIREMENT",
+            "INTERNAL_TRANSFER",
+            "CLIENT_REQUIREMENT",
+        }
+        if value not in allowed:
+            raise ValueError(f"hiringReason must be one of {allowed}")
+        return value
+
+    @field_validator("salaryVisibility")
+    @classmethod
+    def validate_salary_visibility(cls, value: str) -> str:
+        allowed = {"INTERNAL_ONLY", "PUBLIC"}
+        if value not in allowed:
+            raise ValueError(f"salaryVisibility must be one of {allowed}")
+        return value
+
+
+class JobRequisitionUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    departmentId: str | None = None
+    employmentType: EmploymentType | None = None
+    openings: int | None = Field(default=None, ge=1)
+
+    hiringReason: str | None = None
+    priority: str | None = None
+    replacementForId: str | None = None
+    businessJustification: str | None = None
+
+    salaryMin: float | None = None
+    salaryMax: float | None = None
+    currency: str | None = Field(default=None, min_length=1, max_length=10)
+    salaryVisibility: str | None = None
+
+    skills: list[str] | None = None
+    experienceLevel: str | None = None
+    minExperience: int | None = None
+    education: str | None = None
+    certifications: list[str] | None = None
+
+    roleSummary: str | None = None
+    responsibilities: str | None = None
+    requirementsRich: str | None = None
+    benefits: str | None = None
+    aboutTeam: str | None = None
+
+    description: str | None = None
+    requirements: str | None = None
+    location: str | None = None
+    isRemote: bool | None = None
+    targetDate: date | None = None
+
+    @field_validator("skills", "certifications")
+    @classmethod
+    def normalize_optional_list_fields(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return [item.strip() for item in value if item.strip()]
+
+    @field_validator("salaryMin", "salaryMax", mode="before")
+    @classmethod
+    def parse_salary(cls, value: Any) -> float | None:
+        return parse_salary_amount(value)
+
+    @field_validator("salaryMax")
+    @classmethod
+    def validate_salary_range(cls, value: float | None, info: ValidationInfo) -> float | None:
+        salary_min = info.data.get("salaryMin")
+        if value is not None and salary_min is not None and value < salary_min:
+            raise ValueError("salaryMax must be greater than or equal to salaryMin")
+        return value
+
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        allowed = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+        if value not in allowed:
+            raise ValueError(f"priority must be one of {allowed}")
+        return value
+
+    @field_validator("hiringReason")
+    @classmethod
+    def validate_hiring_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        allowed = {
+            "NEW_ROLE",
+            "REPLACEMENT",
+            "TEAM_EXPANSION",
+            "URGENT_REQUIREMENT",
+            "INTERNAL_TRANSFER",
+            "CLIENT_REQUIREMENT",
+        }
+        if value not in allowed:
+            raise ValueError(f"hiringReason must be one of {allowed}")
+        return value
+
+    @field_validator("salaryVisibility")
+    @classmethod
+    def validate_salary_visibility(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        allowed = {"INTERNAL_ONLY", "PUBLIC"}
+        if value not in allowed:
+            raise ValueError(f"salaryVisibility must be one of {allowed}")
+        return value
+
 
 class JobRequisitionDecisionRequest(BaseModel):
     comment: str | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    departmentId: str | None = None
+    employmentType: EmploymentType | None = None
+    openings: int | None = Field(default=None, ge=1)
+    salaryMin: float | None = None
+    salaryMax: float | None = None
+    currency: str | None = Field(default=None, min_length=1, max_length=10)
+    description: str | None = None
+    requirements: str | None = None
+    skills: list[str] | None = None
+    location: str | None = None
+    isRemote: bool | None = None
+    targetDate: date | None = None
+    roleSummary: str | None = None
+    responsibilities: str | None = None
+    requirementsRich: str | None = None
+    benefits: str | None = None
+    aboutTeam: str | None = None
+    hiringReason: str | None = None
+    priority: str | None = None
+    businessJustification: str | None = None
+    experienceLevel: str | None = None
+    minExperience: int | None = None
+    education: str | None = None
+    certifications: list[str] | None = None
+
+    @field_validator("skills", "certifications")
+    @classmethod
+    def normalize_optional_list_fields(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return [item.strip() for item in value if item.strip()]
+
+    @field_validator("salaryMin", "salaryMax", mode="before")
+    @classmethod
+    def parse_decision_salary(cls, value: Any) -> float | None:
+        return parse_salary_amount(value)
+
+    @field_validator("salaryMax")
+    @classmethod
+    def validate_decision_salary_range(cls, value: float | None, info: ValidationInfo) -> float | None:
+        salary_min = info.data.get("salaryMin")
+        if value is not None and salary_min is not None and value < salary_min:
+            raise ValueError("salaryMax must be greater than or equal to salaryMin")
+        return value
+
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        allowed = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+        if value not in allowed:
+            raise ValueError(f"priority must be one of {allowed}")
+        return value
+
+    @field_validator("hiringReason")
+    @classmethod
+    def validate_hiring_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        allowed = {
+            "NEW_ROLE",
+            "REPLACEMENT",
+            "TEAM_EXPANSION",
+            "URGENT_REQUIREMENT",
+            "INTERNAL_TRANSFER",
+            "CLIENT_REQUIREMENT",
+        }
+        if value not in allowed:
+            raise ValueError(f"hiringReason must be one of {allowed}")
+        return value
 
 
 class JobRequisitionApprovalRead(BaseModel):
@@ -85,6 +356,24 @@ class JobRequisitionListItemRead(BaseModel):
     createdAt: datetime
     updatedAt: datetime
     closedAt: datetime | None
+    hiringReason: str | None
+    priority: str
+    replacementForId: str | None
+    replacementForName: str | None
+    businessJustification: str | None
+    salaryVisibility: str
+    experienceLevel: str | None
+    minExperience: int | None
+    education: str | None
+    certifications: list[str]
+    roleSummary: str | None
+    responsibilities: str | None
+    requirementsRich: str | None
+    benefits: str | None
+    aboutTeam: str | None
+    requisitionNumber: int | None
+    requisitionLabel: str | None
+    canEdit: bool
     approvalSummary: JobRequisitionApprovalSummaryRead
     currentUserApprovalDecision: RequisitionApprovalDecision | None
     currentUserCanApprove: bool
@@ -104,6 +393,12 @@ class PublicJobPostingListItemRead(BaseModel):
     title: str
     description: str
     requirements: str | None
+    roleSummary: str | None = None
+    responsibilities: str | None = None
+    requirementsRich: str | None = None
+    benefits: str | None = None
+    aboutTeam: str | None = None
+    requisitionId: str | None = None
     location: str | None = None
     employmentType: str | None = None
     openings: int | None = None
