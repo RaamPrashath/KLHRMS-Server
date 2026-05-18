@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, datetime
 import re
-from typing import Any
+from datetime import date, datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
@@ -11,6 +11,8 @@ from app.models.recruitment import (
     JobRequisitionStatus,
     RequisitionApprovalDecision,
 )
+
+PipelineStageType = Literal["DEFAULT", "INTERVIEW", "OFFER", "HIRED", "REJECTED"]
 
 _SALARY_UNITS = {
     "crore": 10000000,
@@ -383,6 +385,50 @@ class JobRequisitionListItemRead(BaseModel):
 
 class JobRequisitionDetailRead(JobRequisitionListItemRead):
     pass
+
+
+class CreatePipelineStageRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=50)
+    stageType: PipelineStageType = "DEFAULT"
+
+    @field_validator("name")
+    @classmethod
+    def strip_stage_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Stage name is required")
+        return stripped
+
+
+class ImportPipelineRequest(BaseModel):
+    sourceJobPostingId: str = Field(min_length=1)
+
+
+class PipelineStageRead(BaseModel):
+    id: str
+    jobPostingId: str
+    name: str
+    slug: str
+    order: float
+    color: str | None
+    isDefault: bool
+    isFinal: bool
+    stageType: str
+    meetingEnabled: bool
+    offerLetterEnabled: bool
+    dueDate: datetime | None
+
+
+class PipelineBoardRead(BaseModel):
+    jobPostingId: str
+    stages: list[PipelineStageRead]
+
+
+class ImportableJobPostingRead(BaseModel):
+    id: str
+    title: str
+    departmentName: str | None
+    stageCount: int
 
 
 class PublicJobPostingListItemRead(BaseModel):

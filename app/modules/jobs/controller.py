@@ -5,11 +5,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.recruitment import RequisitionApprovalDecision
 from app.modules.jobs import service
 from app.modules.jobs.schema import (
+    CreatePipelineStageRequest,
+    ImportableJobPostingRead,
+    ImportPipelineRequest,
     JobRequisitionCreateRequest,
     JobRequisitionDecisionRequest,
     JobRequisitionDetailRead,
     JobRequisitionListItemRead,
     JobRequisitionUpdateRequest,
+    PipelineBoardRead,
+    PipelineStageRead,
     PublicJobApplicationRead,
     PublicJobApplicationRequest,
     PublicJobPostingDetailRead,
@@ -54,6 +59,80 @@ async def handle_create_requisition(
         organization_id=ctx.organization.id,
         raised_by_id=ctx.member.id,
         body=body,
+    )
+
+
+async def handle_get_requisition_pipeline(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+) -> PipelineBoardRead:
+    return await service.get_requisition_pipeline(
+        db=db,
+        organization_id=ctx.organization.id,
+        actor_member_id=ctx.member.id,
+        view_scope=ctx.scope,  # type: ignore[attr-defined]
+        requisition_id=requisition_id,
+    )
+
+
+async def handle_create_pipeline_stage(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+    body: CreatePipelineStageRequest,
+) -> PipelineStageRead:
+    return await service.create_pipeline_stage(
+        db=db,
+        organization_id=ctx.organization.id,
+        actor_member_id=ctx.member.id,
+        edit_scope=ctx.scope,  # type: ignore[attr-defined]
+        requisition_id=requisition_id,
+        body=body,
+    )
+
+
+async def handle_create_default_pipeline(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+) -> PipelineBoardRead:
+    return await service.create_default_pipeline(
+        db=db,
+        organization_id=ctx.organization.id,
+        actor_member_id=ctx.member.id,
+        edit_scope=ctx.scope,  # type: ignore[attr-defined]
+        requisition_id=requisition_id,
+    )
+
+
+async def handle_import_pipeline(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+    body: ImportPipelineRequest,
+) -> PipelineBoardRead:
+    return await service.import_pipeline(
+        db=db,
+        organization_id=ctx.organization.id,
+        actor_member_id=ctx.member.id,
+        edit_scope=ctx.scope,  # type: ignore[attr-defined]
+        requisition_id=requisition_id,
+        body=body,
+    )
+
+
+async def handle_get_import_options(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+) -> list[ImportableJobPostingRead]:
+    return await service.get_import_options(
+        db=db,
+        organization_id=ctx.organization.id,
+        actor_member_id=ctx.member.id,
+        view_scope=ctx.scope,  # type: ignore[attr-defined]
+        requisition_id=requisition_id,
     )
 
 

@@ -14,8 +14,9 @@ from app.models.recruitment import (
     JobPostingStatus,
     JobRequisition,
     PipelineStage,
-    RequisitionApproval,
     RequisitionActivityLog,
+    RequisitionApproval,
+    StageEvaluationCategory,
 )
 from app.shared.utils.permissions import get_permission_scope
 
@@ -262,6 +263,95 @@ class JobRequisitionRepository:
 
     async def add_pipeline_stages(self, stages: list[PipelineStage]) -> None:
         self.db.add_all(stages)
+        await self.db.flush()
+
+    async def get_job_posting_by_requisition(
+        self,
+        organization_id: str,
+        requisition_id: str,
+    ) -> JobPosting | None:
+        result = await self.db.execute(
+            select(JobPosting)
+            .options(
+                joinedload(JobPosting.requisition).joinedload(JobRequisition.department),
+            )
+            .where(
+                JobPosting.organizationId == organization_id,
+                JobPosting.requisitionId == requisition_id,
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
+    async def list_pipeline_stages(
+        self,
+        organization_id: str,
+        job_posting_id: str,
+    ) -> list[PipelineStage]:
+        result = await self.db.execute(
+            select(PipelineStage)
+            .options(selectinload(PipelineStage.evaluationCategories))
+            .where(
+                PipelineStage.organizationId == organization_id,
+                PipelineStage.jobPostingId == job_posting_id,
+            )
+            .order_by(PipelineStage.order.asc())
+        )
+        return list(result.unique().scalars().all())
+
+    async def list_stage_slugs(
+        self,
+        organization_id: str,
+        job_posting_id: str,
+    ) -> list[str]:
+        result = await self.db.execute(
+            select(PipelineStage.slug).where(
+                PipelineStage.organizationId == organization_id,
+                PipelineStage.jobPostingId == job_posting_id,
+            )
+        )
+        return [str(slug) for slug in result.scalars().all()]
+
+    async def create_pipeline_stage(self, stage: PipelineStage) -> PipelineStage:
+        self.db.add(stage)
+        await self.db.flush()
+        return stage
+
+    async def create_stage_evaluation_categories(
+        self,
+        categories: list[StageEvaluationCategory],
+    ) -> None:
+        self.db.add_all(categories)
+        await self.db.flush()
+
+    async def list_job_postings_for_import(
+        self,
+        organization_id: str,
+        exclude_requisition_id: str,
+    ) -> list[JobPosting]:
+        result = await self.db.execute(
+            select(JobPosting)
+            .options(
+                joinedload(JobPosting.requisition).joinedload(JobRequisition.department),
+                selectinload(JobPosting.pipelineStages),
+            )
+            .where(
+                JobPosting.organizationId == organization_id,
+                JobPosting.requisitionId != exclude_requisition_id,
+            )
+            .order_by(JobPosting.createdAt.desc())
+        )
+        return list(result.unique().scalars().all())
+
+    async def get_pipeline_stages_for_import(
+        self,
+        organization_id: str,
+        job_posting_id: str,
+    ) -> list[PipelineStage]:
+        return await self.list_pipeline_stages(organization_id, job_posting_id)
+
+    async def delete_pipeline_stages(self, stages: list[PipelineStage]) -> None:
+        for stage in stages:
+            await self.db.delete(stage)
         await self.db.flush()
 
     async def add_activity_log(self, log: RequisitionActivityLog) -> RequisitionActivityLog:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import re
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,10 +19,14 @@ from app.models.recruitment import (
     PipelineStage,
     RequisitionApproval,
     RequisitionApprovalDecision,
+    StageEvaluationCategory,
     StageType,
 )
 from app.modules.jobs.repository import JobRequisitionRepository
 from app.modules.jobs.schema import (
+    CreatePipelineStageRequest,
+    ImportableJobPostingRead,
+    ImportPipelineRequest,
     JobRequisitionApprovalRead,
     JobRequisitionApprovalSummaryRead,
     JobRequisitionCreateRequest,
@@ -30,6 +34,8 @@ from app.modules.jobs.schema import (
     JobRequisitionDetailRead,
     JobRequisitionListItemRead,
     JobRequisitionUpdateRequest,
+    PipelineBoardRead,
+    PipelineStageRead,
     PublicJobApplicationRead,
     PublicJobApplicationRequest,
     PublicJobPostingDetailRead,
@@ -40,15 +46,12 @@ from app.shared.notifications.email import (
     send_requisition_submitted,
 )
 
-
-DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
-    {"name": "Applied", "order": 1.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.DEFAULT},
-    {"name": "Screening", "order": 2.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.DEFAULT},
-    {"name": "Interview Round 1", "order": 3.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.INTERVIEW},
-    {"name": "Interview Round 2", "order": 4.0, "color": None, "isDefault": False, "isFinal": False, "stageType": StageType.INTERVIEW},
-    {"name": "Offer", "order": 5.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.OFFER},
-    {"name": "Hired", "order": 6.0, "color": None, "isDefault": True, "isFinal": True, "stageType": StageType.HIRED},
-    {"name": "Rejected", "order": 7.0, "color": None, "isDefault": True, "isFinal": True, "stageType": StageType.REJECTED},
+SETUP_DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
+    {"name": "Screening", "stageType": StageType.DEFAULT, "isFinal": False},
+    {"name": "Interview", "stageType": StageType.INTERVIEW, "isFinal": False},
+    {"name": "Offer", "stageType": StageType.OFFER, "isFinal": False},
+    {"name": "Hired", "stageType": StageType.HIRED, "isFinal": True},
+    {"name": "Rejected", "stageType": StageType.REJECTED, "isFinal": True},
 ]
 
 
@@ -131,6 +134,35 @@ def _serialize_approval(approval: RequisitionApproval) -> JobRequisitionApproval
         comment=approval.comment,
         decidedAt=_to_utc_datetime(approval.decidedAt),
         createdAt=approval.createdAt,
+    )
+
+
+def _is_applied_stage(stage: PipelineStage) -> bool:
+    return stage.name.strip().lower() == "applied" and stage.order == 1
+
+
+def _serialize_pipeline_stage(stage: PipelineStage) -> PipelineStageRead:
+    return PipelineStageRead(
+        id=stage.id,
+        jobPostingId=stage.jobPostingId,
+        name=stage.name,
+        slug=stage.slug,
+        order=stage.order,
+        color=stage.color,
+        isDefault=stage.isDefault,
+        isFinal=stage.isFinal,
+        stageType=stage.stageType.value,
+        meetingEnabled=stage.meetingEnabled,
+        offerLetterEnabled=stage.offerLetterEnabled,
+        dueDate=_to_utc_datetime(stage.dueDate),
+    )
+
+
+def _serialize_pipeline_board(job_posting_id: str, stages: list[PipelineStage]) -> PipelineBoardRead:
+    ordered_stages = sorted(stages, key=lambda stage: stage.order)
+    return PipelineBoardRead(
+        jobPostingId=job_posting_id,
+        stages=[_serialize_pipeline_stage(stage) for stage in ordered_stages],
     )
 
 
@@ -289,24 +321,20 @@ async def _create_job_posting_for_requisition(
     )
     posting = await repository.add_job_posting(posting)
 
-    used_stage_slugs: set[str] = set()
-    stages = [
-        PipelineStage(
-            organizationId=requisition.organizationId,
-            jobPostingId=posting.id,
-            name=stage["name"],
-            slug=_generate_stage_slug(str(stage["name"]), used_stage_slugs),
-            order=stage["order"],
-            color=stage["color"],
-            isDefault=stage["isDefault"],
-            isFinal=stage["isFinal"],
-            stageType=stage["stageType"],
-            meetingEnabled=bool(stage["stageType"] == StageType.INTERVIEW),
-            offerLetterEnabled=bool(stage["stageType"] == StageType.OFFER),
-        )
-        for stage in DEFAULT_PIPELINE_STAGES
-    ]
-    await repository.add_pipeline_stages(stages)
+    applied_stage = PipelineStage(
+        organizationId=requisition.organizationId,
+        jobPostingId=posting.id,
+        name="Applied",
+        slug="applied",
+        order=1.0,
+        color=None,
+        isDefault=True,
+        isFinal=False,
+        stageType=StageType.DEFAULT,
+        meetingEnabled=False,
+        offerLetterEnabled=False,
+    )
+    await repository.add_pipeline_stages([applied_stage])
     return posting
 
 
@@ -375,10 +403,6 @@ def _validate_submission_ready(requisition: JobRequisition) -> None:
 
 def _validate_approval_ready(requisition: JobRequisition) -> None:
     missing = _missing_submission_fields(requisition)
-    if requisition.salaryMin is None:
-        missing.append("salaryMin")
-    if requisition.salaryMax is None:
-        missing.append("salaryMax")
     if missing:
         raise HTTPException(
             status_code=400,
@@ -512,6 +536,274 @@ async def get_requisition(
     if view_scope != "self" and view_scope != "organization":
         raise HTTPException(status_code=403, detail="you dont have permission")
     return JobRequisitionDetailRead(**_serialize_requisition(requisition, actor_member_id).model_dump())
+
+
+async def _get_pipeline_posting(
+    repository: JobRequisitionRepository,
+    organization_id: str,
+    actor_member_id: str,
+    scope: str,
+    requisition_id: str,
+) -> JobPosting:
+    requisition = await repository.get_requisition(organization_id, requisition_id)
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Job requisition not found")
+    if scope == "self" and requisition.raisedById != actor_member_id:
+        raise HTTPException(status_code=403, detail="you dont have permission")
+    if scope not in {"self", "organization"}:
+        raise HTTPException(status_code=403, detail="you dont have permission")
+
+    posting = await repository.get_job_posting_by_requisition(organization_id, requisition_id)
+    if posting is None:
+        raise HTTPException(status_code=404, detail="Job posting not found for this requisition")
+    return posting
+
+
+async def _generate_pipeline_stage_slug(
+    repository: JobRequisitionRepository,
+    organization_id: str,
+    job_posting_id: str,
+    name: str,
+) -> str:
+    used_slugs = set(await repository.list_stage_slugs(organization_id, job_posting_id))
+    return _generate_stage_slug(name, used_slugs)
+
+
+async def _replace_setup_stages(
+    repository: JobRequisitionRepository,
+    organization_id: str,
+    job_posting_id: str,
+) -> tuple[PipelineStage | None, set[str]]:
+    stages = await repository.list_pipeline_stages(organization_id, job_posting_id)
+    applied = next((stage for stage in stages if _is_applied_stage(stage)), None)
+    removable_stages = [stage for stage in stages if stage.id != applied.id] if applied else stages
+    if removable_stages:
+        await repository.delete_pipeline_stages(removable_stages)
+    if applied is None:
+        applied = PipelineStage(
+            organizationId=organization_id,
+            jobPostingId=job_posting_id,
+            name="Applied",
+            slug="applied",
+            order=1.0,
+            color=None,
+            isDefault=True,
+            isFinal=False,
+            stageType=StageType.DEFAULT,
+            meetingEnabled=False,
+            offerLetterEnabled=False,
+        )
+        await repository.create_pipeline_stage(applied)
+    used_slugs = {applied.slug} if applied is not None else set()
+    return applied, used_slugs
+
+
+async def get_requisition_pipeline(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    view_scope: str,
+    requisition_id: str,
+) -> PipelineBoardRead:
+    repository = JobRequisitionRepository(db)
+    posting = await _get_pipeline_posting(
+        repository,
+        organization_id,
+        actor_member_id,
+        view_scope,
+        requisition_id,
+    )
+    stages = await repository.list_pipeline_stages(organization_id, posting.id)
+    return _serialize_pipeline_board(posting.id, stages)
+
+
+async def create_pipeline_stage(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    edit_scope: str,
+    requisition_id: str,
+    body: CreatePipelineStageRequest,
+) -> PipelineStageRead:
+    repository = JobRequisitionRepository(db)
+    posting = await _get_pipeline_posting(
+        repository,
+        organization_id,
+        actor_member_id,
+        edit_scope,
+        requisition_id,
+    )
+    stages = await repository.list_pipeline_stages(organization_id, posting.id)
+    next_order = max((stage.order for stage in stages), default=0.0) + 1.0
+    stage_type = StageType(body.stageType)
+    stage = PipelineStage(
+        organizationId=organization_id,
+        jobPostingId=posting.id,
+        name=body.name,
+        slug=await _generate_pipeline_stage_slug(repository, organization_id, posting.id, body.name),
+        order=next_order,
+        color=None,
+        isDefault=not stages and body.name.strip().lower() == "applied",
+        isFinal=stage_type in {StageType.HIRED, StageType.REJECTED},
+        stageType=stage_type,
+        meetingEnabled=stage_type == StageType.INTERVIEW,
+        offerLetterEnabled=stage_type == StageType.OFFER,
+    )
+    await repository.create_pipeline_stage(stage)
+    await db.commit()
+
+    refreshed = await repository.list_pipeline_stages(organization_id, posting.id)
+    created = next((item for item in refreshed if item.id == stage.id), stage)
+    return _serialize_pipeline_stage(created)
+
+
+async def create_default_pipeline(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    edit_scope: str,
+    requisition_id: str,
+) -> PipelineBoardRead:
+    repository = JobRequisitionRepository(db)
+    posting = await _get_pipeline_posting(
+        repository,
+        organization_id,
+        actor_member_id,
+        edit_scope,
+        requisition_id,
+    )
+    applied_stage, used_slugs = await _replace_setup_stages(repository, organization_id, posting.id)
+    stages: list[PipelineStage] = []
+    start_order = applied_stage.order if applied_stage is not None else 0.0
+    for index, stage_data in enumerate(SETUP_DEFAULT_PIPELINE_STAGES, start=1):
+        stage_type = stage_data["stageType"]
+        stage_name = str(stage_data["name"])
+        stages.append(
+            PipelineStage(
+                organizationId=organization_id,
+                jobPostingId=posting.id,
+                name=stage_name,
+                slug=_generate_stage_slug(stage_name, used_slugs),
+                order=start_order + float(index),
+                color=None,
+                isDefault=True,
+                isFinal=bool(stage_data["isFinal"]),
+                stageType=stage_type,
+                meetingEnabled=stage_type == StageType.INTERVIEW,
+                offerLetterEnabled=stage_type == StageType.OFFER,
+            )
+        )
+    await repository.add_pipeline_stages(stages)
+    await db.commit()
+
+    refreshed = await repository.list_pipeline_stages(organization_id, posting.id)
+    return _serialize_pipeline_board(posting.id, refreshed)
+
+
+async def import_pipeline(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    edit_scope: str,
+    requisition_id: str,
+    body: ImportPipelineRequest,
+) -> PipelineBoardRead:
+    repository = JobRequisitionRepository(db)
+    target_posting = await _get_pipeline_posting(
+        repository,
+        organization_id,
+        actor_member_id,
+        edit_scope,
+        requisition_id,
+    )
+    if body.sourceJobPostingId == target_posting.id:
+        raise HTTPException(status_code=400, detail="Choose a different job to import from")
+    source_stages = await repository.get_pipeline_stages_for_import(
+        organization_id,
+        body.sourceJobPostingId,
+    )
+    if not source_stages:
+        raise HTTPException(status_code=404, detail="Source job posting not found")
+
+    importable_stages = [stage for stage in source_stages if not _is_applied_stage(stage)]
+    if not importable_stages:
+        raise HTTPException(status_code=400, detail="The selected job has no stages to import")
+
+    applied_stage, used_slugs = await _replace_setup_stages(repository, organization_id, target_posting.id)
+    start_order = applied_stage.order if applied_stage is not None else 0.0
+    created_stages: list[tuple[PipelineStage, PipelineStage]] = []
+    for index, source_stage in enumerate(importable_stages, start=1):
+        copied_stage = PipelineStage(
+            organizationId=organization_id,
+            jobPostingId=target_posting.id,
+            name=source_stage.name,
+            slug=_generate_stage_slug(source_stage.name, used_slugs),
+            order=start_order + float(index),
+            color=source_stage.color,
+            isDefault=source_stage.isDefault,
+            isFinal=source_stage.isFinal,
+            stageType=source_stage.stageType,
+            meetingEnabled=source_stage.meetingEnabled,
+            offerLetterEnabled=source_stage.offerLetterEnabled,
+            evaluationEnabled=source_stage.evaluationEnabled,
+            evaluationType=source_stage.evaluationType,
+            evaluationIncludeTotal=source_stage.evaluationIncludeTotal,
+            evaluationIncludeAnalysis=source_stage.evaluationIncludeAnalysis,
+            dueDate=source_stage.dueDate,
+            extendToNextWorkingDay=source_stage.extendToNextWorkingDay,
+        )
+        await repository.create_pipeline_stage(copied_stage)
+        created_stages.append((source_stage, copied_stage))
+
+    categories: list[StageEvaluationCategory] = []
+    for source_stage, copied_stage in created_stages:
+        for category in sorted(source_stage.evaluationCategories or [], key=lambda item: item.order):
+            categories.append(
+                StageEvaluationCategory(
+                    organizationId=organization_id,
+                    stageId=copied_stage.id,
+                    name=category.name,
+                    valueType=category.valueType,
+                    order=category.order,
+                )
+            )
+    if categories:
+        await repository.create_stage_evaluation_categories(categories)
+    await db.commit()
+
+    refreshed = await repository.list_pipeline_stages(organization_id, target_posting.id)
+    return _serialize_pipeline_board(target_posting.id, refreshed)
+
+
+async def get_import_options(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    view_scope: str,
+    requisition_id: str,
+) -> list[ImportableJobPostingRead]:
+    repository = JobRequisitionRepository(db)
+    await _get_pipeline_posting(
+        repository,
+        organization_id,
+        actor_member_id,
+        view_scope,
+        requisition_id,
+    )
+    postings = await repository.list_job_postings_for_import(organization_id, requisition_id)
+    return [
+        ImportableJobPostingRead(
+            id=posting.id,
+            title=posting.title,
+            departmentName=(
+                posting.requisition.department.name
+                if posting.requisition is not None and posting.requisition.department is not None
+                else None
+            ),
+            stageCount=len([stage for stage in posting.pipelineStages if not _is_applied_stage(stage)]),
+        )
+        for posting in postings
+    ]
 
 
 async def create_requisition(
