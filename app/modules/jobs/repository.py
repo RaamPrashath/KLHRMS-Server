@@ -326,17 +326,17 @@ class JobRequisitionRepository:
     async def list_job_postings_for_import(
         self,
         organization_id: str,
-        exclude_requisition_id: str,
+        exclude_job_posting_id: str,
     ) -> list[JobPosting]:
         result = await self.db.execute(
             select(JobPosting)
             .options(
                 joinedload(JobPosting.requisition).joinedload(JobRequisition.department),
-                selectinload(JobPosting.pipelineStages),
+                selectinload(JobPosting.pipelineStages).selectinload(PipelineStage.evaluationCategories),
             )
             .where(
                 JobPosting.organizationId == organization_id,
-                JobPosting.requisitionId != exclude_requisition_id,
+                JobPosting.id != exclude_job_posting_id,
             )
             .order_by(JobPosting.createdAt.desc())
         )

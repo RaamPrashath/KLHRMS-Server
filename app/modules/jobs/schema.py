@@ -387,9 +387,39 @@ class JobRequisitionDetailRead(JobRequisitionListItemRead):
     pass
 
 
+class StageEvaluationCategoryInput(BaseModel):
+    id: str | None = None
+    name: str = Field(min_length=1, max_length=120)
+    type: Literal["NUMERIC", "TEXT", "CHECKBOX"] = "NUMERIC"
+    order: int | None = Field(default=None, ge=1)
+
+    @field_validator("name")
+    @classmethod
+    def strip_category_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Category name is required")
+        return stripped
+
+
+class StageEvaluationCategoryRead(BaseModel):
+    id: str
+    stageId: str
+    name: str
+    type: str
+    order: int
+
+
 class CreatePipelineStageRequest(BaseModel):
     name: str = Field(min_length=1, max_length=50)
     stageType: PipelineStageType = "DEFAULT"
+    evaluationEnabled: bool = False
+    evaluationType: Literal["NUMERIC", "TEXT", "CHECKBOX"] | None = None
+    evaluationIncludeTotal: bool = False
+    evaluationIncludeAnalysis: bool = False
+    dueDate: datetime | None = None
+    extendToNextWorkingDay: bool = False
+    evaluationCategories: list[StageEvaluationCategoryInput] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -398,6 +428,15 @@ class CreatePipelineStageRequest(BaseModel):
         if not stripped:
             raise ValueError("Stage name is required")
         return stripped
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.evaluationEnabled:
+            self.evaluationType = None
+            self.evaluationIncludeTotal = False
+            self.evaluationIncludeAnalysis = False
+            self.evaluationCategories = []
+        elif self.evaluationType is None:
+            self.evaluationType = "NUMERIC"
 
 
 class ImportPipelineRequest(BaseModel):
@@ -416,7 +455,13 @@ class PipelineStageRead(BaseModel):
     stageType: str
     meetingEnabled: bool
     offerLetterEnabled: bool
+    evaluationEnabled: bool
+    evaluationType: str | None
+    evaluationIncludeTotal: bool
+    evaluationIncludeAnalysis: bool
     dueDate: datetime | None
+    extendToNextWorkingDay: bool
+    evaluationCategories: list[StageEvaluationCategoryRead]
 
 
 class PipelineBoardRead(BaseModel):
@@ -429,6 +474,7 @@ class ImportableJobPostingRead(BaseModel):
     title: str
     departmentName: str | None
     stageCount: int
+    stages: list[PipelineStageRead]
 
 
 class PublicJobPostingListItemRead(BaseModel):
@@ -454,6 +500,12 @@ class PublicJobPostingListItemRead(BaseModel):
     isRemote: bool = False
     targetDate: datetime | None = None
     skills: list[str] = Field(default_factory=list)
+    experienceLevel: str | None = None
+    minExperience: int | None = None
+    education: str | None = None
+    certifications: list[str] = Field(default_factory=list)
+    departmentName: str | None = None
+    hiringReason: str | None = None
     publishedAt: datetime | None
     createdAt: datetime
     updatedAt: datetime

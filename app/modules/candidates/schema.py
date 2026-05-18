@@ -16,6 +16,7 @@ class PipelineJobPostingRead(BaseModel):
     slug: str
     title: str
     status: str
+    requisitionId: str | None = None
 
 
 class CandidateSummaryRead(BaseModel):

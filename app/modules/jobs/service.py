@@ -154,7 +154,22 @@ def _serialize_pipeline_stage(stage: PipelineStage) -> PipelineStageRead:
         stageType=stage.stageType.value,
         meetingEnabled=stage.meetingEnabled,
         offerLetterEnabled=stage.offerLetterEnabled,
+        evaluationEnabled=stage.evaluationEnabled,
+        evaluationType=stage.evaluationType,
+        evaluationIncludeTotal=stage.evaluationIncludeTotal,
+        evaluationIncludeAnalysis=stage.evaluationIncludeAnalysis,
         dueDate=_to_utc_datetime(stage.dueDate),
+        extendToNextWorkingDay=stage.extendToNextWorkingDay,
+        evaluationCategories=[
+            {
+                "id": category.id,
+                "stageId": category.stageId,
+                "name": category.name,
+                "type": category.valueType,
+                "order": category.order,
+            }
+            for category in sorted(stage.evaluationCategories or [], key=lambda item: item.order)
+        ],
     )
 
 
@@ -267,6 +282,8 @@ async def _serialize_public_posting(
             posting.organizationId,
             posting.title,
         )
+    department_name = requisition.department.name if requisition is not None and requisition.department is not None else None
+
     return PublicJobPostingListItemRead(
         id=posting.id,
         organizationId=posting.organizationId,
@@ -290,6 +307,12 @@ async def _serialize_public_posting(
         isRemote=requisition.isRemote if requisition is not None else False,
         targetDate=_to_utc_datetime(requisition.targetDate) if requisition is not None else None,
         skills=list(requisition.skills or []) if requisition is not None else [],
+        experienceLevel=requisition.experienceLevel if requisition is not None else None,
+        minExperience=requisition.minExperience if requisition is not None else None,
+        education=requisition.education if requisition is not None else None,
+        certifications=list(requisition.certifications or []) if requisition is not None else [],
+        departmentName=department_name,
+        hiringReason=requisition.hiringReason if requisition is not None else None,
         publishedAt=_to_utc_datetime(posting.publishedAt),
         createdAt=posting.createdAt,
         updatedAt=posting.updatedAt,
@@ -648,8 +671,27 @@ async def create_pipeline_stage(
         stageType=stage_type,
         meetingEnabled=stage_type == StageType.INTERVIEW,
         offerLetterEnabled=stage_type == StageType.OFFER,
+        evaluationEnabled=body.evaluationEnabled,
+        evaluationType=body.evaluationType if body.evaluationEnabled else None,
+        evaluationIncludeTotal=body.evaluationIncludeTotal if body.evaluationEnabled else False,
+        evaluationIncludeAnalysis=body.evaluationIncludeAnalysis if body.evaluationEnabled else False,
+        dueDate=body.dueDate,
+        extendToNextWorkingDay=body.extendToNextWorkingDay,
     )
     await repository.create_pipeline_stage(stage)
+    if body.evaluationEnabled and body.evaluationCategories:
+        await repository.create_stage_evaluation_categories(
+            [
+                StageEvaluationCategory(
+                    organizationId=organization_id,
+                    stageId=stage.id,
+                    name=category.name,
+                    valueType=category.type,
+                    order=category.order or index,
+                )
+                for index, category in enumerate(body.evaluationCategories, start=1)
+            ]
+        )
     await db.commit()
 
     refreshed = await repository.list_pipeline_stages(organization_id, posting.id)
@@ -783,14 +825,14 @@ async def get_import_options(
     requisition_id: str,
 ) -> list[ImportableJobPostingRead]:
     repository = JobRequisitionRepository(db)
-    await _get_pipeline_posting(
+    posting = await _get_pipeline_posting(
         repository,
         organization_id,
         actor_member_id,
         view_scope,
         requisition_id,
     )
-    postings = await repository.list_job_postings_for_import(organization_id, requisition_id)
+    postings = await repository.list_job_postings_for_import(organization_id, posting.id)
     return [
         ImportableJobPostingRead(
             id=posting.id,
@@ -801,6 +843,11 @@ async def get_import_options(
                 else None
             ),
             stageCount=len([stage for stage in posting.pipelineStages if not _is_applied_stage(stage)]),
+            stages=[
+                _serialize_pipeline_stage(stage)
+                for stage in sorted(posting.pipelineStages or [], key=lambda item: item.order)
+                if not _is_applied_stage(stage)
+            ],
         )
         for posting in postings
     ]
