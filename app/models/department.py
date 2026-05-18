@@ -22,10 +22,10 @@ class Department(Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="ACTIVE")
 
     createdAt: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), nullable=False
     )
     updatedAt: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
     parent = relationship(
