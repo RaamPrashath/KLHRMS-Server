@@ -30,10 +30,25 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+# Prisma is the canonical migration owner for Better Auth and the shared
+# organization access tables. SQLAlchemy may map them for joins/reads, but
+# Alembic must not autogenerate DDL for them or it will fight Prisma.
+PRISMA_OWNED_TABLES = {
+    "_prisma_migrations",
+    "user",
+    "session",
+    "account",
+    "verification",
+    "organization",
+    "organization_invite",
+    "member",
+    "role",
+}
+
 
 def include_object(object, name, type_, reflected, compare_to):
-    """Exclude Prisma's internal migration table."""
-    if name == "_prisma_migrations":
+    """Exclude Prisma-owned tables from Alembic autogeneration."""
+    if type_ == "table" and name in PRISMA_OWNED_TABLES:
         return False
     return True
 

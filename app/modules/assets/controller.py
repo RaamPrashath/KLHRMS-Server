@@ -12,21 +12,25 @@ from app.modules.assets.schema import (
     AssetDashboardResponse,
     AssetDetailResponse,
     AssetFilters,
+    AssetIssueRequest,
+    AssetIssueResponse,
     AssetListResponse,
     AssetMaintenanceCreateRequest,
     AssetMaintenanceUpdateRequest,
     AssetMetaResponse,
-    MaintenanceTicketResponse,
-    MyTicketResponse,
-    AssetProvideRequest,
     AssetReportRequest,
     AssetReturnRequest,
     AssetUpsertRequest,
+    AvailableAssetGroupResponse,
+    BulkAssetCreateRequest,
     CategoryFieldDefinitionCreate,
     CategoryFieldDefinitionResponse,
     CategoryFieldDefinitionUpdate,
+    MaintenanceTicketResponse,
+    MyTicketResponse,
 )
 from app.modules.assets.service import (
+    bulk_create_assets,
     create_asset_id,
     list_asset_ids,
     update_asset_id,
@@ -42,11 +46,12 @@ from app.modules.assets.service import (
     get_asset,
     get_dashboard,
     get_asset_meta,
+    issue_assets,
+    list_available_groups,
     list_categories,
     list_assets,
     list_my_tickets,
     list_tickets,
-    provide_asset,
     return_asset,
     update_category,
     update_category_field,
@@ -79,15 +84,6 @@ async def handle_update_asset(
 
 async def handle_delete_asset(ctx: MemberContext, db: AsyncSession, asset_id: str) -> None:
     await delete_asset(db, ctx, asset_id)
-
-
-async def handle_provide_asset(
-    ctx: MemberContext,
-    db: AsyncSession,
-    asset_id: str,
-    payload: AssetProvideRequest,
-) -> AssetDetailResponse:
-    return await provide_asset(db, ctx, asset_id, payload)
 
 
 async def handle_return_asset(
@@ -213,3 +209,29 @@ async def handle_update_category_field(
 
 async def handle_delete_category_field(ctx: MemberContext, db: AsyncSession, field_id: str) -> None:
     await delete_category_field(db, ctx, field_id)
+
+
+# ── New Bulk / Issue handlers ─────────────────────────────────────────────────
+
+
+async def handle_bulk_create_assets(
+    ctx: MemberContext,
+    db: AsyncSession,
+    payload: BulkAssetCreateRequest,
+) -> list[AssetDetailResponse]:
+    return await bulk_create_assets(db, ctx, payload)
+
+
+async def handle_available_groups(
+    ctx: MemberContext,
+    db: AsyncSession,
+) -> list[AvailableAssetGroupResponse]:
+    return await list_available_groups(db, ctx)
+
+
+async def handle_issue_assets(
+    ctx: MemberContext,
+    db: AsyncSession,
+    payload: AssetIssueRequest,
+) -> AssetIssueResponse:
+    return await issue_assets(db, ctx, payload)

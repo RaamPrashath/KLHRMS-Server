@@ -104,15 +104,21 @@ class CategoryFieldDefinitionResponse(BaseModel):
 
 class AssetCategoryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
+    assetCode: str | None = Field(default=None, max_length=120)
+    description: str | None = None
 
 
 class AssetCategoryUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
+    assetCode: str | None = Field(default=None, max_length=120)
+    description: str | None = None
 
 
 class AssetCategoryResponse(BaseModel):
     id: str
     name: str
+    assetCode: str | None = None
+    description: str | None = None
     isActive: bool
     fields: list[CategoryFieldDefinitionResponse] = []
 
@@ -219,23 +225,6 @@ class AssetUpsertRequest(BaseModel):
         if self.purchaseDate and self.warrantyExpiryDate and self.warrantyExpiryDate < self.purchaseDate:
             raise ValueError("Warranty expiry date must be on or after the purchase date")
         return self
-
-
-class AssetProvideRequest(BaseModel):
-    memberId: str
-    assetUnitId: str | None = None
-    providedDate: datetime | None = None
-    conditionWhileProviding: str
-    providedByMemberId: str | None = None
-    notes: str | None = None
-
-    @field_validator("conditionWhileProviding")
-    @classmethod
-    def validate_condition(cls, value: str) -> str:
-        normalized = _normalize_enum(value)
-        if normalized not in ASSET_CONDITIONS:
-            raise ValueError("Invalid condition while providing")
-        return normalized
 
 
 class AssetReturnRequest(BaseModel):
@@ -385,6 +374,73 @@ class AssetProvideRecordSummary(BaseModel):
     receivedByMemberId: str | None
     receivedByName: str | None
     returnNotes: str | None
+
+
+# ── New Bulk Create / Issue Schemas ──────────────────────────────────────────
+
+
+class BulkAssetCreateRequest(BaseModel):
+    assetCode: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=255)
+    categoryDefinitionId: str | None = None
+    condition: str = Field(default="GOOD")
+    location: str | None = Field(default=None, max_length=160)
+    serialNumbers: list[str] = Field(min_length=1)
+    customFields: list[CustomFieldValueInput] = []
+
+    @field_validator("condition")
+    @classmethod
+    def validate_condition(cls, value: str) -> str:
+        normalized = _normalize_enum(value)
+        if normalized not in ASSET_CONDITIONS:
+            raise ValueError("Invalid asset condition")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_serials(self) -> BulkAssetCreateRequest:
+        seen = set()
+        for s in self.serialNumbers:
+            if not s or not s.strip():
+                raise ValueError("Serial number cannot be empty")
+            if s.strip() in seen:
+                raise ValueError("Duplicate serial numbers in the same submission")
+            seen.add(s.strip())
+        return self
+
+
+class AvailableAssetGroupResponse(BaseModel):
+    groupKey: str
+    assetName: str
+    categoryName: str | None = None
+    categoryDefinitionId: str | None = None
+    assetCode: str
+    model: str | None = None
+    availableQuantity: int
+
+
+class AssetIssueRequest(BaseModel):
+    memberId: str
+    groupKey: str
+    quantity: int = Field(ge=1)
+    conditionWhileProviding: str
+    providedByMemberId: str | None = None
+    notes: str | None = None
+
+    @field_validator("conditionWhileProviding")
+    @classmethod
+    def validate_condition(cls, value: str) -> str:
+        normalized = _normalize_enum(value)
+        if normalized not in ASSET_CONDITIONS:
+            raise ValueError("Invalid condition while providing")
+        return normalized
+
+
+class AssetIssueResponse(BaseModel):
+    issuedAssetIds: list[str]
+    assignmentIds: list[str]
+
+
+# ── Maintenance Summary ─────────────────────────────────────────────────────
 
 
 class AssetMaintenanceSummary(BaseModel):
