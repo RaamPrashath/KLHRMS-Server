@@ -21,24 +21,39 @@ from app.models.recruitment import (
     ApplicationStageHistory,
     Candidate,
     CandidateApplication,
+    CandidateApplicationNote,
     EventStatus,
+    InterviewFeedback,
+    InterviewFeedbackValue,
     InterviewType,
+    InterviewRejectionRecord,
     PipelineStage,
-    StageType,
     StageEvaluationCategory,
     StageEvaluationWorkspace,
     StageEvent,
     StageEventParticipant,
+    StageType,
 )
 from app.modules.candidates.repository import CandidatePipelineRepository
 from app.modules.candidates.schema import (
+    ApplicationInterviewEventRead,
     ApplicationInterviewMeetingRead,
     CandidateApplicationDetailRead,
+    CandidateApplicationNoteCreateRequest,
+    CandidateApplicationNoteRead,
+    CandidateApplicationNoteUpdateRequest,
     CandidateApplicationUpdateRequest,
     CandidateSummaryRead,
+    InterviewAcceptRequest,
+    InterviewAcceptResponse,
+    InterviewRejectResponse,
     InterviewerSearchResponse,
+    InterviewFeedbackRead,
+    InterviewFeedbackValueRead,
+    InterviewMeetingCompleteRequest,
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
+    InterviewParticipantRead,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
     MyInterviewRead,
@@ -49,9 +64,9 @@ from app.modules.candidates.schema import (
     PipelineStageHistoryRead,
     PipelineStageRead,
     PipelineStageUpdateRequest,
+    ReassignmentRequestCreate,
     ReshuffleRequest,
     ReshuffleResponse,
-    ReassignmentRequestCreate,
     StageEvaluationCategoryInput,
     StageEvaluationCategoryRead,
     StageEvaluationWorkspaceRead,
@@ -71,14 +86,10 @@ from app.modules.candidates.schema import (
 
 DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
     {"name": "Applied", "order": 1.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.DEFAULT},
-    {"name": "Screening", "order": 2.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.DEFAULT},
-    {"name": "Interview Round 1", "order": 3.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.INTERVIEW},
-    {"name": "Interview Round 2", "order": 4.0, "color": None, "isDefault": False, "isFinal": False, "stageType": StageType.INTERVIEW},
-    {"name": "Offer", "order": 5.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.OFFER},
-    {"name": "Hired", "order": 6.0, "color": None, "isDefault": True, "isFinal": True, "stageType": StageType.HIRED},
-    {"name": "Rejected", "order": 7.0, "color": None, "isDefault": True, "isFinal": True, "stageType": StageType.REJECTED},
 ]
 STAGE_ORDER_MIN_GAP = 1e-6
+LOCKED_ASSIGNMENT_STATUSES = {"ACCEPTED", "SCHEDULED", "COMPLETED"}
+ACTIVE_ASSIGNMENT_STATUSES = {"PENDING", "PENDING_ACCEPTANCE", "ACCEPTED", "SCHEDULED"}
 
 
 @dataclass(frozen=True)
@@ -131,6 +142,7 @@ def _serialize_category(category: StageEvaluationCategory) -> StageEvaluationCat
         id=category.id,
         stageId=category.stageId,
         name=category.name,
+        type=category.valueType or "NUMERIC",
         order=category.order,
     )
 
@@ -280,6 +292,110 @@ def _serialize_interview_meeting(event: StageEvent) -> InterviewMeetingRead:
     )
 
 
+def _member_display(member: Member | None) -> tuple[str | None, str | None]:
+    if member is None or member.user is None:
+        return None, None
+    return member.user.name or member.user.email, member.user.email
+
+
+def _serialize_note(note: CandidateApplicationNote, actor_member_id: str) -> CandidateApplicationNoteRead:
+    author_name, author_email = _member_display(note.author)
+    return CandidateApplicationNoteRead(
+        id=note.id,
+        authorMemberId=note.authorMemberId,
+        authorName=author_name or "Unknown",
+        authorEmail=author_email,
+        body=note.body,
+        canEdit=note.authorMemberId == actor_member_id,
+        createdAt=note.createdAt,
+        updatedAt=note.updatedAt,
+    )
+
+
+def _serialize_interview_participant(participant: StageEventParticipant) -> InterviewParticipantRead:
+    name, email = _member_display(participant.member)
+    return InterviewParticipantRead(
+        memberId=participant.memberId,
+        name=name or "Unknown",
+        email=email,
+        role=participant.role,
+        isBackup=participant.isBackup,
+    )
+
+
+def _serialize_feedback_value(value: InterviewFeedbackValue) -> InterviewFeedbackValueRead:
+    category = value.category
+    category_type = category.valueType if category is not None and category.valueType else "NUMERIC"
+    display_value: str | float | bool | None
+    if category_type == "CHECKBOX":
+        display_value = value.booleanValue
+    elif category_type == "TEXT":
+        display_value = value.textValue
+    else:
+        display_value = value.numericValue
+    return InterviewFeedbackValueRead(
+        categoryId=value.categoryId,
+        categoryName=category.name if category is not None else "Score",
+        categoryType=category_type,
+        value=display_value,
+    )
+
+
+def _serialize_feedback(feedback: InterviewFeedback) -> InterviewFeedbackRead:
+    name, _email = _member_display(feedback.member)
+    return InterviewFeedbackRead(
+        id=feedback.id,
+        memberId=feedback.memberId,
+        memberName=name or "Unknown",
+        outcome=feedback.outcome.value if hasattr(feedback.outcome, "value") else str(feedback.outcome),
+        score=feedback.score,
+        notes=feedback.notes,
+        values=[
+            _serialize_feedback_value(value)
+            for value in sorted(
+                feedback.values or [],
+                key=lambda item: item.category.order if item.category is not None else 0,
+            )
+        ],
+        createdAt=feedback.createdAt,
+    )
+
+
+def _serialize_interview_event(event: StageEvent) -> ApplicationInterviewEventRead:
+    created_by_name, _created_by_email = _member_display(event.createdBy)
+    completed_by_name, _completed_by_email = _member_display(event.completedBy)
+    duration_minutes = None
+    if event.scheduledStartAt is not None and event.scheduledEndAt is not None:
+        duration_minutes = max(
+            0,
+            round((event.scheduledEndAt - event.scheduledStartAt).total_seconds() / 60),
+        )
+    return ApplicationInterviewEventRead(
+        id=event.id,
+        stageId=event.stageId,
+        stageName=event.stage.name if event.stage is not None else None,
+        title=event.title,
+        status=_computed_interview_status(event),
+        scheduledStartAt=event.scheduledStartAt,
+        scheduledEndAt=event.scheduledEndAt,
+        completedAt=event.scheduledEndAt if event.status == EventStatus.COMPLETED else None,
+        durationMinutes=duration_minutes,
+        meetingUrl=event.meetingUrl,
+        createdByName=created_by_name,
+        completedByName=completed_by_name,
+        participants=[
+            _serialize_interview_participant(participant)
+            for participant in sorted(event.participants or [], key=lambda item: (item.isBackup, item.createdAt))
+        ],
+        feedbacks=[
+            _serialize_feedback(feedback)
+            for feedback in sorted(event.feedbacks or [], key=lambda item: item.createdAt)
+        ],
+        notes=event.notes,
+        createdAt=event.createdAt,
+    )
+
+
 def _latest_stage_event(application: CandidateApplication, stage_id: str) -> StageEvent | None:
     events = [
         event
@@ -291,7 +407,9 @@ def _latest_stage_event(application: CandidateApplication, stage_id: str) -> Sta
     return max(events, key=lambda event: event.createdAt or event.scheduledStartAt)
 
 
-def _computed_interview_status(event: StageEvent, now: datetime | None = None) -> str:
+def _computed_interview_status(event: StageEvent | None, now: datetime | None = None) -> str:
+    if event is None:
+        return "PENDING"
     if event.status == EventStatus.COMPLETED:
         return "COMPLETED"
     current = now or datetime.now(UTC)
@@ -308,9 +426,7 @@ def _computed_interview_status(event: StageEvent, now: datetime | None = None) -
         end = end.replace(tzinfo=UTC)
     if current < start.astimezone(UTC):
         return "PENDING"
-    if current <= end.astimezone(UTC):
-        return "ONGOING"
-    return "COMPLETED"
+    return "ONGOING"
 
 
 def _serialize_application_interview_meeting(
@@ -320,10 +436,14 @@ def _serialize_application_interview_meeting(
         return None
     status = _computed_interview_status(event)
     interviewer_name = None
-    if status == "COMPLETED" and event.completedBy is not None and event.completedBy.user is not None:
-        interviewer_name = event.completedBy.user.name or event.completedBy.user.email
-    elif event.createdBy is not None and event.createdBy.user is not None:
-        interviewer_name = event.createdBy.user.name or event.createdBy.user.email
+    completed_by = event.__dict__.get("completedBy")
+    created_by = event.__dict__.get("createdBy")
+    if status == "COMPLETED" and completed_by is not None and completed_by.__dict__.get("user") is not None:
+        user = completed_by.__dict__["user"]
+        interviewer_name = user.name or user.email
+    elif created_by is not None and created_by.__dict__.get("user") is not None:
+        user = created_by.__dict__["user"]
+        interviewer_name = user.name or user.email
     return ApplicationInterviewMeetingRead(
         id=event.id,
         status=status,
@@ -335,7 +455,7 @@ def _serialize_application_interview_meeting(
     )
 
 
-def _serialize_detail(application: CandidateApplication) -> CandidateApplicationDetailRead:
+def _serialize_detail(application: CandidateApplication, actor_member_id: str) -> CandidateApplicationDetailRead:
     histories = sorted(
         application.stageHistory or [],
         key=lambda history: history.createdAt,
@@ -358,6 +478,23 @@ def _serialize_detail(application: CandidateApplication) -> CandidateApplication
         appliedAt=application.appliedAt,
         lastActivityAt=application.lastActivityAt,
         stageHistory=[_serialize_history(history) for history in histories],
+        interviewEvents=[
+            _serialize_interview_event(event)
+            for event in sorted(
+                application.stageEvents or [],
+                key=lambda item: item.scheduledStartAt or item.createdAt,
+                reverse=True,
+            )
+            if event.scheduledStartAt is not None or event.feedbacks
+        ],
+        notes=[
+            _serialize_note(note, actor_member_id)
+            for note in sorted(
+                application.internalNoteEntries or [],
+                key=lambda item: item.createdAt,
+                reverse=True,
+            )
+        ],
     )
 
 
@@ -378,33 +515,52 @@ def _latest_assignment_event(application: CandidateApplication, stage_id: str) -
         event
         for event in application.__dict__.get("stageEvents", [])
         if event.stageId == stage_id
-        and event.scheduledStartAt is not None
-        and event.scheduledEndAt is not None
         and event.participants
+        and event.status != EventStatus.CANCELLED
+        and any(
+            (participant.role == "INTERVIEWER" or participant.role is None)
+            and participant.approvalStatus != "REJECTED"
+            for participant in event.participants
+        )
     ]
     if not events:
         return None
     return max(events, key=lambda event: event.createdAt or event.scheduledStartAt)
 
 
-def _serialize_workspace_assignment(event: StageEvent | None) -> StageWorkspaceAssignmentRead | None:
-    if event is None or event.scheduledStartAt is None or event.scheduledEndAt is None:
-        return None
-    primary = None
-    for participant in (event.participants or []):
+def _primary_participant(event: StageEvent) -> StageEventParticipant | None:
+    for participant in event.participants or []:
         if participant.role == "INTERVIEWER" or participant.role is None:
-            primary = participant
-            break
+            return participant
+    return None
+
+
+def _is_locked_assignment(event: StageEvent | None) -> bool:
+    if event is None:
+        return False
+    if event.status == EventStatus.COMPLETED:
+        return True
+    participant = _primary_participant(event)
+    return participant is not None and participant.approvalStatus in LOCKED_ASSIGNMENT_STATUSES
+
+
+def _serialize_workspace_assignment(event: StageEvent | None) -> StageWorkspaceAssignmentRead | None:
+    if event is None:
+        return None
+    primary = _primary_participant(event)
     interviewer = None
     if primary is not None and primary.member is not None:
         interviewer = _serialize_interviewer(primary.member)
+    status = primary.approvalStatus if primary is not None else event.status.value
+    if status == "PENDING":
+        status = "PENDING_ACCEPTANCE"
     return StageWorkspaceAssignmentRead(
         eventId=event.id,
         interviewer=interviewer,
         scheduledStartAt=event.scheduledStartAt,
         scheduledEndAt=event.scheduledEndAt,
         meetLink=event.meetingUrl,
-        status=event.status.value,
+        status=status,
         emailSentAt=event.emailSentAt,
     )
 
@@ -440,6 +596,7 @@ def _serialize_stage_workspace(stage: PipelineStage) -> StageWorkspaceRead:
             slug=stage.jobPosting.slug,
             title=stage.jobPosting.title,
             status=stage.jobPosting.status.value,
+            requisitionId=stage.jobPosting.requisitionId,
         ),
         candidateCount=len(applications),
         candidates=[_serialize_workspace_candidate(application, stage) for application in applications],
@@ -528,18 +685,20 @@ async def _resolve_inserted_stage_order(
     if insert_after_index is None:
         raise HTTPException(status_code=404, detail="Reference stage not found")
 
-    previous_order = ordered_stages[insert_after_index].order
-    next_stage = ordered_stages[insert_after_index + 1] if insert_after_index + 1 < len(ordered_stages) else None
-    next_order = next_stage.order if next_stage is not None else None
-    ordered_stages = await _ensure_stage_order_gap(db, ordered_stages, previous_order, next_order)
+    if insert_after_index == len(ordered_stages) - 1:
+        return ordered_stages[insert_after_index].order + 1.0
 
-    if next_order is not None and ordered_stages:
-        insert_after_index = next(index for index, item in enumerate(ordered_stages) if item.id == after_stage_id)
-        previous_order = ordered_stages[insert_after_index].order
-        next_stage = ordered_stages[insert_after_index + 1] if insert_after_index + 1 < len(ordered_stages) else None
-        next_order = next_stage.order if next_stage is not None else None
+    for index, stage in enumerate(ordered_stages, start=1):
+        stage.order = float(-(index + 1000))
+        db.add(stage)
+    await db.flush()
 
-    return _midpoint_order(previous_order, next_order)
+    for index, stage in enumerate(ordered_stages, start=1):
+        stage.order = float(index if index <= insert_after_index + 1 else index + 1)
+        db.add(stage)
+    await db.flush()
+
+    return float(insert_after_index + 2)
 
 
 async def _sync_evaluation_categories(
@@ -573,6 +732,7 @@ async def _sync_evaluation_categories(
         if category_input.id is not None and category_input.id in existing_by_id:
             category = existing_by_id[category_input.id]
             category.name = category_input.name.strip()
+            category.valueType = category_input.type
             category.order = index
             db.add(category)
         else:
@@ -581,6 +741,7 @@ async def _sync_evaluation_categories(
                     organizationId=organization_id,
                     stageId=stage.id,
                     name=category_input.name.strip(),
+                    valueType=category_input.type,
                     order=index,
                 )
             )
@@ -625,7 +786,16 @@ async def _apply_stage_config(
         await _clear_evaluation_categories(db, stage)
         return
 
+    requested_evaluation_type = getattr(body, "evaluationType", None)
+    if requested_evaluation_type is not None:
+        stage.evaluationType = str(requested_evaluation_type).strip().upper()
     stage.evaluationType = stage.evaluationType or "NUMERIC"
+    requested_include_total = getattr(body, "evaluationIncludeTotal", None)
+    if requested_include_total is not None:
+        stage.evaluationIncludeTotal = bool(requested_include_total)
+    requested_include_analysis = getattr(body, "evaluationIncludeAnalysis", None)
+    if requested_include_analysis is not None:
+        stage.evaluationIncludeAnalysis = bool(requested_include_analysis)
     if stage.evaluationType != "NUMERIC":
         stage.evaluationIncludeTotal = False
     if body.evaluationCategories is not None:
@@ -644,6 +814,7 @@ async def list_job_postings(
             slug=posting.slug,
             title=posting.title,
             status=posting.status.value,
+            requisitionId=posting.requisitionId,
         )
         for posting in postings
     ]
@@ -697,6 +868,11 @@ async def move_application_stage(
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
     if target_stage.jobPostingId != application.jobPostingId:
         raise HTTPException(status_code=400, detail="Target stage does not belong to this job posting")
+    if target_stage.id == application.pipelineStageId:
+        return _serialize_application(application, application.pipelineStage)
+    current_event = _latest_stage_event(application, application.pipelineStageId)
+    if _computed_interview_status(current_event) == "ONGOING":
+        raise HTTPException(status_code=400, detail="Candidate cannot be moved while an interview is ongoing")
 
     from_stage_id = application.pipelineStageId
     application.pipelineStageId = target_stage.id
@@ -885,13 +1061,14 @@ async def delete_stage(
 async def get_application_detail(
     db: AsyncSession,
     organization_id: str,
+    actor_member_id: str,
     application_id: str,
 ) -> CandidateApplicationDetailRead:
     repository = CandidatePipelineRepository(db)
     application = await repository.get_application_detail(organization_id, application_id)
     if application is None:
         raise HTTPException(status_code=404, detail="Application not found")
-    return _serialize_detail(application)
+    return _serialize_detail(application, actor_member_id)
 
 
 async def get_stage_workspace(
@@ -941,6 +1118,7 @@ async def search_interviewers(
 async def update_candidate_application(
     db: AsyncSession,
     organization_id: str,
+    actor_member_id: str,
     application_id: str,
     body: CandidateApplicationUpdateRequest,
 ) -> CandidateApplicationDetailRead:
@@ -963,7 +1141,55 @@ async def update_candidate_application(
     refreshed = await repository.get_application_detail(organization_id, application_id)
     if refreshed is None:
         raise HTTPException(status_code=404, detail="Application not found")
-    return _serialize_detail(refreshed)
+    return _serialize_detail(refreshed, actor_member_id)
+
+
+async def create_application_note(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    application_id: str,
+    body: CandidateApplicationNoteCreateRequest,
+) -> CandidateApplicationDetailRead:
+    repository = CandidatePipelineRepository(db)
+    application = await repository.get_application_detail(organization_id, application_id)
+    if application is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    note = CandidateApplicationNote(
+        organizationId=organization_id,
+        applicationId=application_id,
+        authorMemberId=actor_member_id,
+        body=body.body.strip(),
+    )
+    await repository.add_application_note(note)
+    await db.commit()
+    refreshed = await repository.get_application_detail(organization_id, application_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return _serialize_detail(refreshed, actor_member_id)
+
+
+async def update_application_note(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    application_id: str,
+    note_id: str,
+    body: CandidateApplicationNoteUpdateRequest,
+) -> CandidateApplicationDetailRead:
+    repository = CandidatePipelineRepository(db)
+    note = await repository.get_application_note(organization_id, application_id, note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="Note not found")
+    if note.authorMemberId != actor_member_id:
+        raise HTTPException(status_code=403, detail="you dont have permission")
+    note.body = body.body.strip()
+    db.add(note)
+    await db.commit()
+    refreshed = await repository.get_application_detail(organization_id, application_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return _serialize_detail(refreshed, actor_member_id)
 
 
 def _assignment_date(value: datetime) -> date:
@@ -978,8 +1204,15 @@ async def _build_assignment_warnings(
     organization_id: str,
     assignments: list[StageInterviewAssignmentInput],
 ) -> list[StageInterviewWarningRead]:
-    member_ids = list({assignment.interviewerMemberId for assignment in assignments})
-    target_dates = list({_assignment_date(assignment.scheduledStartAt) for assignment in assignments})
+    scheduled_assignments = [assignment for assignment in assignments if assignment.scheduledStartAt is not None]
+    if not scheduled_assignments:
+        return []
+    member_ids = list({assignment.interviewerMemberId for assignment in scheduled_assignments})
+    target_dates = list({
+        _assignment_date(assignment.scheduledStartAt)
+        for assignment in scheduled_assignments
+        if assignment.scheduledStartAt is not None
+    })
     leave_requests = await repository.list_approved_leave_for_members(
         organization_id,
         member_ids,
@@ -997,7 +1230,9 @@ async def _build_assignment_warnings(
 
     # Count existing interviews per member per date
     interview_counts: dict[tuple[str, date], int] = {}
-    for assignment in assignments:
+    for assignment in scheduled_assignments:
+        if assignment.scheduledStartAt is None:
+            continue
         target_date = _assignment_date(assignment.scheduledStartAt)
         key = (assignment.interviewerMemberId, target_date)
         if key not in interview_counts:
@@ -1006,7 +1241,9 @@ async def _build_assignment_warnings(
             )
 
     warnings: list[StageInterviewWarningRead] = []
-    for assignment in assignments:
+    for assignment in scheduled_assignments:
+        if assignment.scheduledStartAt is None:
+            continue
         target_date = _assignment_date(assignment.scheduledStartAt)
         messages: list[str] = []
         if target_date.weekday() == 6:
@@ -1061,7 +1298,11 @@ async def assign_stage_interviews(
         raise HTTPException(status_code=400, detail="Assignments can only be created for interview stages")
 
     applications_by_id = {application.id: application for application in stage.applications}
-    member_ids = list({assignment.interviewerMemberId for assignment in body.assignments})
+    member_ids = list({
+        member_id
+        for assignment in body.assignments
+        for member_id in [assignment.interviewerMemberId, *assignment.backupInterviewers]
+    })
     members = await repository.get_members_by_ids(organization_id, member_ids)
     members_by_id = {member.id: member for member in members}
     missing_member_ids = [member_id for member_id in member_ids if member_id not in members_by_id]
@@ -1075,6 +1316,8 @@ async def assign_stage_interviews(
         application = applications_by_id.get(assignment.applicationId)
         if application is None:
             raise HTTPException(status_code=400, detail="One or more candidates are not in this stage")
+        if _is_locked_assignment(_latest_assignment_event(application, stage.id)):
+            raise HTTPException(status_code=409, detail="Accepted or scheduled assignments cannot be overwritten")
 
         interviewer = members_by_id[assignment.interviewerMemberId]
         interviewer_email = interviewer.user.email if interviewer.user is not None else None
@@ -1082,10 +1325,11 @@ async def assign_stage_interviews(
             raise HTTPException(status_code=400, detail="Interviewer email is missing")
 
         starts_at = assignment.scheduledStartAt
-        if starts_at.tzinfo is None:
-            starts_at = starts_at.replace(tzinfo=UTC)
-        starts_at = starts_at.astimezone(UTC)
-        ends_at = starts_at + timedelta(minutes=assignment.durationMinutes)
+        if starts_at is not None:
+            if starts_at.tzinfo is None:
+                starts_at = starts_at.replace(tzinfo=UTC)
+            starts_at = starts_at.astimezone(UTC)
+        ends_at = starts_at + timedelta(minutes=assignment.durationMinutes) if starts_at is not None else None
         candidate_name = _candidate_display_name(application)
         interviewer_name = interviewer.user.name or interviewer.user.email
 
@@ -1113,7 +1357,7 @@ async def assign_stage_interviews(
         event.interviewType = InterviewType.OTHER
         event.assignmentMode = "DIRECT"
         event.teamId = None
-        event.status = EventStatus.RESCHEDULED if is_reassignment else EventStatus.SCHEDULED
+        event.status = EventStatus.RESCHEDULED if is_reassignment and starts_at is not None else EventStatus.SCHEDULED
         event.scheduledStartAt = starts_at
         event.scheduledEndAt = ends_at
         event.meetingUrl = assignment.meetLink or None
@@ -1131,11 +1375,23 @@ async def assign_stage_interviews(
                 memberId=interviewer.id,
                 role="INTERVIEWER",
                 isBackup=False,
-                approvalStatus="PENDING",
+                approvalStatus="PENDING_ACCEPTANCE",
             )
         )
+        for backup_member_id in dict.fromkeys(assignment.backupInterviewers):
+            if backup_member_id == interviewer.id:
+                continue
+            await repository.add_stage_event_participant(
+                StageEventParticipant(
+                    eventId=event.id,
+                    memberId=backup_member_id,
+                    role="BACKUP",
+                    isBackup=True,
+                    approvalStatus="PENDING_ACCEPTANCE",
+                )
+            )
 
-        starts_at_text = _meeting_time_text(starts_at)
+        starts_at_text = _meeting_time_text(starts_at) if starts_at is not None else "To be scheduled after you accept"
         await email_service.send_stage_interview_assignment_to_interviewer(
             to_email=interviewer_email,
             interviewer_name=interviewer_name,
@@ -1145,13 +1401,14 @@ async def assign_stage_interviews(
             organization_name=organization_name,
             starts_at_text=starts_at_text,
         )
-        await email_service.send_stage_interview_assignment_to_candidate(
-            to_email=application.candidate.email,
-            candidate_name=candidate_name,
-            interviewer_name=interviewer_name,
-            organization_name=organization_name,
-            starts_at_text=starts_at_text,
-        )
+        if starts_at is not None:
+            await email_service.send_stage_interview_assignment_to_candidate(
+                to_email=application.candidate.email,
+                candidate_name=candidate_name,
+                interviewer_name=interviewer_name,
+                organization_name=organization_name,
+                starts_at_text=starts_at_text,
+            )
         event.emailSentAt = datetime.now(UTC)
         db.add(event)
 
@@ -1191,7 +1448,11 @@ async def distribute_stage_interviews(
         application = applications_by_id.get(app_id)
         if application is None:
             raise HTTPException(status_code=400, detail="One or more candidates are not in this stage")
+        if _is_locked_assignment(_latest_assignment_event(application, stage.id)):
+            continue
         selected_applications.append(application)
+    if not selected_applications:
+        return TeamDistributionResponse(assignedCount=0, warnings=[])
 
     # Build round-robin assignments
     assignments: list[StageInterviewAssignmentInput] = []
@@ -1203,6 +1464,7 @@ async def distribute_stage_interviews(
                 interviewerMemberId=interviewer_member_id,
                 scheduledStartAt=body.scheduledStartAt,
                 durationMinutes=body.durationMinutes,
+                backupInterviewers=body.backupInterviewers,
             )
         )
 
@@ -1210,7 +1472,11 @@ async def distribute_stage_interviews(
     if warnings and not body.ignoreWarnings:
         return TeamDistributionResponse(assignedCount=0, warnings=warnings)
 
-    members = await repository.get_members_by_ids(organization_id, team_member_ids)
+    backup_member_ids = list(dict.fromkeys(body.backupInterviewers or []))
+    members = await repository.get_members_by_ids(
+        organization_id,
+        list(dict.fromkeys([*team_member_ids, *backup_member_ids])),
+    )
     members_by_id = {member.id: member for member in members}
 
     email_service = ResendEmailService()
@@ -1223,10 +1489,11 @@ async def distribute_stage_interviews(
             raise HTTPException(status_code=400, detail="Interviewer email is missing")
 
         starts_at = assignment.scheduledStartAt
-        if starts_at.tzinfo is None:
-            starts_at = starts_at.replace(tzinfo=UTC)
-        starts_at = starts_at.astimezone(UTC)
-        ends_at = starts_at + timedelta(minutes=assignment.durationMinutes)
+        if starts_at is not None:
+            if starts_at.tzinfo is None:
+                starts_at = starts_at.replace(tzinfo=UTC)
+            starts_at = starts_at.astimezone(UTC)
+        ends_at = starts_at + timedelta(minutes=assignment.durationMinutes) if starts_at is not None else None
         candidate_name = _candidate_display_name(application)
         interviewer_name = interviewer.user.name or interviewer.user.email
 
@@ -1248,6 +1515,8 @@ async def distribute_stage_interviews(
                 eventId=event.id,
                 memberId=interviewer.id,
                 role="INTERVIEWER",
+                isBackup=False,
+                approvalStatus="PENDING_ACCEPTANCE",
             )
         )
 
@@ -1262,10 +1531,12 @@ async def distribute_stage_interviews(
                         eventId=event.id,
                         memberId=backup_member_id,
                         role="BACKUP",
+                        isBackup=True,
+                        approvalStatus="PENDING",
                     )
                 )
 
-        starts_at_text = _meeting_time_text(starts_at)
+        starts_at_text = _meeting_time_text(starts_at) if starts_at is not None else "To be scheduled after you accept"
         await email_service.send_stage_interview_assignment_to_interviewer(
             to_email=interviewer_email,
             interviewer_name=interviewer_name,
@@ -1275,13 +1546,14 @@ async def distribute_stage_interviews(
             organization_name=organization_name,
             starts_at_text=starts_at_text,
         )
-        await email_service.send_stage_interview_assignment_to_candidate(
-            to_email=application.candidate.email,
-            candidate_name=candidate_name,
-            interviewer_name=interviewer_name,
-            organization_name=organization_name,
-            starts_at_text=starts_at_text,
-        )
+        if starts_at is not None:
+            await email_service.send_stage_interview_assignment_to_candidate(
+                to_email=application.candidate.email,
+                candidate_name=candidate_name,
+                interviewer_name=interviewer_name,
+                organization_name=organization_name,
+                starts_at_text=starts_at_text,
+            )
         event.emailSentAt = datetime.now(UTC)
         db.add(event)
 
@@ -1324,12 +1596,24 @@ async def reshuffle_interview_assignment(
         if current_primary is None:
             raise HTTPException(status_code=400, detail="No primary interviewer to reshuffle")
 
-        # Try to find a backup first
-        new_member_id = None
-        for p in (event.participants or []):
-            if p.role == "BACKUP":
-                new_member_id = p.memberId
-                break
+        rejected_member_ids = await repository.list_rejected_member_ids_for_event(organization_id, event.id)
+        backup_participants = [
+            p
+            for p in (event.participants or [])
+            if p.role == "BACKUP"
+            and p.memberId not in rejected_member_ids
+            and p.approvalStatus != "REJECTED"
+        ]
+        active_counts = await repository.count_active_interviews_for_members(
+            organization_id,
+            [p.memberId for p in backup_participants],
+        )
+        promoted_backup = min(
+            backup_participants,
+            key=lambda p: (active_counts.get(p.memberId, 0), p.createdAt),
+            default=None,
+        )
+        new_member_id = promoted_backup.memberId if promoted_backup is not None else None
 
         if new_member_id is None:
             raise HTTPException(status_code=400, detail="No backup interviewer available for auto-reshuffle")
@@ -1338,8 +1622,11 @@ async def reshuffle_interview_assignment(
     for p in (event.participants or []):
         if p.role == "INTERVIEWER" or p.role is None:
             p.role = "BACKUP"
+            p.isBackup = True
         elif p.memberId == new_member_id:
             p.role = "INTERVIEWER"
+            p.isBackup = False
+            p.approvalStatus = "PENDING_ACCEPTANCE"
 
     db.add(event)
     await db.commit()
@@ -1375,6 +1662,211 @@ async def reshuffle_interview_assignment(
     )
 
 
+async def accept_interview(
+    db: AsyncSession,
+    organization_id: str,
+    member_id: str,
+    actor_user_id: str,
+    event_id: str,
+    body: InterviewAcceptRequest,
+) -> InterviewAcceptResponse:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_with_participants(organization_id, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Interview event not found")
+
+    participant = next(
+        (
+            item
+            for item in (event.participants or [])
+            if item.memberId == member_id and (item.role == "INTERVIEWER" or item.role is None)
+        ),
+        None,
+    )
+    if participant is None:
+        raise HTTPException(status_code=400, detail="You are not the primary interviewer for this assignment")
+    if participant.approvalStatus == "REJECTED":
+        raise HTTPException(status_code=400, detail="Rejected assignments cannot be accepted")
+
+    now = datetime.now(UTC)
+    meeting: InterviewMeetingRead | None = None
+    participant.approvedAt = now
+
+    if body.scheduledStartAt is not None:
+        starts_at = body.scheduledStartAt
+        if starts_at.tzinfo is None:
+            starts_at = starts_at.replace(tzinfo=UTC)
+        starts_at = starts_at.astimezone(UTC)
+        if starts_at < now:
+            raise HTTPException(status_code=400, detail="Interview cannot be scheduled in the past")
+        if event.stage is not None and event.stage.dueDate is not None:
+            due_date = event.stage.dueDate
+            if due_date.tzinfo is None:
+                due_date = due_date.replace(tzinfo=UTC)
+            if starts_at > due_date.astimezone(UTC):
+                raise HTTPException(status_code=400, detail="Interview cannot be scheduled after the stage due date")
+
+        warnings = await _build_assignment_warnings(
+            repository,
+            organization_id,
+            [
+                StageInterviewAssignmentInput(
+                    applicationId=event.applicationId,
+                    interviewerMemberId=member_id,
+                    scheduledStartAt=starts_at,
+                    durationMinutes=body.durationMinutes,
+                )
+            ],
+        )
+        if any(
+            "approved leave" in message.lower()
+            for warning in warnings
+            for message in warning.messages
+        ):
+            raise HTTPException(status_code=400, detail="Interviewer is on approved leave at the selected time")
+
+        participant.approvalStatus = "SCHEDULED"
+        participant.scheduledTime = starts_at
+        db.add(participant)
+        meeting = await create_interview_meeting(
+            db,
+            organization_id,
+            member_id,
+            actor_user_id,
+            event.applicationId,
+            InterviewMeetingCreateRequest(
+                mode="SCHEDULE",
+                scheduledStartAt=starts_at,
+                durationMinutes=body.durationMinutes,
+            ),
+        )
+    else:
+        participant.approvalStatus = "ACCEPTED"
+        db.add(participant)
+        await db.commit()
+
+    return InterviewAcceptResponse(
+        eventId=event_id,
+        status=participant.approvalStatus,
+        meeting=meeting,
+    )
+
+
+async def reject_interview(
+    db: AsyncSession,
+    organization_id: str,
+    organization_name: str,
+    member_id: str,
+    event_id: str,
+) -> InterviewRejectResponse:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_with_participants(organization_id, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Interview event not found")
+
+    participant = next(
+        (
+            item
+            for item in (event.participants or [])
+            if item.memberId == member_id and (item.role == "INTERVIEWER" or item.role is None)
+        ),
+        None,
+    )
+    if participant is None:
+        raise HTTPException(status_code=400, detail="You are not the primary interviewer for this assignment")
+
+    now = datetime.now(UTC)
+    participant.approvalStatus = "REJECTED"
+    participant.rejectedAt = now
+    participant.role = "BACKUP"
+    participant.isBackup = True
+    db.add(participant)
+
+    rejected_member_ids = await repository.list_rejected_member_ids_for_event(organization_id, event.id)
+    if member_id not in rejected_member_ids:
+        await repository.add_interview_rejection_record(
+            InterviewRejectionRecord(
+                organizationId=organization_id,
+                eventId=event.id,
+                memberId=member_id,
+                rejectedAt=now,
+            )
+        )
+        rejected_member_ids.add(member_id)
+
+    candidate_backups = [
+        item
+        for item in (event.participants or [])
+        if item.role == "BACKUP"
+        and item.memberId not in rejected_member_ids
+        and item.approvalStatus != "REJECTED"
+    ]
+    if not candidate_backups:
+        event.status = EventStatus.CANCELLED
+        db.add(event)
+        await db.commit()
+        return InterviewRejectResponse(
+            eventId=event.id,
+            newInterviewerMemberId=None,
+            status="UNASSIGNED",
+            warnings=[],
+        )
+
+    active_counts = await repository.count_active_interviews_for_members(
+        organization_id,
+        [item.memberId for item in candidate_backups],
+    )
+    promoted = min(
+        candidate_backups,
+        key=lambda item: (active_counts.get(item.memberId, 0), item.createdAt),
+    )
+    promoted.role = "INTERVIEWER"
+    promoted.isBackup = False
+    promoted.approvalStatus = "PENDING_ACCEPTANCE"
+    promoted.approvedAt = None
+    promoted.rejectedAt = None
+    db.add(promoted)
+    event.status = EventStatus.RESCHEDULED
+    db.add(event)
+    await db.commit()
+
+    warnings: list[StageInterviewWarningRead] = []
+    if event.scheduledStartAt is not None:
+        warnings = await _build_assignment_warnings(
+            repository,
+            organization_id,
+            [
+                StageInterviewAssignmentInput(
+                    applicationId=event.applicationId,
+                    interviewerMemberId=promoted.memberId,
+                    scheduledStartAt=event.scheduledStartAt,
+                    durationMinutes=30,
+                )
+            ],
+        )
+
+    if promoted.member is not None and promoted.member.user is not None:
+        email_service = ResendEmailService()
+        candidate_name = _candidate_display_name(event.application)
+        starts_at_text = _meeting_time_text(event.scheduledStartAt) if event.scheduledStartAt else "To be scheduled"
+        await email_service.send_stage_interview_assignment_to_interviewer(
+            to_email=promoted.member.user.email,
+            interviewer_name=promoted.member.user.name or promoted.member.user.email,
+            candidate_name=candidate_name,
+            candidate_email=event.application.candidate.email,
+            stage_name=event.stage.name if event.stage else "Interview",
+            organization_name=organization_name,
+            starts_at_text=starts_at_text,
+        )
+
+    return InterviewRejectResponse(
+        eventId=event.id,
+        newInterviewerMemberId=promoted.memberId,
+        status="ESCALATED",
+        warnings=warnings,
+    )
+
+
 async def list_my_interviews(
     db: AsyncSession,
     organization_id: str,
@@ -1392,7 +1884,16 @@ async def list_my_interviews(
             continue
         candidate = application.candidate
         stage = event.stage
-        is_backup = participant.role == "BACKUP"
+        is_backup = participant.role == "BACKUP" and participant.approvalStatus != "REJECTED"
+        status = participant.approvalStatus
+        if status == "PENDING":
+            status = "PENDING_ACCEPTANCE"
+        if status in {"PENDING_ACCEPTANCE", "ACCEPTED", "REJECTED"}:
+            display_status = status
+        else:
+            display_status = _computed_interview_status(event)
+            if status == "SCHEDULED":
+                display_status = "SCHEDULED" if display_status == "PENDING" else display_status
         items.append(
             MyInterviewRead(
                 eventId=event.id,
@@ -1403,7 +1904,7 @@ async def list_my_interviews(
                 jobTitle=application.jobPosting.title if application.jobPosting else "",
                 scheduledStartAt=event.scheduledStartAt,
                 scheduledEndAt=event.scheduledEndAt,
-                status=_computed_interview_status(event),
+                status=display_status,
                 role=participant.role or "INTERVIEWER",
                 isBackup=is_backup,
                 meetingUrl=event.meetingUrl,
@@ -1613,6 +2114,8 @@ async def complete_interview_meeting(
     application_id: str,
     event_id: str,
     actor_member_id: str,
+    actor_user_id: str,
+    body: InterviewMeetingCompleteRequest,
 ) -> InterviewMeetingRead:
     repository = CandidatePipelineRepository(db)
     event = await repository.get_stage_event(organization_id, application_id, event_id)
@@ -1621,15 +2124,78 @@ async def complete_interview_meeting(
     if event.scheduledStartAt is None or event.scheduledEndAt is None:
         raise HTTPException(status_code=400, detail="Interview meeting is missing schedule metadata")
 
+    stage = event.stage
+    categories = _ordered_stage_categories(stage) if stage is not None else []
+    values_by_category = {item.categoryId: item.value for item in body.values}
+
+    feedback = next(
+        (
+            item
+            for item in event.__dict__.get("feedbacks", [])
+            if item.memberId == actor_member_id
+        ),
+        None,
+    )
+    existing_values: dict[str, InterviewFeedbackValue] = {}
+    if feedback is None:
+        feedback = InterviewFeedback(
+            organizationId=organization_id,
+            eventId=event.id,
+            memberId=actor_member_id,
+        )
+        db.add(feedback)
+        await db.flush()
+    else:
+        existing_values = {
+            item.categoryId: item
+            for item in feedback.__dict__.get("values", [])
+        }
+
+    feedback.notes = body.notes
+    numeric_scores: list[float] = []
+    for category in categories:
+        raw_value = values_by_category.get(category.id)
+        value = existing_values.get(category.id)
+        if value is None:
+            value = InterviewFeedbackValue(
+                feedbackId=feedback.id,
+                categoryId=category.id,
+            )
+            db.add(value)
+        value.numericValue = None
+        value.textValue = None
+        value.booleanValue = None
+        if category.valueType == "CHECKBOX":
+            value.booleanValue = bool(raw_value)
+        elif category.valueType == "TEXT":
+            value.textValue = "" if raw_value is None else str(raw_value)
+        else:
+            try:
+                numeric_value = float(raw_value) if raw_value not in (None, "") else None
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"Invalid numeric score for {category.name}") from None
+            value.numericValue = numeric_value
+            if numeric_value is not None:
+                numeric_scores.append(numeric_value)
+    feedback.score = round(sum(numeric_scores)) if numeric_scores else None
+
     event.status = EventStatus.COMPLETED
     event.completedByMemberId = actor_member_id
     now = datetime.now(UTC)
-    end = event.scheduledEndAt
-    if end.tzinfo is None:
-        end = end.replace(tzinfo=UTC)
-    if end.astimezone(UTC) > now:
-        event.scheduledEndAt = now
+    event.scheduledEndAt = now
     db.add(event)
+    await db.flush()
+
+    if stage is not None and stage.evaluationWorkspace is not None:
+        await _write_feedback_to_stage_sheet(
+            db,
+            actor_user_id,
+            stage,
+            event.application,
+            body.values,
+            body.notes,
+        )
+
     await db.commit()
     return _serialize_interview_meeting(event)
 
@@ -1653,7 +2219,7 @@ def _stage_headers(stage: PipelineStage) -> list[str]:
     categories = _ordered_stage_categories(stage)
     headers = ["Candidate", "Email"]
     headers.extend(category.name for category in categories)
-    if stage.evaluationType == "NUMERIC" and stage.evaluationIncludeTotal:
+    if stage.evaluationIncludeTotal:
         headers.append("Total")
     headers.append("Notes")
     return headers
@@ -1679,7 +2245,7 @@ def _stage_candidate_row(
         application.candidate.email,
     ]
     row.extend("" for _ in categories)
-    if stage.evaluationType == "NUMERIC" and stage.evaluationIncludeTotal:
+    if stage.evaluationIncludeTotal:
         if categories and row_number is not None:
             start = _column_letter(2)
             end = _column_letter(1 + len(categories))
@@ -1688,6 +2254,84 @@ def _stage_candidate_row(
             row.append("")
     row.append("")
     return row
+
+
+def _feedback_sheet_value(category: StageEvaluationCategory, raw_value: object) -> str:
+    if raw_value is None:
+        return ""
+    if category.valueType == "CHECKBOX":
+        return "TRUE" if bool(raw_value) else "FALSE"
+    return str(raw_value)
+
+
+async def _write_feedback_to_stage_sheet(
+    db: AsyncSession,
+    user_id: str,
+    stage: PipelineStage,
+    application: CandidateApplication,
+    feedback_values: list[object],
+    notes: str | None,
+) -> None:
+    workspace = stage.evaluationWorkspace
+    if workspace is None:
+        return
+
+    values_by_category = {
+        item.categoryId: item.value
+        for item in feedback_values
+        if hasattr(item, "categoryId")
+    }
+    categories = _ordered_stage_categories(stage)
+    row_values = [_feedback_sheet_value(category, values_by_category.get(category.id)) for category in categories]
+    if stage.evaluationIncludeTotal:
+        numeric_values = []
+        for category in categories:
+            if category.valueType != "NUMERIC":
+                continue
+            raw_value = values_by_category.get(category.id)
+            try:
+                if raw_value not in (None, ""):
+                    numeric_values.append(float(raw_value))
+            except (TypeError, ValueError):
+                pass
+        row_values.append(str(sum(numeric_values)) if numeric_values else "")
+    row_values.append(notes or "")
+
+    sheets_service = GoogleSheetsService(db)
+    sheet_values = await sheets_service.get_values(
+        user_id,
+        workspace.googleSpreadsheetId,
+        workspace.googleSheetTitle,
+    )
+    candidate_email = application.candidate.email.strip().lower()
+    target_row = next(
+        (
+            index
+            for index, row in enumerate(sheet_values, start=1)
+            if index > 1 and len(row) >= 2 and row[1].strip().lower() == candidate_email
+        ),
+        None,
+    )
+    if target_row is None:
+        target_row = len(sheet_values) + 1
+        await sheets_service.append_values(
+            user_id,
+            workspace.googleSpreadsheetId,
+            workspace.googleSheetTitle,
+            [_stage_candidate_row(stage, application, row_number=target_row)],
+        )
+
+    await sheets_service.write_values(
+        user_id,
+        workspace.googleSpreadsheetId,
+        [
+            SheetValueBlock(
+                sheet_title=workspace.googleSheetTitle,
+                values=[row_values],
+                start_cell=f"C{target_row}",
+            )
+        ],
+    )
 
 
 def _stage_sheet_values(stage: PipelineStage) -> list[list[str]]:
@@ -1743,7 +2387,7 @@ def _analysis_sheet_values(stages: list[PipelineStage]) -> AnalysisSheetData:
     for stage in evaluation_stages:
         categories = _ordered_stage_categories(stage)
         stage_headers = [category.name for category in categories]
-        if stage.evaluationType == "NUMERIC" and stage.evaluationIncludeTotal:
+        if stage.evaluationIncludeTotal:
             stage_headers.append("Total")
         if not stage_headers:
             stage_headers = ["Evaluation"]

@@ -69,6 +69,11 @@ class Organization(Base):
         back_populates="organization",
     )
 
+    requisitionActivityLogs = relationship(
+        "RequisitionActivityLog",
+        back_populates="organization",
+    )
+
     stageEvents = relationship(
         "StageEvent",
         back_populates="organization",

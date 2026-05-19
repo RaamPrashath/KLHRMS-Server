@@ -16,6 +16,7 @@ class PipelineJobPostingRead(BaseModel):
     slug: str
     title: str
     status: str
+    requisitionId: str | None = None
 
 
 class CandidateSummaryRead(BaseModel):
@@ -62,6 +63,7 @@ class StageEvaluationCategoryRead(BaseModel):
     id: str
     stageId: str
     name: str
+    type: EvaluationType = "NUMERIC"
     order: int
 
 
@@ -79,7 +81,18 @@ class StageEvaluationWorkspaceRead(BaseModel):
 class StageEvaluationCategoryInput(BaseModel):
     id: str | None = None
     name: str = Field(min_length=1, max_length=120)
+    type: EvaluationType = "NUMERIC"
     order: int | None = Field(default=None, ge=1)
+
+
+class InterviewFeedbackValueInput(BaseModel):
+    categoryId: str = Field(min_length=1)
+    value: str | float | bool | None = None
+
+
+class InterviewMeetingCompleteRequest(BaseModel):
+    values: list[InterviewFeedbackValueInput] = Field(default_factory=list)
+    notes: str | None = Field(default=None, max_length=2000)
 
 
 class PipelineStageRead(BaseModel):
@@ -121,8 +134,8 @@ class StageWorkspaceInterviewerRead(BaseModel):
 class StageWorkspaceAssignmentRead(BaseModel):
     eventId: str
     interviewer: StageWorkspaceInterviewerRead | None
-    scheduledStartAt: datetime
-    scheduledEndAt: datetime
+    scheduledStartAt: datetime | None
+    scheduledEndAt: datetime | None
     meetLink: str | None = None
     status: str
     emailSentAt: datetime | None
@@ -153,9 +166,10 @@ class InterviewerSearchResponse(BaseModel):
 class StageInterviewAssignmentInput(BaseModel):
     applicationId: str = Field(min_length=1)
     interviewerMemberId: str = Field(min_length=1)
-    scheduledStartAt: datetime
+    scheduledStartAt: datetime | None = None
     durationMinutes: int = Field(default=30, ge=15, le=240)
     meetLink: str | None = Field(default=None, max_length=2048)
+    backupInterviewers: list[str] = Field(default_factory=list)
 
 
 class StageInterviewWarningRead(BaseModel):
@@ -185,7 +199,7 @@ class TeamDistributionRequest(BaseModel):
     hiringTeamId: str = Field(min_length=1)
     strategy: Literal["ROUND_ROBIN"] = "ROUND_ROBIN"
     applicationIds: list[str] = Field(min_length=1)
-    scheduledStartAt: datetime
+    scheduledStartAt: datetime | None = None
     durationMinutes: int = Field(default=30, ge=15, le=240)
     backupInterviewers: list[str] = Field(default_factory=list)
     ignoreWarnings: bool = False
@@ -206,6 +220,18 @@ class ReshuffleResponse(BaseModel):
     warnings: list[StageInterviewWarningRead]
 
 
+class InterviewAcceptRequest(BaseModel):
+    scheduledStartAt: datetime | None = None
+    durationMinutes: int = Field(default=30, ge=15, le=240)
+
+
+class InterviewRejectResponse(BaseModel):
+    eventId: str
+    newInterviewerMemberId: str | None
+    status: Literal["ESCALATED", "UNASSIGNED"]
+    warnings: list[StageInterviewWarningRead]
+
+
 class MyInterviewRead(BaseModel):
     eventId: str
     applicationId: str
@@ -213,8 +239,8 @@ class MyInterviewRead(BaseModel):
     stageName: str
     candidate: CandidateSummaryRead
     jobTitle: str
-    scheduledStartAt: datetime
-    scheduledEndAt: datetime
+    scheduledStartAt: datetime | None
+    scheduledEndAt: datetime | None
     status: str
     role: str
     isBackup: bool
@@ -241,12 +267,17 @@ class PipelineStageCreateRequest(BaseModel):
     afterStageId: str | None = None
     stageType: str = Field(default="DEFAULT", min_length=1, max_length=32)
     evaluationEnabled: bool = False
+    evaluationType: str | None = Field(default=None, max_length=32)
+    evaluationIncludeTotal: bool = False
+    evaluationIncludeAnalysis: bool = False
     dueDate: datetime | None = None
     evaluationCategories: list[StageEvaluationCategoryInput] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_stage_configuration(self) -> "PipelineStageCreateRequest":
         self.stageType = self.stageType.strip().upper()
+        if self.evaluationType is not None:
+            self.evaluationType = self.evaluationType.strip().upper()
         if not self.evaluationEnabled:
             self.evaluationCategories = []
         return self
@@ -257,6 +288,9 @@ class PipelineStageUpdateRequest(BaseModel):
     order: float | None = Field(default=None)
     stageType: str | None = Field(default=None, min_length=1, max_length=32)
     evaluationEnabled: bool | None = None
+    evaluationType: str | None = Field(default=None, max_length=32)
+    evaluationIncludeTotal: bool | None = None
+    evaluationIncludeAnalysis: bool | None = None
     dueDate: datetime | None = None
     dueDateEnabled: bool | None = None
     evaluationCategories: list[StageEvaluationCategoryInput] | None = None
@@ -265,6 +299,8 @@ class PipelineStageUpdateRequest(BaseModel):
     def validate_stage_configuration(self) -> "PipelineStageUpdateRequest":
         if self.stageType is not None:
             self.stageType = self.stageType.strip().upper()
+        if self.evaluationType is not None:
+            self.evaluationType = self.evaluationType.strip().upper()
         if self.dueDateEnabled is False:
             self.dueDate = None
         if self.evaluationEnabled is False:
@@ -313,6 +349,76 @@ class InterviewMeetingRead(BaseModel):
     createdAt: datetime
 
 
+class InterviewAcceptResponse(BaseModel):
+    eventId: str
+    status: str
+    meeting: InterviewMeetingRead | None = None
+
+
+class CandidateApplicationNoteRead(BaseModel):
+    id: str
+    authorMemberId: str
+    authorName: str
+    authorEmail: str | None
+    body: str
+    canEdit: bool
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class CandidateApplicationNoteCreateRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
+
+
+class CandidateApplicationNoteUpdateRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
+
+
+class InterviewParticipantRead(BaseModel):
+    memberId: str
+    name: str
+    email: str | None
+    role: str | None
+    isBackup: bool
+
+
+class InterviewFeedbackValueRead(BaseModel):
+    categoryId: str
+    categoryName: str
+    categoryType: EvaluationType
+    value: str | float | bool | None
+
+
+class InterviewFeedbackRead(BaseModel):
+    id: str
+    memberId: str
+    memberName: str
+    outcome: str
+    score: int | None
+    notes: str | None
+    values: list[InterviewFeedbackValueRead]
+    createdAt: datetime
+
+
+class ApplicationInterviewEventRead(BaseModel):
+    id: str
+    stageId: str
+    stageName: str | None
+    title: str
+    status: str
+    scheduledStartAt: datetime | None
+    scheduledEndAt: datetime | None
+    completedAt: datetime | None
+    durationMinutes: int | None
+    meetingUrl: str | None
+    createdByName: str | None
+    completedByName: str | None
+    participants: list[InterviewParticipantRead]
+    feedbacks: list[InterviewFeedbackRead]
+    notes: str | None
+    createdAt: datetime
+
+
 class CandidateApplicationDetailRead(BaseModel):
     id: str
     jobPostingId: str
@@ -330,6 +436,8 @@ class CandidateApplicationDetailRead(BaseModel):
     appliedAt: datetime
     lastActivityAt: datetime
     stageHistory: list[PipelineStageHistoryRead]
+    interviewEvents: list[ApplicationInterviewEventRead] = Field(default_factory=list)
+    notes: list[CandidateApplicationNoteRead] = Field(default_factory=list)
 
 
 class CandidateApplicationUpdateRequest(BaseModel):

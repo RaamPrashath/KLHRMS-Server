@@ -13,8 +13,13 @@ from app.models.member import Member
 from app.models.recruitment import (
     ApplicationStageHistory,
     CandidateApplication,
+    CandidateApplicationNote,
+    EventStatus,
     HiringTeam,
     HiringTeamMember,
+    InterviewFeedback,
+    InterviewFeedbackValue,
+    InterviewRejectionRecord,
     JobPosting,
     PipelineStage,
     StageEvaluationCategory,
@@ -137,6 +142,15 @@ class CandidatePipelineRepository:
         organization_id: str,
         stage_slug: str,
     ) -> PipelineStage | None:
+        application_counts = (
+            select(
+                CandidateApplication.pipelineStageId.label("stage_id"),
+                func.count(CandidateApplication.id).label("application_count"),
+            )
+            .where(CandidateApplication.organizationId == organization_id)
+            .group_by(CandidateApplication.pipelineStageId)
+            .subquery()
+        )
         result = await self.db.execute(
             select(PipelineStage)
             .options(
@@ -156,8 +170,15 @@ class CandidatePipelineRepository:
                 PipelineStage.organizationId == organization_id,
                 PipelineStage.slug == stage_slug,
             )
+            .outerjoin(application_counts, application_counts.c.stage_id == PipelineStage.id)
+            .join(JobPosting, JobPosting.id == PipelineStage.jobPostingId)
+            .order_by(
+                application_counts.c.application_count.desc().nullslast(),
+                JobPosting.createdAt.desc(),
+                PipelineStage.createdAt.desc(),
+            )
         )
-        return result.unique().scalar_one_or_none()
+        return result.unique().scalars().first()
 
     async def get_stage_by_job_and_slug(
         self,
@@ -330,6 +351,25 @@ class CandidatePipelineRepository:
                 .selectinload(StageEvent.participants)
                 .joinedload(StageEventParticipant.member)
                 .joinedload(Member.user),
+                selectinload(CandidateApplication.stageEvents)
+                .joinedload(StageEvent.stage),
+                selectinload(CandidateApplication.stageEvents)
+                .joinedload(StageEvent.createdBy)
+                .joinedload(Member.user),
+                selectinload(CandidateApplication.stageEvents)
+                .joinedload(StageEvent.completedBy)
+                .joinedload(Member.user),
+                selectinload(CandidateApplication.stageEvents)
+                .selectinload(StageEvent.feedbacks)
+                .joinedload(InterviewFeedback.member)
+                .joinedload(Member.user),
+                selectinload(CandidateApplication.stageEvents)
+                .selectinload(StageEvent.feedbacks)
+                .selectinload(InterviewFeedback.values)
+                .joinedload(InterviewFeedbackValue.category),
+                selectinload(CandidateApplication.internalNoteEntries)
+                .joinedload(CandidateApplicationNote.author)
+                .joinedload(Member.user),
                 selectinload(CandidateApplication.stageHistory).options(
                     joinedload(ApplicationStageHistory.fromStage),
                     joinedload(ApplicationStageHistory.toStage),
@@ -342,6 +382,28 @@ class CandidatePipelineRepository:
             )
         )
         return result.unique().scalar_one_or_none()
+
+    async def get_application_note(
+        self,
+        organization_id: str,
+        application_id: str,
+        note_id: str,
+    ) -> CandidateApplicationNote | None:
+        result = await self.db.execute(
+            select(CandidateApplicationNote)
+            .options(joinedload(CandidateApplicationNote.author).joinedload(Member.user))
+            .where(
+                CandidateApplicationNote.organizationId == organization_id,
+                CandidateApplicationNote.applicationId == application_id,
+                CandidateApplicationNote.id == note_id,
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
+    async def add_application_note(self, note: CandidateApplicationNote) -> CandidateApplicationNote:
+        self.db.add(note)
+        await self.db.flush()
+        return note
 
     async def count_stage_applications(
         self,
@@ -460,6 +522,27 @@ class CandidatePipelineRepository:
         await self.db.flush()
         return participant
 
+    async def add_interview_rejection_record(
+        self,
+        record: InterviewRejectionRecord,
+    ) -> InterviewRejectionRecord:
+        self.db.add(record)
+        await self.db.flush()
+        return record
+
+    async def list_rejected_member_ids_for_event(
+        self,
+        organization_id: str,
+        event_id: str,
+    ) -> set[str]:
+        result = await self.db.execute(
+            select(InterviewRejectionRecord.memberId).where(
+                InterviewRejectionRecord.organizationId == organization_id,
+                InterviewRejectionRecord.eventId == event_id,
+            )
+        )
+        return {str(member_id) for member_id in result.scalars().all()}
+
     async def get_latest_stage_event(
         self,
         organization_id: str,
@@ -489,7 +572,15 @@ class CandidatePipelineRepository:
         event_id: str,
     ) -> StageEvent | None:
         result = await self.db.execute(
-            select(StageEvent).where(
+            select(StageEvent)
+            .options(
+                joinedload(StageEvent.application).joinedload(CandidateApplication.candidate),
+                joinedload(StageEvent.stage).selectinload(PipelineStage.evaluationCategories),
+                joinedload(StageEvent.stage).joinedload(PipelineStage.evaluationWorkspace),
+                selectinload(StageEvent.feedbacks)
+                .selectinload(InterviewFeedback.values),
+            )
+            .where(
                 StageEvent.organizationId == organization_id,
                 StageEvent.applicationId == application_id,
                 StageEvent.id == event_id,
@@ -532,6 +623,29 @@ class CandidatePipelineRepository:
             )
         )
         return int(result.scalar_one())
+
+    async def count_active_interviews_for_members(
+        self,
+        organization_id: str,
+        member_ids: list[str],
+    ) -> dict[str, int]:
+        if not member_ids:
+            return {}
+        result = await self.db.execute(
+            select(StageEventParticipant.memberId, func.count(StageEventParticipant.id))
+            .join(StageEvent, StageEvent.id == StageEventParticipant.eventId)
+            .where(
+                StageEvent.organizationId == organization_id,
+                StageEventParticipant.memberId.in_(member_ids),
+                StageEventParticipant.role == "INTERVIEWER",
+                StageEventParticipant.approvalStatus.in_(
+                    ["PENDING", "PENDING_ACCEPTANCE", "ACCEPTED", "SCHEDULED"]
+                ),
+                StageEvent.status.in_([EventStatus.SCHEDULED, EventStatus.RESCHEDULED]),
+            )
+            .group_by(StageEventParticipant.memberId)
+        )
+        return {str(member_id): int(count) for member_id, count in result.all()}
 
     async def get_stage_event_with_participants(
         self,

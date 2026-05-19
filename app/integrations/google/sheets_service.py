@@ -20,6 +20,7 @@ SHEETS_API_URL = "https://sheets.googleapis.com/v4/spreadsheets"
 class SheetValueBlock:
     sheet_title: str
     values: list[list[str]]
+    start_cell: str = "A1"
 
 
 @dataclass(frozen=True)
@@ -449,7 +450,7 @@ class GoogleSheetsService:
                 "valueInputOption": "USER_ENTERED",
                 "data": [
                     {
-                        "range": f"{_a1_sheet_name(block.sheet_title)}!A1",
+                        "range": f"{_a1_sheet_name(block.sheet_title)}!{block.start_cell}",
                         "majorDimension": "ROWS",
                         "values": block.values,
                     }
