@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.candidates.controller import (
     handle_assign_stage_interviews,
+    handle_accept_interview,
     handle_complete_interview_meeting,
     handle_create_application_note,
     handle_create_interview_meeting,
@@ -27,6 +28,7 @@ from app.modules.candidates.controller import (
     handle_list_my_interviews,
     handle_move_application_stage,
     handle_preview_stage_interview_warnings,
+    handle_reject_interview,
     handle_reshuffle_interview_assignment,
     handle_update_application_detail,
     handle_update_application_note,
@@ -37,6 +39,9 @@ from app.modules.candidates.schema import (
     CandidateApplicationNoteCreateRequest,
     CandidateApplicationNoteUpdateRequest,
     CandidateApplicationUpdateRequest,
+    InterviewAcceptRequest,
+    InterviewAcceptResponse,
+    InterviewRejectResponse,
     InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
     InterviewMeetingCompleteRequest,
@@ -150,6 +155,16 @@ async def assign_stage_interviews(
 
 @router.patch("/applications/{application_id}/stage", response_model=PipelineApplicationRead)
 async def move_application_stage(
+    application_id: str,
+    body: MoveApplicationStageRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> PipelineApplicationRead:
+    return await handle_move_application_stage(ctx, db, application_id, body)
+
+
+@router.post("/applications/{application_id}/move", response_model=PipelineApplicationRead)
+async def move_application_stage_legacy(
     application_id: str,
     body: MoveApplicationStageRequest,
     ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
@@ -308,6 +323,25 @@ async def list_my_interviews(
     db: AsyncSession = Depends(get_db),
 ) -> MyInterviewListResponse:
     return await handle_list_my_interviews(ctx, db)
+
+
+@router.post("/interviews/{event_id}/accept", response_model=InterviewAcceptResponse)
+async def accept_interview(
+    event_id: str,
+    body: InterviewAcceptRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> InterviewAcceptResponse:
+    return await handle_accept_interview(ctx, db, event_id, body)
+
+
+@router.post("/interviews/{event_id}/reject", response_model=InterviewRejectResponse)
+async def reject_interview(
+    event_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> InterviewRejectResponse:
+    return await handle_reject_interview(ctx, db, event_id)
 
 
 @router.post("/interviews/{event_id}/reassignment-requests")

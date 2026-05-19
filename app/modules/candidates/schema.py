@@ -134,8 +134,8 @@ class StageWorkspaceInterviewerRead(BaseModel):
 class StageWorkspaceAssignmentRead(BaseModel):
     eventId: str
     interviewer: StageWorkspaceInterviewerRead | None
-    scheduledStartAt: datetime
-    scheduledEndAt: datetime
+    scheduledStartAt: datetime | None
+    scheduledEndAt: datetime | None
     meetLink: str | None = None
     status: str
     emailSentAt: datetime | None
@@ -166,9 +166,10 @@ class InterviewerSearchResponse(BaseModel):
 class StageInterviewAssignmentInput(BaseModel):
     applicationId: str = Field(min_length=1)
     interviewerMemberId: str = Field(min_length=1)
-    scheduledStartAt: datetime
+    scheduledStartAt: datetime | None = None
     durationMinutes: int = Field(default=30, ge=15, le=240)
     meetLink: str | None = Field(default=None, max_length=2048)
+    backupInterviewers: list[str] = Field(default_factory=list)
 
 
 class StageInterviewWarningRead(BaseModel):
@@ -198,7 +199,7 @@ class TeamDistributionRequest(BaseModel):
     hiringTeamId: str = Field(min_length=1)
     strategy: Literal["ROUND_ROBIN"] = "ROUND_ROBIN"
     applicationIds: list[str] = Field(min_length=1)
-    scheduledStartAt: datetime
+    scheduledStartAt: datetime | None = None
     durationMinutes: int = Field(default=30, ge=15, le=240)
     backupInterviewers: list[str] = Field(default_factory=list)
     ignoreWarnings: bool = False
@@ -219,6 +220,18 @@ class ReshuffleResponse(BaseModel):
     warnings: list[StageInterviewWarningRead]
 
 
+class InterviewAcceptRequest(BaseModel):
+    scheduledStartAt: datetime | None = None
+    durationMinutes: int = Field(default=30, ge=15, le=240)
+
+
+class InterviewRejectResponse(BaseModel):
+    eventId: str
+    newInterviewerMemberId: str | None
+    status: Literal["ESCALATED", "UNASSIGNED"]
+    warnings: list[StageInterviewWarningRead]
+
+
 class MyInterviewRead(BaseModel):
     eventId: str
     applicationId: str
@@ -226,8 +239,8 @@ class MyInterviewRead(BaseModel):
     stageName: str
     candidate: CandidateSummaryRead
     jobTitle: str
-    scheduledStartAt: datetime
-    scheduledEndAt: datetime
+    scheduledStartAt: datetime | None
+    scheduledEndAt: datetime | None
     status: str
     role: str
     isBackup: bool
@@ -334,6 +347,12 @@ class InterviewMeetingRead(BaseModel):
     googleCalendarEventUrl: str | None
     emailSentAt: datetime | None
     createdAt: datetime
+
+
+class InterviewAcceptResponse(BaseModel):
+    eventId: str
+    status: str
+    meeting: InterviewMeetingRead | None = None
 
 
 class CandidateApplicationNoteRead(BaseModel):

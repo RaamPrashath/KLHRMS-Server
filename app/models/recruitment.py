@@ -1495,6 +1495,59 @@ class StageEventParticipant(Base):
 
 
 # =========================================================
+# INTERVIEW REJECTION RECORD
+# =========================================================
+
+
+class InterviewRejectionRecord(Base):
+    __tablename__ = "interview_rejection_record"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    eventId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stage_event.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    memberId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    rejectedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    event = relationship("StageEvent")
+    member = relationship("Member")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "eventId",
+            "memberId",
+            name="uq_interview_rejection_event_member",
+        ),
+    )
+
+
+# =========================================================
 # INTERVIEW FEEDBACK
 # =========================================================
 

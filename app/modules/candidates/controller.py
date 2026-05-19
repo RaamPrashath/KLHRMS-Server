@@ -8,6 +8,9 @@ from app.modules.candidates.schema import (
     CandidateApplicationNoteCreateRequest,
     CandidateApplicationNoteUpdateRequest,
     CandidateApplicationUpdateRequest,
+    InterviewAcceptRequest,
+    InterviewAcceptResponse,
+    InterviewRejectResponse,
     InterviewerSearchResponse,
     InterviewMeetingCreateRequest,
     InterviewMeetingCompleteRequest,
@@ -253,6 +256,36 @@ async def handle_complete_interview_meeting(
         ctx.member.id,
         ctx.member.userId,
         body,
+    )
+
+
+async def handle_accept_interview(
+    ctx: MemberContext,
+    db: AsyncSession,
+    event_id: str,
+    body: InterviewAcceptRequest,
+) -> InterviewAcceptResponse:
+    return await service.accept_interview(
+        db,
+        ctx.organization.id,
+        ctx.member.id,
+        ctx.member.userId,
+        event_id,
+        body,
+    )
+
+
+async def handle_reject_interview(
+    ctx: MemberContext,
+    db: AsyncSession,
+    event_id: str,
+) -> InterviewRejectResponse:
+    return await service.reject_interview(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        event_id,
     )
 
 
