@@ -75,7 +75,7 @@ router = APIRouter(prefix="/candidates", tags=["candidates"])
 
 @router.get("/pipeline/postings", response_model=list[PipelineJobPostingRead])
 async def list_pipeline_job_postings(
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> list[PipelineJobPostingRead]:
     return await handle_list_job_postings(ctx, db)
@@ -83,7 +83,7 @@ async def list_pipeline_job_postings(
 
 @router.get("/pipeline", response_model=PipelineBoardRead)
 async def get_pipeline_board(
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
     jobPostingId: str = Query(min_length=1),
 ) -> PipelineBoardRead:
@@ -93,7 +93,7 @@ async def get_pipeline_board(
 @router.get("/pipeline/jobs/{job_slug}", response_model=PipelineBoardRead)
 async def get_pipeline_board_by_job_slug(
     job_slug: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> PipelineBoardRead:
     return await handle_get_pipeline_board_by_job_slug(ctx, db, job_slug)
@@ -101,7 +101,7 @@ async def get_pipeline_board_by_job_slug(
 
 @router.get("/pipeline/interviewers", response_model=InterviewerSearchResponse)
 async def list_interviewers(
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
     search: str | None = Query(default=None, max_length=120),
 ) -> InterviewerSearchResponse:
@@ -111,7 +111,7 @@ async def list_interviewers(
 @router.get("/pipeline/stages/by-slug/{stage_slug}/workspace", response_model=StageWorkspaceRead)
 async def get_stage_workspace(
     stage_slug: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> StageWorkspaceRead:
     return await handle_get_stage_workspace(ctx, db, stage_slug)
@@ -121,7 +121,7 @@ async def get_stage_workspace(
 async def get_stage_workspace_by_job_slug(
     job_slug: str,
     stage_slug: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> StageWorkspaceRead:
     return await handle_get_stage_workspace_by_job_slug(ctx, db, job_slug, stage_slug)
@@ -134,7 +134,7 @@ async def get_stage_workspace_by_job_slug(
 async def preview_stage_interview_warnings(
     stage_slug: str,
     body: StageInterviewWarningRequest,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> StageInterviewWarningResponse:
     return await handle_preview_stage_interview_warnings(ctx, db, stage_slug, body)
@@ -176,7 +176,7 @@ async def move_application_stage_legacy(
 @router.get("/applications/{application_id}", response_model=CandidateApplicationDetailRead)
 async def get_application_detail(
     application_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> CandidateApplicationDetailRead:
     return await handle_get_application_detail(ctx, db, application_id)
@@ -265,7 +265,7 @@ async def extend_pipeline_stage_due_date(
 @router.get("/pipeline/stages/{stage_id}/evaluation-workspace", response_model=StageEvaluationWorkspaceRead)
 async def get_evaluation_workspace(
     stage_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> StageEvaluationWorkspaceRead:
     return await handle_get_evaluation_workspace(ctx, db, stage_id)
@@ -319,7 +319,7 @@ async def reshuffle_interview_assignment(
 
 @router.get("/interviews/my", response_model=MyInterviewListResponse)
 async def list_my_interviews(
-    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> MyInterviewListResponse:
     return await handle_list_my_interviews(ctx, db)
@@ -329,7 +329,7 @@ async def list_my_interviews(
 async def accept_interview(
     event_id: str,
     body: InterviewAcceptRequest,
-    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> InterviewAcceptResponse:
     return await handle_accept_interview(ctx, db, event_id, body)
@@ -338,7 +338,7 @@ async def accept_interview(
 @router.post("/interviews/{event_id}/reject", response_model=InterviewRejectResponse)
 async def reject_interview(
     event_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> InterviewRejectResponse:
     return await handle_reject_interview(ctx, db, event_id)
@@ -348,7 +348,7 @@ async def reject_interview(
 async def create_reassignment_request(
     event_id: str,
     body: ReassignmentRequestCreate,
-    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     body.eventId = event_id
