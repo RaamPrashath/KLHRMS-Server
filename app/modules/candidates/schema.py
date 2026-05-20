@@ -40,7 +40,7 @@ class CandidateSummaryRead(BaseModel):
 
 class ApplicationInterviewMeetingRead(BaseModel):
     id: str
-    status: Literal["PENDING", "ONGOING", "COMPLETED"]
+    status: Literal["PENDING", "ONGOING", "COMPLETED", "CANCELLED", "RESCHEDULED"]
     scheduledStartAt: datetime
     scheduledEndAt: datetime
     meetingUrl: str | None
@@ -62,6 +62,7 @@ class PipelineApplicationRead(BaseModel):
     status: str
     resumeUrl: str | None
     interviewMeeting: ApplicationInterviewMeetingRead | None = None
+    currentAssignment: StageWorkspaceAssignmentRead | None = None
 
 
 class StageEvaluationCategoryRead(BaseModel):
@@ -193,6 +194,7 @@ class StageInterviewWarningRead(BaseModel):
 
 class StageInterviewWarningRequest(BaseModel):
     assignments: list[StageInterviewAssignmentInput] = Field(default_factory=list)
+    jobPostingId: str | None = None
 
 
 class StageInterviewWarningResponse(BaseModel):
@@ -201,6 +203,7 @@ class StageInterviewWarningResponse(BaseModel):
 
 class StageInterviewAssignmentRequest(BaseModel):
     assignments: list[StageInterviewAssignmentInput] = Field(min_length=1)
+    jobPostingId: str | None = None
 
 
 class StageInterviewAssignmentResponse(BaseModel):

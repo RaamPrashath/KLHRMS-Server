@@ -221,6 +221,9 @@ def _serialize_application(
         interviewMeeting=_serialize_application_interview_meeting(
             _latest_stage_event(application, stage.id)
         ),
+        currentAssignment=_serialize_workspace_assignment(
+            _latest_assignment_event(application, stage.id)
+        ),
     )
 
 
@@ -407,7 +410,10 @@ def _latest_stage_event(application: CandidateApplication, stage_id: str) -> Sta
     events = [
         event
         for event in application.__dict__.get("stageEvents", [])
-        if event.stageId == stage_id and event.scheduledStartAt is not None and event.scheduledEndAt is not None
+        if event.stageId == stage_id
+        and event.scheduledStartAt is not None
+        and event.scheduledEndAt is not None
+        and event.status != EventStatus.CANCELLED
     ]
     if not events:
         return None
@@ -421,6 +427,10 @@ def _computed_interview_status(event: StageEvent | None, now: datetime | None = 
         return "COMPLETED"
     if event.status == EventStatus.ONGOING:
         return "ONGOING"
+    if event.status == EventStatus.CANCELLED:
+        return "CANCELLED"
+    if event.status == EventStatus.RESCHEDULED:
+        return "RESCHEDULED"
     current = now or datetime.now(UTC)
     if current.tzinfo is None:
         current = current.replace(tzinfo=UTC)
@@ -1338,6 +1348,8 @@ async def preview_stage_interview_warnings(
     stage = await repository.get_stage_by_slug(organization_id, stage_slug)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if body.jobPostingId and stage.jobPostingId != body.jobPostingId:
+        raise HTTPException(status_code=400, detail="Stage does not belong to the specified job posting")
     warnings = await _build_assignment_warnings(repository, organization_id, body.assignments)
     return StageInterviewWarningResponse(warnings=warnings)
 
@@ -1354,6 +1366,8 @@ async def assign_stage_interviews(
     stage = await repository.get_stage_by_slug(organization_id, stage_slug)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if body.jobPostingId and stage.jobPostingId != body.jobPostingId:
+        raise HTTPException(status_code=400, detail="Stage does not belong to the specified job posting")
     if stage.stageType != StageType.INTERVIEW:
         raise HTTPException(status_code=400, detail="Assignments can only be created for interview stages")
     if stage.completedAt is not None:
