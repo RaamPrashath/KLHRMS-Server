@@ -25,8 +25,8 @@ from app.models.recruitment import (
     EventStatus,
     InterviewFeedback,
     InterviewFeedbackValue,
-    InterviewType,
     InterviewRejectionRecord,
+    InterviewType,
     PipelineStage,
     StageEvaluationCategory,
     StageEvaluationWorkspace,
@@ -46,14 +46,15 @@ from app.modules.candidates.schema import (
     CandidateSummaryRead,
     InterviewAcceptRequest,
     InterviewAcceptResponse,
-    InterviewRejectResponse,
     InterviewerSearchResponse,
     InterviewFeedbackRead,
     InterviewFeedbackValueRead,
     InterviewMeetingCompleteRequest,
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
+    InterviewMeetingUpdateRequest,
     InterviewParticipantRead,
+    InterviewRejectResponse,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
     MyInterviewRead,
@@ -143,6 +144,7 @@ def _serialize_category(category: StageEvaluationCategory) -> StageEvaluationCat
         stageId=category.stageId,
         name=category.name,
         type=category.valueType or "NUMERIC",
+        maxScore=category.maxScore,
         order=category.order,
     )
 
@@ -175,6 +177,7 @@ def _serialize_candidate(candidate: Candidate) -> CandidateSummaryRead:
         currentTitle=candidate.currentTitle,
         totalExperience=candidate.totalExperience,
         resumeUrl=candidate.resumeUrl,
+        image=candidate.user.image if candidate.user else None,
     )
 
 
@@ -239,6 +242,7 @@ def _serialize_stage(stage: PipelineStage) -> PipelineStageRead:
         meetingEnabled=stage.stageType == StageType.INTERVIEW,
         offerLetterEnabled=stage.stageType == StageType.OFFER,
         evaluationEnabled=stage.evaluationEnabled,
+        sheetEnabled=stage.sheetEnabled,
         evaluationType=stage.evaluationType,
         evaluationIncludeTotal=stage.evaluationIncludeTotal,
         evaluationIncludeAnalysis=stage.evaluationIncludeAnalysis,
@@ -275,7 +279,7 @@ def _serialize_history(history: ApplicationStageHistory) -> PipelineStageHistory
 
 def _serialize_interview_meeting(event: StageEvent) -> InterviewMeetingRead:
     if event.scheduledStartAt is None or event.scheduledEndAt is None:
-        raise HTTPException(status_code=500, detail="Interview meeting is missing required metadata")
+        raise HTTPException(status_code=400, detail="Interview meeting is missing required metadata")
     return InterviewMeetingRead(
         id=event.id,
         applicationId=event.applicationId,
@@ -412,6 +416,8 @@ def _computed_interview_status(event: StageEvent | None, now: datetime | None = 
         return "PENDING"
     if event.status == EventStatus.COMPLETED:
         return "COMPLETED"
+    if event.status == EventStatus.ONGOING:
+        return "ONGOING"
     current = now or datetime.now(UTC)
     if current.tzinfo is None:
         current = current.replace(tzinfo=UTC)
@@ -551,7 +557,9 @@ def _serialize_workspace_assignment(event: StageEvent | None) -> StageWorkspaceA
     interviewer = None
     if primary is not None and primary.member is not None:
         interviewer = _serialize_interviewer(primary.member)
-    status = primary.approvalStatus if primary is not None else event.status.value
+    status = event.status.value if event.status in {EventStatus.ONGOING, EventStatus.COMPLETED} else (
+        primary.approvalStatus if primary is not None else event.status.value
+    )
     if status == "PENDING":
         status = "PENDING_ACCEPTANCE"
     return StageWorkspaceAssignmentRead(
@@ -733,6 +741,7 @@ async def _sync_evaluation_categories(
             category = existing_by_id[category_input.id]
             category.name = category_input.name.strip()
             category.valueType = category_input.type
+            category.maxScore = category_input.maxScore
             category.order = index
             db.add(category)
         else:
@@ -742,6 +751,7 @@ async def _sync_evaluation_categories(
                     stageId=stage.id,
                     name=category_input.name.strip(),
                     valueType=category_input.type,
+                    maxScore=category_input.maxScore,
                     order=index,
                 )
             )
@@ -781,10 +791,15 @@ async def _apply_stage_config(
 
     if not stage.evaluationEnabled:
         stage.evaluationType = None
+        stage.sheetEnabled = False
         stage.evaluationIncludeTotal = False
         stage.evaluationIncludeAnalysis = False
         await _clear_evaluation_categories(db, stage)
         return
+
+    requested_sheet_enabled = getattr(body, "sheetEnabled", None)
+    if requested_sheet_enabled is not None:
+        stage.sheetEnabled = bool(requested_sheet_enabled)
 
     requested_evaluation_type = getattr(body, "evaluationType", None)
     if requested_evaluation_type is not None:
@@ -815,6 +830,10 @@ async def list_job_postings(
             title=posting.title,
             status=posting.status.value,
             requisitionId=posting.requisitionId,
+            candidateCount=len(posting.applications or []),
+            stageCount=len(posting.pipelineStages or []),
+            priority=posting.requisition.priority if posting.requisition is not None else None,
+            openings=posting.requisition.openings if posting.requisition is not None else None,
         )
         for posting in postings
     ]
@@ -886,7 +905,7 @@ async def move_application_stage(
     )
     db.add(application)
     await repository.add_history(history)
-    if target_stage.evaluationEnabled:
+    if target_stage.evaluationEnabled and target_stage.sheetEnabled:
         workspace = await _ensure_stage_evaluation_workspace(
             db,
             repository,
@@ -2108,6 +2127,120 @@ async def create_interview_meeting(
     return _serialize_interview_meeting(event)
 
 
+async def update_interview_meeting(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    actor_user_id: str,
+    application_id: str,
+    event_id: str,
+    body: InterviewMeetingUpdateRequest,
+) -> InterviewMeetingRead:
+    repository = CandidatePipelineRepository(db)
+    application = await repository.get_application(organization_id, application_id)
+    if application is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    stage = application.pipelineStage
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if not stage.meetingEnabled:
+        raise HTTPException(status_code=400, detail="Meetings are not enabled for this stage")
+
+    latest_event = await repository.get_latest_stage_event(
+        organization_id,
+        application.id,
+        stage.id,
+    )
+    if latest_event is None or latest_event.id != event_id:
+        raise HTTPException(status_code=404, detail="Interview meeting not found")
+    if latest_event.status != EventStatus.SCHEDULED:
+        raise HTTPException(status_code=400, detail="Only scheduled interviews can be rescheduled")
+
+    starts_at = body.scheduledStartAt
+    if starts_at.tzinfo is None:
+        starts_at = starts_at.replace(tzinfo=UTC)
+    starts_at = starts_at.astimezone(UTC)
+    ends_at = starts_at + timedelta(minutes=body.durationMinutes)
+
+    candidate_name = _candidate_display_name(application)
+    title = (body.title or latest_event.title or f"{stage.name} interview - {candidate_name}").strip()
+    description_parts = [
+        f"Interview for {application.jobPosting.title}",
+        f"Candidate: {candidate_name}",
+        f"Stage: {stage.name}",
+    ]
+    if body.notes:
+        description_parts.append(f"Notes: {body.notes.strip()}")
+
+    calendar_service = GoogleCalendarService(db)
+    meeting = await calendar_service.update_meet_event(
+        user_id=actor_user_id,
+        event_id=latest_event.googleCalendarEventId or event_id,
+        summary=title,
+        description="\n".join(description_parts),
+        starts_at=starts_at,
+        ends_at=ends_at,
+    )
+
+    await ResendEmailService().send_interview_rescheduled(
+        to_email=application.candidate.email,
+        candidate_name=candidate_name,
+        job_title=application.jobPosting.title,
+        stage_name=stage.name,
+        starts_at_text=_meeting_time_text(meeting.starts_at),
+        meeting_url=meeting.meeting_url,
+    )
+
+    latest_event.title = title
+    latest_event.description = "\n".join(description_parts)
+    latest_event.status = EventStatus.SCHEDULED
+    latest_event.scheduledStartAt = meeting.starts_at
+    latest_event.scheduledEndAt = meeting.ends_at
+    latest_event.meetingUrl = meeting.meeting_url
+    latest_event.googleCalendarEventId = meeting.event_id
+    latest_event.googleCalendarEventUrl = meeting.html_link
+    latest_event.notes = body.notes
+    latest_event.emailSentAt = datetime.now(UTC)
+    await repository.add_stage_event(latest_event)
+    await db.commit()
+    return _serialize_interview_meeting(latest_event)
+
+
+async def start_interview_meeting(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    actor_user_id: str,
+    application_id: str,
+    event_id: str,
+) -> InterviewMeetingRead:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event(organization_id, application_id, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Interview meeting not found")
+    if event.status != EventStatus.SCHEDULED:
+        raise HTTPException(status_code=400, detail="Only scheduled interviews can be started")
+
+    event.status = EventStatus.ONGOING
+    await repository.add_stage_event(event)
+    await db.commit()
+
+    application = event.application
+    stage = event.stage
+    candidate_name = _candidate_display_name(application) if application else "Candidate"
+    stage_or_job_title = stage.name if stage else "Interview"
+
+    if application and event.meetingUrl and application.candidate:
+        await ResendEmailService().send_interview_meeting_ready(
+            to_email=application.candidate.email,
+            candidate_name=candidate_name,
+            job_title=stage_or_job_title,
+            meeting_url=event.meetingUrl,
+        )
+
+    return _serialize_interview_meeting(event)
+
+
 async def complete_interview_meeting(
     db: AsyncSession,
     organization_id: str,
@@ -2699,7 +2832,7 @@ async def _sync_stage_evaluation_workspace_if_needed(
     actor_user_id: str,
     stage: PipelineStage,
 ) -> None:
-    if not stage.evaluationEnabled:
+    if not stage.evaluationEnabled or not stage.sheetEnabled:
         return
     await _ensure_stage_evaluation_workspace(
         db,

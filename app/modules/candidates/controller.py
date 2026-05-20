@@ -15,6 +15,8 @@ from app.modules.candidates.schema import (
     InterviewMeetingCreateRequest,
     InterviewMeetingCompleteRequest,
     InterviewMeetingRead,
+    InterviewMeetingStartRequest,
+    InterviewMeetingUpdateRequest,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
     PipelineApplicationRead,
@@ -256,6 +258,40 @@ async def handle_complete_interview_meeting(
         ctx.member.id,
         ctx.member.userId,
         body,
+    )
+
+
+async def handle_update_interview_meeting(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    event_id: str,
+    body: InterviewMeetingUpdateRequest,
+) -> InterviewMeetingRead:
+    return await service.update_interview_meeting(
+        db,
+        ctx.organization.id,
+        ctx.member.id,
+        ctx.member.userId,
+        application_id,
+        event_id,
+        body,
+    )
+
+
+async def handle_start_interview_meeting(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    event_id: str,
+) -> InterviewMeetingRead:
+    return await service.start_interview_meeting(
+        db,
+        ctx.organization.id,
+        ctx.member.id,
+        ctx.member.userId,
+        application_id,
+        event_id,
     )
 
 

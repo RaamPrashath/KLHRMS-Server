@@ -11,6 +11,8 @@ from app.modules.candidates.controller import (
     handle_complete_interview_meeting,
     handle_create_application_note,
     handle_create_interview_meeting,
+    handle_start_interview_meeting,
+    handle_update_interview_meeting,
     handle_create_reassignment_request,
     handle_create_stage,
     handle_delete_stage,
@@ -46,6 +48,8 @@ from app.modules.candidates.schema import (
     InterviewMeetingCreateRequest,
     InterviewMeetingCompleteRequest,
     InterviewMeetingRead,
+    InterviewMeetingStartRequest,
+    InterviewMeetingUpdateRequest,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
     PipelineApplicationRead,
@@ -232,6 +236,27 @@ async def complete_interview_meeting(
     db: AsyncSession = Depends(get_db),
 ) -> InterviewMeetingRead:
     return await handle_complete_interview_meeting(ctx, db, application_id, event_id, body)
+
+
+@router.patch("/applications/{application_id}/interview-meetings/{event_id}", response_model=InterviewMeetingRead)
+async def update_interview_meeting(
+    application_id: str,
+    event_id: str,
+    body: InterviewMeetingUpdateRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> InterviewMeetingRead:
+    return await handle_update_interview_meeting(ctx, db, application_id, event_id, body)
+
+
+@router.post("/applications/{application_id}/interview-meetings/{event_id}/start", response_model=InterviewMeetingRead)
+async def start_interview_meeting(
+    application_id: str,
+    event_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> InterviewMeetingRead:
+    return await handle_start_interview_meeting(ctx, db, application_id, event_id)
 
 
 @router.post("/pipeline/stages", response_model=PipelineStageRead)

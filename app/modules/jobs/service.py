@@ -155,6 +155,7 @@ def _serialize_pipeline_stage(stage: PipelineStage) -> PipelineStageRead:
         meetingEnabled=stage.meetingEnabled,
         offerLetterEnabled=stage.offerLetterEnabled,
         evaluationEnabled=stage.evaluationEnabled,
+        sheetEnabled=stage.sheetEnabled,
         evaluationType=stage.evaluationType,
         evaluationIncludeTotal=stage.evaluationIncludeTotal,
         evaluationIncludeAnalysis=stage.evaluationIncludeAnalysis,
@@ -166,6 +167,7 @@ def _serialize_pipeline_stage(stage: PipelineStage) -> PipelineStageRead:
                 "stageId": category.stageId,
                 "name": category.name,
                 "type": category.valueType,
+                "maxScore": category.maxScore,
                 "order": category.order,
             }
             for category in sorted(stage.evaluationCategories or [], key=lambda item: item.order)
@@ -672,6 +674,7 @@ async def create_pipeline_stage(
         meetingEnabled=stage_type == StageType.INTERVIEW,
         offerLetterEnabled=stage_type == StageType.OFFER,
         evaluationEnabled=body.evaluationEnabled,
+        sheetEnabled=body.sheetEnabled if body.evaluationEnabled else False,
         evaluationType=body.evaluationType if body.evaluationEnabled else None,
         evaluationIncludeTotal=body.evaluationIncludeTotal if body.evaluationEnabled else False,
         evaluationIncludeAnalysis=body.evaluationIncludeAnalysis if body.evaluationEnabled else False,
@@ -687,6 +690,7 @@ async def create_pipeline_stage(
                     stageId=stage.id,
                     name=category.name,
                     valueType=category.type,
+                    maxScore=category.maxScore,
                     order=category.order or index,
                 )
                 for index, category in enumerate(body.evaluationCategories, start=1)
@@ -788,6 +792,7 @@ async def import_pipeline(
             meetingEnabled=source_stage.meetingEnabled,
             offerLetterEnabled=source_stage.offerLetterEnabled,
             evaluationEnabled=source_stage.evaluationEnabled,
+            sheetEnabled=source_stage.sheetEnabled,
             evaluationType=source_stage.evaluationType,
             evaluationIncludeTotal=source_stage.evaluationIncludeTotal,
             evaluationIncludeAnalysis=source_stage.evaluationIncludeAnalysis,
@@ -806,6 +811,7 @@ async def import_pipeline(
                     stageId=copied_stage.id,
                     name=category.name,
                     valueType=category.valueType,
+                    maxScore=category.maxScore,
                     order=category.order,
                 )
             )
@@ -1035,6 +1041,7 @@ async def apply_to_public_posting(
         raise HTTPException(status_code=400, detail="No pipeline stage is configured for this job posting")
 
     candidate = await repository.get_candidate_by_email(posting.organizationId, body.email)
+    existing_user = await repository.get_user_by_email(body.email)
     if candidate is not None:
         existing_application = await repository.get_candidate_application(
             posting.organizationId,
@@ -1047,7 +1054,7 @@ async def apply_to_public_posting(
     if candidate is None:
         candidate = Candidate(
             organizationId=posting.organizationId,
-            userId=None,
+            userId=existing_user.id if existing_user is not None else None,
             firstName=body.firstName,
             lastName=body.lastName,
             email=body.email,
@@ -1057,6 +1064,8 @@ async def apply_to_public_posting(
         )
         await repository.add_candidate(candidate)
     else:
+        if candidate.userId is None and existing_user is not None:
+            candidate.userId = existing_user.id
         candidate.firstName = body.firstName
         candidate.lastName = body.lastName
         candidate.phone = body.phone

@@ -17,6 +17,10 @@ class PipelineJobPostingRead(BaseModel):
     title: str
     status: str
     requisitionId: str | None = None
+    candidateCount: int = 0
+    stageCount: int = 0
+    priority: str | None = None
+    openings: int | None = None
 
 
 class CandidateSummaryRead(BaseModel):
@@ -31,6 +35,7 @@ class CandidateSummaryRead(BaseModel):
     currentTitle: str | None
     totalExperience: str | None
     resumeUrl: str | None
+    image: str | None = None
 
 
 class ApplicationInterviewMeetingRead(BaseModel):
@@ -64,6 +69,7 @@ class StageEvaluationCategoryRead(BaseModel):
     stageId: str
     name: str
     type: EvaluationType = "NUMERIC"
+    maxScore: int | None = None
     order: int
 
 
@@ -82,12 +88,17 @@ class StageEvaluationCategoryInput(BaseModel):
     id: str | None = None
     name: str = Field(min_length=1, max_length=120)
     type: EvaluationType = "NUMERIC"
+    maxScore: int | None = Field(default=None, ge=1)
     order: int | None = Field(default=None, ge=1)
 
 
 class InterviewFeedbackValueInput(BaseModel):
     categoryId: str = Field(min_length=1)
     value: str | float | bool | None = None
+
+
+class InterviewMeetingStartRequest(BaseModel):
+    pass
 
 
 class InterviewMeetingCompleteRequest(BaseModel):
@@ -109,6 +120,7 @@ class PipelineStageRead(BaseModel):
     meetingEnabled: bool
     offerLetterEnabled: bool
     evaluationEnabled: bool
+    sheetEnabled: bool = False
     evaluationType: EvaluationType | None
     evaluationIncludeTotal: bool
     evaluationIncludeAnalysis: bool
@@ -267,6 +279,7 @@ class PipelineStageCreateRequest(BaseModel):
     afterStageId: str | None = None
     stageType: str = Field(default="DEFAULT", min_length=1, max_length=32)
     evaluationEnabled: bool = False
+    sheetEnabled: bool = False
     evaluationType: str | None = Field(default=None, max_length=32)
     evaluationIncludeTotal: bool = False
     evaluationIncludeAnalysis: bool = False
@@ -288,6 +301,7 @@ class PipelineStageUpdateRequest(BaseModel):
     order: float | None = Field(default=None)
     stageType: str | None = Field(default=None, min_length=1, max_length=32)
     evaluationEnabled: bool | None = None
+    sheetEnabled: bool | None = None
     evaluationType: str | None = Field(default=None, max_length=32)
     evaluationIncludeTotal: bool | None = None
     evaluationIncludeAnalysis: bool | None = None
@@ -332,6 +346,13 @@ class InterviewMeetingCreateRequest(BaseModel):
         if self.mode == "SCHEDULE" and self.scheduledStartAt is None:
             raise ValueError("Start time is required when scheduling an interview")
         return self
+
+
+class InterviewMeetingUpdateRequest(BaseModel):
+    scheduledStartAt: datetime
+    durationMinutes: int = Field(default=30, ge=15, le=240)
+    title: str | None = Field(default=None, max_length=160)
+    notes: str | None = Field(default=None, max_length=1000)
 
 
 class InterviewMeetingRead(BaseModel):

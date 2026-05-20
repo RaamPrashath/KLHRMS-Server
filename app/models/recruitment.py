@@ -116,6 +116,7 @@ class InterviewType(str, enum.Enum):
 
 class EventStatus(str, enum.Enum):
     SCHEDULED = "SCHEDULED"
+    ONGOING = "ONGOING"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
     RESCHEDULED = "RESCHEDULED"
@@ -728,6 +729,12 @@ class PipelineStage(Base):
         default=False,
     )
 
+    sheetEnabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
     evaluationType: Mapped[str | None] = mapped_column(String(32))
 
     evaluationIncludeTotal: Mapped[bool] = mapped_column(
@@ -953,6 +960,12 @@ class StageEvaluationCategory(Base):
         String(32),
         nullable=False,
         default="NUMERIC",
+    )
+
+    maxScore: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        default=None,
     )
 
     order: Mapped[int] = mapped_column(

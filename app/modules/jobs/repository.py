@@ -18,6 +18,7 @@ from app.models.recruitment import (
     RequisitionApproval,
     StageEvaluationCategory,
 )
+from app.models.user import User
 from app.shared.utils.permissions import get_permission_scope
 
 
@@ -187,7 +188,18 @@ class JobRequisitionRepository:
         result = await self.db.execute(
             select(Candidate).where(
                 Candidate.organizationId == organization_id,
-                Candidate.email == email,
+                func.lower(Candidate.email) == email.lower(),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_user_by_email(
+        self,
+        email: str,
+    ) -> User | None:
+        result = await self.db.execute(
+            select(User).where(
+                func.lower(User.email) == email.lower(),
             )
         )
         return result.scalar_one_or_none()

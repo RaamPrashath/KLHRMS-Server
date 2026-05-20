@@ -139,6 +139,112 @@ class ResendEmailService:
         )
         await self._send_email(to_email, subject, html, text)
 
+    async def send_interview_rescheduled(
+        self,
+        to_email: str,
+        candidate_name: str,
+        job_title: str,
+        stage_name: str,
+        starts_at_text: str,
+        meeting_url: str,
+    ) -> None:
+        if not self.settings.resend_api_key:
+            raise HTTPException(status_code=400, detail="Resend API key is not configured")
+
+        subject = f"Interview rescheduled – {job_title}"
+        html = f"""
+        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#1d1d1f">
+          <p>Hello {candidate_name},</p>
+          <p>Your interview for <strong>{job_title}</strong> has been <strong>rescheduled</strong>.</p>
+          <p><strong>Stage:</strong> {stage_name}<br />
+          <strong>New time:</strong> {starts_at_text}</p>
+          <p>
+            <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:10px 14px;border-radius:8px">
+              Join Google Meet
+            </a>
+          </p>
+          <p>If the button does not work, open this link:<br />
+          <a href="{meeting_url}">{meeting_url}</a></p>
+        </div>
+        """
+        text = (
+            f"Hello {candidate_name},\n\n"
+            f"Your interview for {job_title} has been rescheduled.\n"
+            f"Stage: {stage_name}\n"
+            f"New time: {starts_at_text}\n"
+            f"Google Meet: {meeting_url}\n"
+        )
+        from_email, recipient_list = self._resolve_delivery(to_email)
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                RESEND_EMAILS_URL,
+                headers={
+                    "Authorization": f"Bearer {self.settings.resend_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": from_email,
+                    "to": recipient_list,
+                    "subject": subject,
+                    "html": html,
+                    "text": text,
+                },
+            )
+
+        if response.status_code >= 400:
+            raise HTTPException(status_code=502, detail=self._error_message(response))
+
+    async def send_interview_meeting_ready(
+        self,
+        to_email: str,
+        candidate_name: str,
+        job_title: str,
+        meeting_url: str,
+    ) -> None:
+        if not self.settings.resend_api_key:
+            raise HTTPException(status_code=400, detail="Resend API key is not configured")
+
+        subject = f"Your interview for {job_title} is ready"
+        html = f"""
+        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#1d1d1f">
+          <p>Hello {candidate_name},</p>
+          <p>Your interview for <strong>{job_title}</strong> is ready to join.</p>
+          <p>
+            <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:10px 14px;border-radius:8px">
+              Join Google Meet
+            </a>
+          </p>
+          <p>If the button does not work, open this link:<br />
+          <a href="{meeting_url}">{meeting_url}</a></p>
+        </div>
+        """
+        text = (
+            f"Hello {candidate_name},\n\n"
+            f"Your interview for {job_title} is ready to join.\n"
+            f"Google Meet: {meeting_url}\n"
+        )
+        from_email, recipient_list = self._resolve_delivery(to_email)
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                RESEND_EMAILS_URL,
+                headers={
+                    "Authorization": f"Bearer {self.settings.resend_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": from_email,
+                    "to": recipient_list,
+                    "subject": subject,
+                    "html": html,
+                    "text": text,
+                },
+            )
+
+        if response.status_code >= 400:
+            raise HTTPException(status_code=502, detail=self._error_message(response))
+
     async def send_reassignment_notification_to_hr(
         self,
         to_email: str,
