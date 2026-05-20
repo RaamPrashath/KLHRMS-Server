@@ -9,6 +9,7 @@ from app.modules.candidates.controller import (
     handle_assign_stage_interviews,
     handle_accept_interview,
     handle_complete_interview_meeting,
+    handle_complete_stage,
     handle_create_application_note,
     handle_create_interview_meeting,
     handle_start_interview_meeting,
@@ -28,6 +29,8 @@ from app.modules.candidates.controller import (
     handle_list_interviewers,
     handle_list_job_postings,
     handle_list_my_interviews,
+    handle_move_interview_assignment,
+    handle_reopen_stage,
     handle_move_application_stage,
     handle_preview_stage_interview_warnings,
     handle_reject_interview,
@@ -37,19 +40,22 @@ from app.modules.candidates.controller import (
     handle_update_stage,
 )
 from app.modules.candidates.schema import (
+    ApplicationInterviewMeetingRead,
     CandidateApplicationDetailRead,
     CandidateApplicationNoteCreateRequest,
     CandidateApplicationNoteUpdateRequest,
     CandidateApplicationUpdateRequest,
     InterviewAcceptRequest,
     InterviewAcceptResponse,
+    InterviewMeetingCreateRequest,
+    InterviewMeetingRead,
+    InterviewMeetingUpdateRequest,
+    InterviewMeetingCompleteRequest,
+    InterviewMeetingStartRequest,
+    InterviewMoveRequest,
+    InterviewMoveResponse,
     InterviewRejectResponse,
     InterviewerSearchResponse,
-    InterviewMeetingCreateRequest,
-    InterviewMeetingCompleteRequest,
-    InterviewMeetingRead,
-    InterviewMeetingStartRequest,
-    InterviewMeetingUpdateRequest,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
     PipelineApplicationRead,
@@ -287,6 +293,24 @@ async def extend_pipeline_stage_due_date(
     return await handle_extend_stage_due_date(ctx, db, stage_id)
 
 
+@router.post("/pipeline/stages/{stage_id}/complete", response_model=PipelineStageRead)
+async def complete_pipeline_stage(
+    stage_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> PipelineStageRead:
+    return await handle_complete_stage(ctx, db, stage_id)
+
+
+@router.post("/pipeline/stages/{stage_id}/reopen", response_model=PipelineStageRead)
+async def reopen_pipeline_stage(
+    stage_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> PipelineStageRead:
+    return await handle_reopen_stage(ctx, db, stage_id)
+
+
 @router.get("/pipeline/stages/{stage_id}/evaluation-workspace", response_model=StageEvaluationWorkspaceRead)
 async def get_evaluation_workspace(
     stage_id: str,
@@ -326,6 +350,20 @@ async def distribute_stage_interviews(
     db: AsyncSession = Depends(get_db),
 ) -> TeamDistributionResponse:
     return await handle_distribute_stage_interviews(ctx, db, stage_slug, body)
+
+
+@router.post(
+    "/applications/{application_id}/interview-events/{event_id}/move",
+    response_model=InterviewMoveResponse,
+)
+async def move_interview_assignment(
+    application_id: str,
+    event_id: str,
+    body: InterviewMoveRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> InterviewMoveResponse:
+    return await handle_move_interview_assignment(ctx, db, application_id, event_id, body)
 
 
 @router.post(

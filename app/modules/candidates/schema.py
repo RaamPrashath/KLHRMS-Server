@@ -125,6 +125,7 @@ class PipelineStageRead(BaseModel):
     evaluationIncludeTotal: bool
     evaluationIncludeAnalysis: bool
     dueDate: datetime | None
+    completedAt: datetime | None = None
     extendToNextWorkingDay: bool
     evaluationCategories: list[StageEvaluationCategoryRead]
     evaluationWorkspace: StageEvaluationWorkspaceRead | None
@@ -220,6 +221,16 @@ class TeamDistributionRequest(BaseModel):
 class TeamDistributionResponse(BaseModel):
     assignedCount: int
     warnings: list[StageInterviewWarningRead]
+
+
+class InterviewMoveRequest(BaseModel):
+    newInterviewerMemberId: str = Field(min_length=1)
+
+
+class InterviewMoveResponse(BaseModel):
+    eventId: str
+    newInterviewerMemberId: str
+    status: str
 
 
 class ReshuffleRequest(BaseModel):

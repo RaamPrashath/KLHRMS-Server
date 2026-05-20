@@ -14,6 +14,7 @@ class HiringTeamCreateRequest(BaseModel):
     jobPostingId: str = Field(min_length=1)
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
+    stageId: str | None = Field(default=None, min_length=1)
     members: list[HiringTeamMemberInput] = Field(default_factory=list)
 
 
@@ -34,6 +35,7 @@ class HiringTeamMemberRead(BaseModel):
 class HiringTeamRead(BaseModel):
     id: str
     jobPostingId: str
+    stageId: str | None = None
     name: str
     description: str | None
     isActive: bool

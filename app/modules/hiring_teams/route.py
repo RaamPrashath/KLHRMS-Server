@@ -34,8 +34,9 @@ async def list_teams(
     access: Annotated[MemberContext, Depends(require_permission("interviews", "view"))],
     db: DbSession,
     jobPostingId: str = Query(..., min_length=1),
+    stageId: str | None = Query(default=None, min_length=1),
 ) -> HiringTeamListResponse:
-    return await handle_list_teams(access, db, jobPostingId)
+    return await handle_list_teams(access, db, jobPostingId, stage_id=stageId)
 
 
 @router.post("", response_model=HiringTeamRead, status_code=status.HTTP_201_CREATED)

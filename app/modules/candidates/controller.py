@@ -17,6 +17,8 @@ from app.modules.candidates.schema import (
     InterviewMeetingRead,
     InterviewMeetingStartRequest,
     InterviewMeetingUpdateRequest,
+    InterviewMoveRequest,
+    InterviewMoveResponse,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
     PipelineApplicationRead,
@@ -118,6 +120,22 @@ async def handle_extend_stage_due_date(
     stage_id: str,
 ) -> PipelineStageRead:
     return await service.extend_stage_due_date(db, ctx.organization.id, stage_id)
+
+
+async def handle_complete_stage(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_id: str,
+) -> PipelineStageRead:
+    return await service.complete_stage(db, ctx.organization.id, stage_id)
+
+
+async def handle_reopen_stage(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_id: str,
+) -> PipelineStageRead:
+    return await service.reopen_stage(db, ctx.organization.id, stage_id)
 
 
 async def handle_delete_stage(
@@ -223,6 +241,24 @@ async def handle_assign_stage_interviews(
         ctx.organization.name,
         ctx.member.id,
         stage_slug,
+        body,
+    )
+
+
+async def handle_move_interview_assignment(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    event_id: str,
+    body: InterviewMoveRequest,
+) -> InterviewMoveResponse:
+    return await service.move_interview_assignment(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        application_id,
+        event_id,
         body,
     )
 

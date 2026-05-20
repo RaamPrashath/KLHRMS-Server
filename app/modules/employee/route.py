@@ -21,12 +21,18 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi import status
+
 from app.modules.employee.controller import (
+    handle_delete_employee,
     handle_list_departments,
     handle_list_employees,
     handle_list_roles,
+    handle_preview_employee_delete,
 )
 from app.modules.employee.schema import (
+    EmployeeDeletePreview,
+    EmployeeDeleteResponse,
     EmployeeListFilters,
     EmployeeListResponse,
 )
@@ -76,3 +82,21 @@ async def list_roles(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     return await handle_list_roles(ctx, db)
+
+
+@router.get("/{member_id}/delete-preview", response_model=EmployeeDeletePreview)
+async def preview_employee_delete(
+    member_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("employees", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> EmployeeDeletePreview:
+    return await handle_preview_employee_delete(ctx, member_id, db)
+
+
+@router.delete("/{member_id}", response_model=EmployeeDeleteResponse)
+async def delete_employee(
+    member_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("employees", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> EmployeeDeleteResponse:
+    return await handle_delete_employee(ctx, member_id, db)

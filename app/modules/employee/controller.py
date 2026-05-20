@@ -8,6 +8,8 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.employee.schema import (
+    EmployeeDeletePreview,
+    EmployeeDeleteResponse,
     EmployeeListFilters,
     EmployeeListResponse,
 )
@@ -33,3 +35,19 @@ async def handle_list_departments(ctx: MemberContext, db: AsyncSession) -> list[
 
 async def handle_list_roles(ctx: MemberContext, db: AsyncSession) -> list[dict]:
     return await service.list_roles_for_org(ctx.organization.id, db)
+
+
+async def handle_preview_employee_delete(
+    ctx: MemberContext,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDeletePreview:
+    return await service.preview_employee_delete(ctx.organization.id, member_id, db)
+
+
+async def handle_delete_employee(
+    ctx: MemberContext,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDeleteResponse:
+    return await service.delete_employee(ctx.organization.id, member_id, db)

@@ -751,6 +751,8 @@ class PipelineStage(Base):
 
     dueDate: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
+    completedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     extendToNextWorkingDay: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,

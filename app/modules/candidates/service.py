@@ -53,6 +53,8 @@ from app.modules.candidates.schema import (
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
     InterviewMeetingUpdateRequest,
+    InterviewMoveRequest,
+    InterviewMoveResponse,
     InterviewParticipantRead,
     InterviewRejectResponse,
     MoveApplicationStageRequest,
@@ -247,6 +249,7 @@ def _serialize_stage(stage: PipelineStage) -> PipelineStageRead:
         evaluationIncludeTotal=stage.evaluationIncludeTotal,
         evaluationIncludeAnalysis=stage.evaluationIncludeAnalysis,
         dueDate=stage.dueDate,
+        completedAt=stage.completedAt,
         extendToNextWorkingDay=False,
         evaluationCategories=[
             _serialize_category(category)
@@ -1051,6 +1054,44 @@ async def extend_stage_due_date(
     return _serialize_stage(updated)
 
 
+async def complete_stage(
+    db: AsyncSession,
+    organization_id: str,
+    stage_id: str,
+) -> PipelineStageRead:
+    repository = CandidatePipelineRepository(db)
+    stage = await repository.get_stage(organization_id, stage_id)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if stage.completedAt is not None:
+        raise HTTPException(status_code=409, detail="Stage is already completed")
+    stage.completedAt = datetime.now(UTC)
+    db.add(stage)
+    await db.commit()
+    stages = await repository.list_stages_for_job(organization_id, stage.jobPostingId)
+    updated = next(item for item in stages if item.id == stage.id)
+    return _serialize_stage(updated)
+
+
+async def reopen_stage(
+    db: AsyncSession,
+    organization_id: str,
+    stage_id: str,
+) -> PipelineStageRead:
+    repository = CandidatePipelineRepository(db)
+    stage = await repository.get_stage(organization_id, stage_id)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if stage.completedAt is None:
+        raise HTTPException(status_code=409, detail="Stage is not completed")
+    stage.completedAt = None
+    db.add(stage)
+    await db.commit()
+    stages = await repository.list_stages_for_job(organization_id, stage.jobPostingId)
+    updated = next(item for item in stages if item.id == stage.id)
+    return _serialize_stage(updated)
+
+
 async def delete_stage(
     db: AsyncSession,
     organization_id: str,
@@ -1315,6 +1356,8 @@ async def assign_stage_interviews(
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
     if stage.stageType != StageType.INTERVIEW:
         raise HTTPException(status_code=400, detail="Assignments can only be created for interview stages")
+    if stage.completedAt is not None:
+        raise HTTPException(status_code=409, detail="Cannot assign interviews in a completed stage")
 
     applications_by_id = {application.id: application for application in stage.applications}
     member_ids = list({
@@ -1450,6 +1493,8 @@ async def distribute_stage_interviews(
     stage = await repository.get_stage_by_slug(organization_id, stage_slug)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if stage.completedAt is not None:
+        raise HTTPException(status_code=409, detail="Cannot distribute interviews in a completed stage")
 
     team = await repository.get_hiring_team(organization_id, body.hiringTeamId)
     if team is None:
@@ -1596,6 +1641,8 @@ async def reshuffle_interview_assignment(
     event = await repository.get_stage_event_with_participants(organization_id, event_id)
     if event is None or event.applicationId != application_id:
         raise HTTPException(status_code=404, detail="Interview event not found")
+    if event.stage is not None and event.stage.completedAt is not None:
+        raise HTTPException(status_code=409, detail="Cannot reshuffle in a completed stage")
 
     if body.newInterviewerMemberId is not None:
         # Manual reshuffle
@@ -1681,6 +1728,75 @@ async def reshuffle_interview_assignment(
     )
 
 
+async def move_interview_assignment(
+    db: AsyncSession,
+    organization_id: str,
+    organization_name: str,
+    actor_member_id: str,
+    application_id: str,
+    event_id: str,
+    body: InterviewMoveRequest,
+) -> InterviewMoveResponse:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_with_participants(organization_id, event_id)
+    if event is None or event.applicationId != application_id:
+        raise HTTPException(status_code=404, detail="Interview event not found")
+    if event.stage is not None and event.stage.completedAt is not None:
+        raise HTTPException(status_code=409, detail="Cannot move assignments in a completed stage")
+
+    new_interviewer = await repository.get_member(organization_id, body.newInterviewerMemberId)
+    if new_interviewer is None:
+        raise HTTPException(status_code=400, detail="New interviewer not found")
+    if new_interviewer.user is None or not new_interviewer.user.email:
+        raise HTTPException(status_code=400, detail="New interviewer email is missing")
+
+    # Find current primary interviewer and remove them
+    old_primary = None
+    for p in (event.participants or []):
+        if p.role == "INTERVIEWER" or p.role is None:
+            old_primary = p
+            break
+
+    if old_primary is not None:
+        await db.delete(old_primary)
+        await db.flush()
+
+    # Add new primary interviewer with PENDING_ACCEPTANCE
+    new_participant = StageEventParticipant(
+        eventId=event.id,
+        memberId=new_interviewer.id,
+        role="INTERVIEWER",
+        isBackup=False,
+        approvalStatus="PENDING_ACCEPTANCE",
+    )
+    await repository.add_stage_event_participant(new_participant)
+
+    candidate_name = _candidate_display_name(event.application)
+    interviewer_name = new_interviewer.user.name or new_interviewer.user.email
+
+    # Send approval request email to the new interviewer (not the candidate yet)
+    email_service = ResendEmailService()
+    starts_at_text = _meeting_time_text(event.scheduledStartAt) if event.scheduledStartAt is not None else "To be scheduled after you accept"
+    await email_service.send_stage_interview_assignment_to_interviewer(
+        to_email=new_interviewer.user.email,
+        interviewer_name=interviewer_name,
+        candidate_name=candidate_name,
+        candidate_email=event.application.candidate.email,
+        stage_name=event.stage.name,
+        organization_name=organization_name,
+        starts_at_text=starts_at_text,
+    )
+
+    db.add(event)
+    await db.commit()
+
+    return InterviewMoveResponse(
+        eventId=event.id,
+        newInterviewerMemberId=new_interviewer.id,
+        status="PENDING_ACCEPTANCE",
+    )
+
+
 async def accept_interview(
     db: AsyncSession,
     organization_id: str,
@@ -1763,6 +1879,24 @@ async def accept_interview(
         participant.approvalStatus = "ACCEPTED"
         db.add(participant)
         await db.commit()
+
+    # Send reassignment email to candidate if the interviewer accepted with a time
+    if participant.approvalStatus == "SCHEDULED" and event.scheduledStartAt is not None:
+        candidate = event.application.candidate
+        candidate_email = candidate.email
+        candidate_name = _candidate_display_name(event.application)
+        interviewer_name = None
+        if participant.member is not None and participant.member.user is not None:
+            interviewer_name = participant.member.user.name or participant.member.user.email
+        if candidate_email and interviewer_name:
+            email_service = ResendEmailService()
+            await email_service.send_stage_interview_assignment_to_candidate(
+                to_email=candidate_email,
+                candidate_name=candidate_name,
+                interviewer_name=interviewer_name,
+                organization_name=organization_name,
+                starts_at_text=_meeting_time_text(event.scheduledStartAt),
+            )
 
     return InterviewAcceptResponse(
         eventId=event_id,
