@@ -85,6 +85,53 @@ class GoogleCalendarService:
             ends_at=end,
         )
 
+    async def update_meet_event(
+        self,
+        user_id: str,
+        event_id: str,
+        summary: str,
+        description: str,
+        starts_at: datetime,
+        ends_at: datetime,
+    ) -> CreatedCalendarMeeting:
+        access_token = await self._get_access_token(user_id)
+        start = self._normalize_datetime(starts_at)
+        end = self._normalize_datetime(ends_at)
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.patch(
+                f"{CALENDAR_EVENTS_URL}/{event_id}",
+                headers=self._auth_headers(access_token),
+                params={
+                    "sendUpdates": "none",
+                },
+                json={
+                    "summary": summary,
+                    "description": description,
+                    "start": {"dateTime": start.isoformat()},
+                    "end": {"dateTime": end.isoformat()},
+                },
+            )
+
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=self._google_error_message(response, "Google Calendar event update failed"),
+            )
+
+        payload = response.json()
+        meeting_url = self._meeting_url(payload)
+        if meeting_url is None:
+            raise HTTPException(status_code=502, detail="Google Calendar did not return a Meet link")
+
+        return CreatedCalendarMeeting(
+            event_id=str(payload["id"]),
+            html_link=str(payload["htmlLink"]) if payload.get("htmlLink") else None,
+            meeting_url=meeting_url,
+            starts_at=start,
+            ends_at=end,
+        )
+
     async def _get_access_token(self, user_id: str) -> str:
         account = await self._get_google_account(user_id)
         if account is None:

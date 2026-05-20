@@ -17,8 +17,9 @@ class HiringTeamRepository:
         self,
         organization_id: str,
         job_posting_id: str,
+        stage_id: str | None = None,
     ) -> list[HiringTeam]:
-        result = await self.db.execute(
+        query = (
             select(HiringTeam)
             .options(joinedload(HiringTeam.members).joinedload(HiringTeamMember.member).joinedload(Member.user))
             .where(
@@ -26,8 +27,11 @@ class HiringTeamRepository:
                 HiringTeam.jobPostingId == job_posting_id,
                 HiringTeam.isActive.is_(True),
             )
-            .order_by(HiringTeam.createdAt.desc())
         )
+        if stage_id is not None:
+            query = query.where(HiringTeam.stageId == stage_id)
+        query = query.order_by(HiringTeam.createdAt.desc())
+        result = await self.db.execute(query)
         return list(result.unique().scalars().all())
 
     async def get_team(
@@ -50,8 +54,9 @@ class HiringTeamRepository:
         organization_id: str,
         job_posting_id: str,
         name: str,
+        stage_id: str | None = None,
     ) -> HiringTeam | None:
-        result = await self.db.execute(
+        query = (
             select(HiringTeam)
             .options(joinedload(HiringTeam.members).joinedload(HiringTeamMember.member).joinedload(Member.user))
             .where(
@@ -61,6 +66,9 @@ class HiringTeamRepository:
                 HiringTeam.isActive.is_(True),
             )
         )
+        if stage_id is not None:
+            query = query.where(HiringTeam.stageId == stage_id)
+        result = await self.db.execute(query)
         return result.unique().scalar_one_or_none()
 
     async def add_team(self, team: HiringTeam) -> HiringTeam:

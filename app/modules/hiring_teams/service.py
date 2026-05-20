@@ -38,6 +38,7 @@ def _serialize_team(team: HiringTeam) -> HiringTeamRead:
     return HiringTeamRead(
         id=team.id,
         jobPostingId=team.jobPostingId,
+        stageId=team.stageId,
         name=team.name,
         description=team.description,
         isActive=team.isActive,
@@ -52,9 +53,10 @@ async def list_teams_for_job(
     db: AsyncSession,
     organization_id: str,
     job_posting_id: str,
+    stage_id: str | None = None,
 ) -> HiringTeamListResponse:
     repository = HiringTeamRepository(db)
-    teams = await repository.list_teams_for_job(organization_id, job_posting_id)
+    teams = await repository.list_teams_for_job(organization_id, job_posting_id, stage_id=stage_id)
     return HiringTeamListResponse(
         items=[_serialize_team(team) for team in teams],
         total=len(teams),
@@ -100,22 +102,35 @@ async def create_team(
         organization_id,
         body.jobPostingId,
         normalized_name,
+        stage_id=body.stageId,
     )
     if existing_team is not None:
         existing_member_ids = sorted(item.memberId for item in (existing_team.members or []))
         requested_member_ids = sorted(item.memberId for item in body.members)
         if existing_member_ids == requested_member_ids:
             return _serialize_team(existing_team)
-        raise HTTPException(
-            status_code=409,
-            detail="A hiring team with this name already exists for the job posting. Rename it or reuse the saved team.",
-        )
+        # Team exists with different members — replace them
+        for item in body.members:
+            if item.memberId not in existing_member_ids:
+                team_member = HiringTeamMember(
+                    hiringTeamId=existing_team.id,
+                    memberId=item.memberId,
+                    role=item.role,
+                )
+                await repository.add_team_member(team_member)
+        for item in (existing_team.members or []):
+            if item.memberId not in requested_member_ids:
+                await repository.remove_team_member(organization_id, existing_team.id, item.memberId)
+        await db.commit()
+        refreshed = await repository.get_team(organization_id, existing_team.id)
+        return _serialize_team(refreshed)
 
     team = HiringTeam(
         organizationId=organization_id,
         jobPostingId=body.jobPostingId,
         name=normalized_name,
         description=body.description.strip() if body.description else None,
+        stageId=body.stageId,
         isActive=True,
     )
     try:
@@ -130,12 +145,30 @@ async def create_team(
             await repository.add_team_member(team_member)
 
         await db.commit()
-    except IntegrityError as exc:
+    except IntegrityError:
         await db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail="A hiring team with this name already exists for the job posting. Rename it or reuse the saved team.",
-        ) from exc
+        # Race condition: another create won. Find it and replace members.
+        conflict = await repository.get_team_by_job_and_name(
+            organization_id,
+            body.jobPostingId,
+            normalized_name,
+            stage_id=body.stageId,
+        )
+        if conflict is not None:
+            for item in body.members:
+                if item.memberId not in {m.memberId for m in (conflict.members or [])}:
+                    await repository.add_team_member(HiringTeamMember(
+                        hiringTeamId=conflict.id,
+                        memberId=item.memberId,
+                        role=item.role,
+                    ))
+            for item in (conflict.members or []):
+                if item.memberId not in {m.memberId for m in body.members}:
+                    await repository.remove_team_member(organization_id, conflict.id, item.memberId)
+            await db.commit()
+            refreshed = await repository.get_team(organization_id, conflict.id)
+            return _serialize_team(refreshed)
+        raise HTTPException(status_code=409, detail="Conflict creating hiring team")
     refreshed = await repository.get_team(organization_id, team.id)
     return _serialize_team(refreshed)
 

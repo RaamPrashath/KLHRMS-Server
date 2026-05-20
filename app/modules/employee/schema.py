@@ -72,3 +72,20 @@ class EmployeeListFilters(BaseModel):
     attendance_status: Optional[str] = None  # PRESENT | ABSENT | WORK_FROM_HOME | HALF_DAY
     page: int = 1
     page_size: int = 25
+
+
+# ─── Employee Delete ────────────────────────────────────────────────────────────
+
+
+class EmployeeDeletePreview(BaseModel):
+    member_id: str
+    name: str
+    email: str
+    interview_count: int
+    team_membership_count: int
+
+
+class EmployeeDeleteResponse(BaseModel):
+    member_id: str
+    unassigned_interviews: int
+    removed_team_memberships: int

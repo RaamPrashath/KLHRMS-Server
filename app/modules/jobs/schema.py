@@ -391,6 +391,7 @@ class StageEvaluationCategoryInput(BaseModel):
     id: str | None = None
     name: str = Field(min_length=1, max_length=120)
     type: Literal["NUMERIC", "TEXT", "CHECKBOX"] = "NUMERIC"
+    maxScore: int | None = Field(default=None, ge=1)
     order: int | None = Field(default=None, ge=1)
 
     @field_validator("name")
@@ -407,6 +408,7 @@ class StageEvaluationCategoryRead(BaseModel):
     stageId: str
     name: str
     type: str
+    maxScore: int | None = None
     order: int
 
 
@@ -414,6 +416,7 @@ class CreatePipelineStageRequest(BaseModel):
     name: str = Field(min_length=1, max_length=50)
     stageType: PipelineStageType = "DEFAULT"
     evaluationEnabled: bool = False
+    sheetEnabled: bool = False
     evaluationType: Literal["NUMERIC", "TEXT", "CHECKBOX"] | None = None
     evaluationIncludeTotal: bool = False
     evaluationIncludeAnalysis: bool = False
@@ -456,6 +459,7 @@ class PipelineStageRead(BaseModel):
     meetingEnabled: bool
     offerLetterEnabled: bool
     evaluationEnabled: bool
+    sheetEnabled: bool = False
     evaluationType: str | None
     evaluationIncludeTotal: bool
     evaluationIncludeAnalysis: bool

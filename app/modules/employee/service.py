@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Optional
 
+from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -20,11 +21,14 @@ from app.models.role import Role
 from app.models.user import User
 from app.modules.employee.schema import (
     AttendanceTodayResponse,
+    EmployeeDeletePreview,
+    EmployeeDeleteResponse,
     EmployeeListFilters,
     EmployeeListItem,
     EmployeeListResponse,
     RoleBriefResponse,
 )
+from app.models.recruitment import StageEventParticipant, HiringTeamMember, StageEvent, EventStatus
 
 
 def _attendance_status_for_record(record: AttendanceRecord | None) -> AttendanceTodayResponse:
@@ -189,3 +193,99 @@ async def list_roles_for_org(organization_id: str, db: AsyncSession) -> list[dic
     rows = result.scalars().all()
 
     return [{"id": r.id, "name": r.name} for r in rows]
+
+
+async def preview_employee_delete(
+    organization_id: str,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDeletePreview:
+    """Preview what will happen when an employee is deleted."""
+    from sqlalchemy import func, select
+
+    member = await db.get(Member, member_id)
+    if member is None or member.organizationId != organization_id:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    user_name = member.user.name or member.user.email if member.user else "Unknown"
+
+    # Count interview participants
+    interview_count_result = await db.execute(
+        select(func.count(StageEventParticipant.id)).where(
+            StageEventParticipant.memberId == member_id,
+        )
+    )
+    interview_count: int = interview_count_result.scalar_one()
+
+    # Count team memberships
+    team_count_result = await db.execute(
+        select(func.count(HiringTeamMember.id)).where(
+            HiringTeamMember.memberId == member_id,
+        )
+    )
+    team_count: int = team_count_result.scalar_one()
+
+    return EmployeeDeletePreview(
+        member_id=member_id,
+        name=user_name,
+        email=member.user.email if member.user else "",
+        interview_count=interview_count,
+        team_membership_count=team_count,
+    )
+
+
+async def delete_employee(
+    organization_id: str,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDeleteResponse:
+    """Delete an employee, unassigning all their interviews and removing team memberships."""
+    from sqlalchemy import select
+
+    member = await db.get(Member, member_id)
+    if member is None or member.organizationId != organization_id:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    # Find all events where this member is a primary interviewer and unassign them
+    participant_result = await db.execute(
+        select(StageEventParticipant).where(
+            StageEventParticipant.memberId == member_id,
+        )
+    )
+    participants: list[StageEventParticipant] = list(participant_result.scalars().all())
+    interview_count = len(participants)
+
+    # For primary interviewers, set their events to UNASSIGNED
+    for participant in participants:
+        if not participant.isBackup and participant.role in ("INTERVIEWER", None):
+            event_result = await db.execute(
+                select(StageEvent).where(StageEvent.id == participant.eventId)
+            )
+            event = event_result.scalar_one_or_none()
+            if event is not None:
+                event.status = EventStatus.UNASSIGNED
+                event.scheduledStartAt = None
+                event.scheduledEndAt = None
+                db.add(event)
+        await db.delete(participant)
+
+    # Count and delete team memberships
+    team_result = await db.execute(
+        select(HiringTeamMember).where(
+            HiringTeamMember.memberId == member_id,
+        )
+    )
+    team_memberships: list[HiringTeamMember] = list(team_result.scalars().all())
+    team_count = len(team_memberships)
+    for tm in team_memberships:
+        await db.delete(tm)
+
+    # Delete the member (will cascade to other records)
+    await db.delete(member)
+    await db.commit()
+
+    return EmployeeDeleteResponse(
+        member_id=member_id,
+        unassigned_interviews=interview_count,
+        removed_team_memberships=team_count,
+    )

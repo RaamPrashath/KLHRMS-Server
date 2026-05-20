@@ -17,8 +17,9 @@ async def handle_list_teams(
     ctx: MemberContext,
     db: AsyncSession,
     job_posting_id: str,
+    stage_id: str | None = None,
 ) -> HiringTeamListResponse:
-    return await service.list_teams_for_job(db, ctx.organization.id, job_posting_id)
+    return await service.list_teams_for_job(db, ctx.organization.id, job_posting_id, stage_id=stage_id)
 
 
 async def handle_get_team(

@@ -15,6 +15,10 @@ from app.modules.candidates.schema import (
     InterviewMeetingCreateRequest,
     InterviewMeetingCompleteRequest,
     InterviewMeetingRead,
+    InterviewMeetingStartRequest,
+    InterviewMeetingUpdateRequest,
+    InterviewMoveRequest,
+    InterviewMoveResponse,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
     PipelineApplicationRead,
@@ -116,6 +120,22 @@ async def handle_extend_stage_due_date(
     stage_id: str,
 ) -> PipelineStageRead:
     return await service.extend_stage_due_date(db, ctx.organization.id, stage_id)
+
+
+async def handle_complete_stage(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_id: str,
+) -> PipelineStageRead:
+    return await service.complete_stage(db, ctx.organization.id, stage_id)
+
+
+async def handle_reopen_stage(
+    ctx: MemberContext,
+    db: AsyncSession,
+    stage_id: str,
+) -> PipelineStageRead:
+    return await service.reopen_stage(db, ctx.organization.id, stage_id)
 
 
 async def handle_delete_stage(
@@ -225,6 +245,24 @@ async def handle_assign_stage_interviews(
     )
 
 
+async def handle_move_interview_assignment(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    event_id: str,
+    body: InterviewMoveRequest,
+) -> InterviewMoveResponse:
+    return await service.move_interview_assignment(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        application_id,
+        event_id,
+        body,
+    )
+
+
 async def handle_create_interview_meeting(
     ctx: MemberContext,
     db: AsyncSession,
@@ -256,6 +294,40 @@ async def handle_complete_interview_meeting(
         ctx.member.id,
         ctx.member.userId,
         body,
+    )
+
+
+async def handle_update_interview_meeting(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    event_id: str,
+    body: InterviewMeetingUpdateRequest,
+) -> InterviewMeetingRead:
+    return await service.update_interview_meeting(
+        db,
+        ctx.organization.id,
+        ctx.member.id,
+        ctx.member.userId,
+        application_id,
+        event_id,
+        body,
+    )
+
+
+async def handle_start_interview_meeting(
+    ctx: MemberContext,
+    db: AsyncSession,
+    application_id: str,
+    event_id: str,
+) -> InterviewMeetingRead:
+    return await service.start_interview_meeting(
+        db,
+        ctx.organization.id,
+        ctx.member.id,
+        ctx.member.userId,
+        application_id,
+        event_id,
     )
 
 
