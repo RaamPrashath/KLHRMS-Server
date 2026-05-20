@@ -45,7 +45,7 @@ async def list_departments(
 
 @router.get("/meta", response_model=DepartmentMetaResponse)
 async def get_department_meta(
-    access: Annotated[MemberContext, Depends(require_permission("departments", "view"))],
+    access: Annotated[MemberContext, Depends(require_permission("departments", "view", allow_self=True))],
     db: DbSession,
 ) -> DepartmentMetaResponse:
     return await handle_get_meta(access, db)

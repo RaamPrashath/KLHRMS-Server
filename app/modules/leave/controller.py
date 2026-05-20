@@ -18,6 +18,7 @@ from app.modules.leave.schema import (
     LeaveBalanceFilters,
     LeaveBalanceListResponse,
     LeaveBalanceResponse,
+    LeaveBalanceUpsertRequest,
     LeaveCalendarFilters,
     LeaveCalendarResponse,
     LeaveRequestCreateRequest,
@@ -324,6 +325,24 @@ async def handle_list_leave_balances(
         items=[_leave_balance_response(item) for item in items],
         total=total,
     )
+
+
+async def handle_upsert_leave_balance(
+    access: LeaveAccessContext,
+    db: AsyncSession,
+    body: LeaveBalanceUpsertRequest,
+) -> LeaveBalanceResponse:
+    item = await service.upsert_leave_balance(
+        db,
+        access.organization.id,
+        member_id=body.member_id,
+        leave_type_id=body.leave_type_id,
+        year=body.year,
+        allocated=body.allocated,
+        carried_forward=body.carried_forward,
+        lapsed=body.lapsed,
+    )
+    return _leave_balance_response(item)
 
 
 async def handle_get_leave_calendar(

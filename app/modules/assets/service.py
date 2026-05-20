@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import hashlib
+import secrets
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -72,6 +73,18 @@ from app.shared.deps.organization_member import MemberContext
 
 def _to_title(value: str) -> str:
     return value.lower().replace("_", " ").title()
+
+
+async def _generate_ticket_id(db: AsyncSession) -> str:
+    for _ in range(10):
+        ticket_id = f"#{secrets.randbelow(1_000_000):06d}"
+        result = await db.execute(
+            select(AssetMaintenanceLog.id).where(AssetMaintenanceLog.ticketId == ticket_id)
+        )
+        if result.scalar_one_or_none() is None:
+            return ticket_id
+
+    raise HTTPException(status_code=500, detail="Unable to generate a unique ticket ID")
 
 
 def _csv_to_pdf_bytes(report_type: str, csv_text: str) -> bytes:
@@ -233,9 +246,31 @@ async def _active_provision_map(db: AsyncSession, organization_id: str) -> dict[
     return {provision.assetId: provision for provision in provisions}
 
 
-def _asset_summary(asset: Asset, active_provision: AssetAssignment | None) -> AssetSummary:
+async def _open_maintenance_counts(db: AsyncSession, asset_ids: list[str]) -> dict[str, int]:
+    if not asset_ids:
+        return {}
+
+    result = await db.execute(
+        select(AssetMaintenanceLog.assetId, func.count(AssetMaintenanceLog.id))
+        .where(
+            AssetMaintenanceLog.assetId.in_(asset_ids),
+            AssetMaintenanceLog.status.in_(("OPEN", "IN_PROGRESS")),
+        )
+        .group_by(AssetMaintenanceLog.assetId)
+    )
+    return {asset_id: count for asset_id, count in result.all()}
+
+
+def _asset_summary(
+    asset: Asset,
+    active_provision: AssetAssignment | None,
+    open_maintenance_count: int | None = None,
+) -> AssetSummary:
     holder = active_provision.member.user if active_provision and active_provision.member and active_provision.member.user else None
-    open_maintenance_count = sum(1 for log in asset.maintenanceLogs if log.status in {"OPEN", "IN_PROGRESS"})
+    if open_maintenance_count is None:
+        open_maintenance_count = sum(
+            1 for log in asset.maintenanceLogs if log.status in {"OPEN", "IN_PROGRESS"}
+        )
 
     custom_fields = [
         CustomFieldValueResponse(
@@ -302,6 +337,7 @@ def _maintenance_summary(log: AssetMaintenanceLog) -> AssetMaintenanceSummary:
     actor = log.loggedByMember.user if log.loggedByMember and log.loggedByMember.user else None
     return AssetMaintenanceSummary(
         id=log.id,
+        ticketId=log.ticketId,
         assetUnitId=log.assetUnitId,
         maintenanceType=log.maintenanceType,
         issueDescription=log.issueDescription,
@@ -692,7 +728,6 @@ async def list_assets(db: AsyncSession, ctx: MemberContext, filters: AssetFilter
         .limit(filters.page_size)
         .options(
             joinedload(Asset.provisions),
-            joinedload(Asset.maintenanceLogs),
             joinedload(Asset.units),
             joinedload(Asset.customFieldValues).joinedload(AssetCustomFieldValue.fieldDefinition),
         )
@@ -700,7 +735,11 @@ async def list_assets(db: AsyncSession, ctx: MemberContext, filters: AssetFilter
     assets = rows.unique().scalars().all()
 
     active_map = await _active_provision_map(db, ctx.organization.id)
-    items = [_asset_summary(asset, active_map.get(asset.id)) for asset in assets]
+    maintenance_counts = await _open_maintenance_counts(db, [asset.id for asset in assets])
+    items = [
+        _asset_summary(asset, active_map.get(asset.id), maintenance_counts.get(asset.id, 0))
+        for asset in assets
+    ]
 
     return AssetListResponse(
         items=items,
@@ -1181,6 +1220,7 @@ async def create_maintenance_record(
 
     db.add(
         AssetMaintenanceLog(
+            ticketId=await _generate_ticket_id(db),
             assetId=asset.id,
             assetUnitId=payload.assetUnitId,
             loggedByMemberId=ctx.member.id,
@@ -1440,6 +1480,7 @@ async def export_asset_report(
         writer = csv.writer(buffer)
         writer.writerow(
             [
+                "Ticket ID",
                 "Asset Code",
                 "Asset Name",
                 "Maintenance Type",
@@ -1453,6 +1494,7 @@ async def export_asset_report(
         for row in rows:
             writer.writerow(
                 [
+                    row.ticketId,
                     row.asset.assetCode if row.asset else "",
                     row.asset.name if row.asset else "",
                     row.maintenanceType,
@@ -1635,6 +1677,7 @@ async def get_dashboard(db: AsyncSession, ctx: MemberContext) -> AssetDashboardR
     recent_tickets = [
         TicketAlertItem(
             id=t.id,
+            ticketId=t.ticketId,
             assetName=t.asset.name if t.asset else "",
             maintenanceType=t.maintenanceType,
             status=t.status,
@@ -1676,6 +1719,7 @@ async def list_my_tickets(db: AsyncSession, ctx: MemberContext) -> list[MyTicket
     return [
         MyTicketResponse(
             id=log.id,
+            ticketId=log.ticketId,
             assetId=log.assetId,
             assetName=log.asset.name if log.asset else "",
             assetCode=log.asset.assetCode if log.asset else "",
@@ -1708,6 +1752,7 @@ async def list_tickets(db: AsyncSession, ctx: MemberContext) -> list[Maintenance
     return [
         MaintenanceTicketResponse(
             id=log.id,
+            ticketId=log.ticketId,
             assetId=log.assetId,
             assetName=log.asset.name if log.asset else "",
             assetCode=log.asset.assetCode if log.asset else "",

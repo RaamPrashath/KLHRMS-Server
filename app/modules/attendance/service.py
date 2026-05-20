@@ -36,12 +36,12 @@ from app.models.work_hour_policy import WorkHourPolicy
 # ---------------------------------------------------------------------------
 
 MAX_SESSION_HOURS: float = 16.0
+BUSINESS_TIMEZONE = timezone(timedelta(hours=5, minutes=30))
 
 # Defaults used when no WorkHourPolicy row exists for the organization.
 _DEFAULT_STANDARD_HOURS: float = 8.0
 _DEFAULT_OVERTIME_THRESHOLD: float = 8.0
 _DEFAULT_HALF_DAY_MAX_HOURS: float = 4.0
-_REMOTE_PLAN_LOCATIONS: frozenset[str] = frozenset({"WFH"})
 _NON_WORKING_PLAN_LOCATIONS: frozenset[str] = frozenset({"HOLIDAY"})
 
 
@@ -117,6 +117,23 @@ def _compute_hours(clock_in: datetime, clock_out: datetime) -> float:
 def _compute_overtime(total_hours: float, threshold: float) -> float:
     """Return overtime hours (0 if under threshold)."""
     return round(max(0.0, total_hours - threshold), 4)
+
+
+def _normalize_attendance_datetime(value: datetime) -> datetime:
+    """
+    Return a timezone-aware datetime.
+
+    Some attendance rows can come back from the DB as naive local business time.
+    Treating those as UTC makes clock-in appear several hours in the future,
+    which freezes the timer and makes clock-out fail.
+    """
+    if value.tzinfo is not None:
+        return value
+
+    as_utc = value.replace(tzinfo=timezone.utc)
+    if as_utc > datetime.now(tz=timezone.utc) + timedelta(minutes=1):
+        return value.replace(tzinfo=BUSINESS_TIMEZONE)
+    return as_utc
 
 
 def _to_radians(value: float) -> float:
@@ -202,16 +219,36 @@ async def _get_weekly_plan_location_for_day(
     return result.scalar_one_or_none()
 
 
-def _plan_matches_actual_location(plan_location: str | None, actual_location: str) -> bool:
-    if plan_location is None:
-        return True
-    if plan_location == "OFFICE":
-        return actual_location == "OFFICE"
-    if plan_location in _REMOTE_PLAN_LOCATIONS:
-        return actual_location == "REMOTE"
-    if plan_location in _NON_WORKING_PLAN_LOCATIONS:
-        return False
-    return False
+def _actual_location_to_plan_value(actual_location: str) -> str:
+    return "WFH" if actual_location == "REMOTE" else "OFFICE"
+
+
+async def _sync_weekly_plan_location_for_clock_in(
+    db: AsyncSession,
+    organization_id: str,
+    user_id: str,
+    day: date,
+    actual_location: str,
+    commit: bool = True,
+) -> None:
+    actual_plan_value = _actual_location_to_plan_value(actual_location)
+    wp_result = await db.execute(
+        select(WeeklyPlan).where(
+            WeeklyPlan.organization_id == uuid.UUID(organization_id),
+            WeeklyPlan.user_id == user_id,
+            WeeklyPlan.date == day,
+            WeeklyPlan.deleted_at.is_(None),
+        )
+    )
+    wp_entry: WeeklyPlan | None = wp_result.scalar_one_or_none()
+    if wp_entry is None or wp_entry.work_location == actual_plan_value:
+        return
+
+    wp_entry.work_location = actual_plan_value
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
 
 
 async def _check_day_has_approved_leave(
@@ -264,14 +301,11 @@ def _split_into_day_segments(clock_in: datetime, clock_out: datetime) -> list[Da
     Split a clock session that may span multiple calendar days into
     per-day DaySegment objects.
 
-    Each segment is bounded by midnight boundaries in UTC.
+    Each segment is bounded by midnight boundaries in the business timezone.
     The 16-hour cap is applied to the total session before splitting.
     """
-    # Ensure both datetimes are timezone-aware (UTC).
-    if clock_in.tzinfo is None:
-        clock_in = clock_in.replace(tzinfo=timezone.utc)
-    if clock_out.tzinfo is None:
-        clock_out = clock_out.replace(tzinfo=timezone.utc)
+    clock_in = _normalize_attendance_datetime(clock_in).astimezone(BUSINESS_TIMEZONE)
+    clock_out = _normalize_attendance_datetime(clock_out).astimezone(BUSINESS_TIMEZONE)
 
     # Apply 16-hour cap to the full session.
     clock_out = _cap_clock_out(clock_in, clock_out)
@@ -281,12 +315,12 @@ def _split_into_day_segments(clock_in: datetime, clock_out: datetime) -> list[Da
 
     while True:
         current_day = current_start.date()
-        # Midnight at the end of the current calendar day (UTC).
+        # Midnight at the end of the current business day.
         next_midnight = datetime(
             current_day.year,
             current_day.month,
             current_day.day,
-            tzinfo=timezone.utc,
+            tzinfo=BUSINESS_TIMEZONE,
         ) + timedelta(days=1)
 
         if clock_out <= next_midnight:
@@ -462,6 +496,7 @@ async def _upsert_day_row(
     project_id: str | None = None,
     project_task_id: str | None = None,
     description: str | None = None,
+    commit: bool = True,
 ) -> AttendanceRecord:
     """
     Create or replace the attendance row for (employeeId, date).
@@ -506,7 +541,10 @@ async def _upsert_day_row(
         db.add(record)
 
     try:
-        await db.commit()
+        if commit:
+            await db.commit()
+        else:
+            await db.flush()
         await db.refresh(record)
     except IntegrityError:
         await db.rollback()
@@ -557,8 +595,12 @@ async def clock_in(
             detail="An active clock-in session already exists for this member",
         )
 
-    now = clock_in_time or datetime.now(tz=timezone.utc)
-    today = now.date()
+    now = (
+        _normalize_attendance_datetime(clock_in_time)
+        if clock_in_time is not None
+        else datetime.now(tz=BUSINESS_TIMEZONE)
+    )
+    today = now.astimezone(BUSINESS_TIMEZONE).date()
     validated_project_id, validated_project_task_id = await _validate_attendance_project_selection(
         db=db,
         organization_id=organization_id,
@@ -581,15 +623,10 @@ async def clock_in(
         user_id=target_member.userId,
         day=today,
     )
-    if not _plan_matches_actual_location(planned_location, validation_result.actual_location):
-        planned_label = "remote" if planned_location in _REMOTE_PLAN_LOCATIONS else "office"
-        actual_label = "remote" if validation_result.actual_location == "REMOTE" else "office"
+    if planned_location in _NON_WORKING_PLAN_LOCATIONS:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Today's weekly plan is set to {planned_label}, but your actual clock-in "
-                f"location is {actual_label}. Update the plan or choose the matching location."
-            ),
+            detail="Today's weekly plan blocks clock-in for this day.",
         )
 
     record = await _upsert_day_row(
@@ -606,13 +643,13 @@ async def clock_in(
         overtime_hours=None,
         status="PRESENT",
         entered_by_manager_id=None,
+        commit=False,
     )
 
     # ── If today was a leave day, restore quota + update plan ───────────
     if await _check_day_has_approved_leave(db, organization_id, target_member_id, today):
         from app.models.leave import LeaveBalance as _LeaveBalance
         from app.models.leave import LeaveRequest as _LeaveRequest
-        from app.models.weekly_plan import WeeklyPlan as _WeeklyPlan
         from app.shared.utils.enums import LeaveRequestStatus as _LeaveRequestStatus
 
         # Fetch approved leave requests covering today
@@ -649,22 +686,17 @@ async def clock_in(
                 balance.used = max(0.0, balance.used - 1.0)
                 balance.remaining = balance.allocated + balance.carriedForward - balance.used - balance.lapsed
 
-        # Update weekly plan from LEAVE to actual clock-in location
-        actual_plan_value = "WFH" if validation_result.actual_location == "REMOTE" else "OFFICE"
-        wp_result = await db.execute(
-            select(_WeeklyPlan).where(
-                _WeeklyPlan.organization_id == uuid.UUID(organization_id),
-                _WeeklyPlan.user_id == target_member.userId,
-                _WeeklyPlan.date == today,
-                _WeeklyPlan.deleted_at.is_(None),
-            )
-        )
-        wp_entry: _WeeklyPlan | None = wp_result.scalar_one_or_none()
-        if wp_entry is not None and wp_entry.work_location == "LEAVE":
-            wp_entry.work_location = actual_plan_value
+    await _sync_weekly_plan_location_for_clock_in(
+        db=db,
+        organization_id=organization_id,
+        user_id=target_member.userId,
+        day=today,
+        actual_location=validation_result.actual_location,
+        commit=False,
+    )
 
-        await db.commit()
-        await db.refresh(record)
+    await db.commit()
+    await db.refresh(record)
 
     return record
 
@@ -705,12 +737,13 @@ async def clock_out(
             detail="No active clock-in session found for this member",
         )
 
-    now = clock_out_time or datetime.now(tz=timezone.utc)
+    now = (
+        _normalize_attendance_datetime(clock_out_time)
+        if clock_out_time is not None
+        else datetime.now(tz=BUSINESS_TIMEZONE)
+    )
 
-    # Ensure clock_in is timezone-aware.
-    ci = active.clockIn
-    if ci.tzinfo is None:
-        ci = ci.replace(tzinfo=timezone.utc)
+    ci = _normalize_attendance_datetime(active.clockIn)
 
     if now <= ci:
         raise HTTPException(
@@ -743,6 +776,7 @@ async def clock_out(
             overtime_hours=overtime,
             status=status,
             entered_by_manager_id=None,
+            commit=False,
         )
         await _insert_clock_session_work_log_if_missing(
             db=db,
@@ -798,9 +832,8 @@ async def upsert_manual_day(
     status = "ABSENT"
 
     if clock_in_time is not None and clock_out_time is not None:
-        # Ensure timezone-aware.
-        ci = clock_in_time if clock_in_time.tzinfo else clock_in_time.replace(tzinfo=timezone.utc)
-        co = clock_out_time if clock_out_time.tzinfo else clock_out_time.replace(tzinfo=timezone.utc)
+        ci = _normalize_attendance_datetime(clock_in_time)
+        co = _normalize_attendance_datetime(clock_out_time)
 
         if co <= ci:
             raise HTTPException(
@@ -1029,7 +1062,7 @@ async def auto_stop_open_sessions(
 
     Returns the list of all written records.
     """
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=BUSINESS_TIMEZONE)
     cutoff = now - timedelta(hours=MAX_SESSION_HOURS)
 
     result = await db.execute(
@@ -1044,9 +1077,7 @@ async def auto_stop_open_sessions(
 
     written: list[AttendanceRecord] = []
     for session in open_sessions:
-        ci = session.clockIn
-        if ci.tzinfo is None:
-            ci = ci.replace(tzinfo=timezone.utc)
+        ci = _normalize_attendance_datetime(session.clockIn)
 
         hard_stop = ci + timedelta(hours=MAX_SESSION_HOURS)
         segments = _split_into_day_segments(ci, hard_stop)
@@ -1102,10 +1133,8 @@ class _DayDerivation:
 
 
 def _normalize_datetime(dt_value: datetime) -> datetime:
-    """Ensure a datetime is timezone-aware (UTC if naive)."""
-    if dt_value.tzinfo is None:
-        return dt_value.replace(tzinfo=timezone.utc)
-    return dt_value
+    """Ensure a datetime is timezone-aware for attendance calculations."""
+    return _normalize_attendance_datetime(dt_value)
 
 
 def _validate_work_log_item(

@@ -445,6 +445,7 @@ class AssetIssueResponse(BaseModel):
 
 class AssetMaintenanceSummary(BaseModel):
     id: str
+    ticketId: str
     assetUnitId: str | None
     maintenanceType: str
     issueDescription: str
@@ -532,6 +533,7 @@ class RecentActivityItem(BaseModel):
 
 class TicketAlertItem(BaseModel):
     id: str
+    ticketId: str
     assetName: str
     maintenanceType: str
     status: str
@@ -555,6 +557,7 @@ class AssetDashboardResponse(BaseModel):
 
 class MyTicketResponse(BaseModel):
     id: str
+    ticketId: str
     assetId: str
     assetName: str
     assetCode: str
@@ -567,6 +570,7 @@ class MyTicketResponse(BaseModel):
 
 class MaintenanceTicketResponse(BaseModel):
     id: str
+    ticketId: str
     assetId: str
     assetName: str
     assetCode: str

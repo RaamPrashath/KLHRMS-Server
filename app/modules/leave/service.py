@@ -143,16 +143,45 @@ async def create_leave_type(
     is_paid: bool,
     color: str | None,
 ) -> LeaveType:
-    await _ensure_leave_type_name_available(db, organization_id, name)
+    normalized_name = name.strip()
+    now = _utcnow()
+    result = await db.execute(
+        select(LeaveType).where(
+            LeaveType.organizationId == organization_id,
+            func.lower(LeaveType.name) == normalized_name.lower(),
+        )
+    )
+    matching_leave_types = list(result.scalars().all())
+    existing_leave_type = next(
+        (leave_type for leave_type in matching_leave_types if leave_type.deletedAt is None),
+        matching_leave_types[0] if matching_leave_types else None,
+    )
+    if existing_leave_type is not None:
+        existing_leave_type.name = normalized_name
+        existing_leave_type.quota = quota
+        existing_leave_type.carryForward = carry_forward
+        existing_leave_type.isPaid = is_paid
+        existing_leave_type.color = color
+        existing_leave_type.deletedAt = None
+        existing_leave_type.updatedAt = now
+        try:
+            await db.commit()
+            await db.refresh(existing_leave_type)
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="A leave type with this name already exists") from exc
+        return existing_leave_type
 
     leave_type = LeaveType(
         id=generate_uuid(),
         organizationId=organization_id,
-        name=name.strip(),
+        name=normalized_name,
         quota=quota,
         carryForward=carry_forward,
         isPaid=is_paid,
         color=color,
+        createdAt=now,
+        updatedAt=now,
     )
     db.add(leave_type)
 
@@ -161,7 +190,7 @@ async def create_leave_type(
         await db.refresh(leave_type)
     except IntegrityError as exc:
         await db.rollback()
-        raise HTTPException(status_code=409, detail="Failed to create leave type") from exc
+        raise HTTPException(status_code=409, detail="A leave type with this name already exists") from exc
     return leave_type
 
 
@@ -179,11 +208,13 @@ async def update_leave_type(
     leave_type = await get_leave_type_or_404(db, organization_id, leave_type_id)
     await _ensure_leave_type_name_available(db, organization_id, name, exclude_id=leave_type_id)
 
+    now = _utcnow()
     leave_type.name = name.strip()
     leave_type.quota = quota
     leave_type.carryForward = carry_forward
     leave_type.isPaid = is_paid
     leave_type.color = color
+    leave_type.updatedAt = now
 
     try:
         await db.commit()
@@ -259,6 +290,7 @@ async def create_holiday(
     is_recurring: bool,
     description: str | None,
 ) -> Holiday:
+    now = _utcnow()
     holiday = Holiday(
         id=generate_uuid(),
         organizationId=organization_id,
@@ -266,6 +298,8 @@ async def create_holiday(
         holidayDate=holiday_date,
         isRecurring=is_recurring,
         description=description,
+        createdAt=now,
+        updatedAt=now,
     )
     db.add(holiday)
     await db.commit()
@@ -288,6 +322,7 @@ async def update_holiday(
     holiday.holidayDate = holiday_date
     holiday.isRecurring = is_recurring
     holiday.description = description
+    holiday.updatedAt = _utcnow()
     await db.commit()
     await db.refresh(holiday)
     return holiday
@@ -295,7 +330,9 @@ async def update_holiday(
 
 async def delete_holiday(db: AsyncSession, organization_id: str, holiday_id: str) -> None:
     holiday = await get_holiday_or_404(db, organization_id, holiday_id)
-    holiday.deletedAt = _utcnow()
+    now = _utcnow()
+    holiday.deletedAt = now
+    holiday.updatedAt = now
     await db.commit()
 
 
@@ -413,6 +450,7 @@ async def _get_or_create_leave_balance(
     if balance is not None:
         return balance
 
+    now = _utcnow()
     balance = LeaveBalance(
         id=generate_uuid(),
         organizationId=organization_id,
@@ -424,6 +462,8 @@ async def _get_or_create_leave_balance(
         remaining=leave_type.quota,
         carriedForward=0,
         lapsed=0,
+        createdAt=now,
+        updatedAt=now,
     )
     db.add(balance)
     await db.flush()
@@ -490,20 +530,21 @@ async def create_leave_request(
                    f"Weekends and holidays are automatically excluded.",
         )
 
-    if leave_type.isPaid:
-        balance = await _get_or_create_leave_balance(
-            db,
-            organization_id,
-            target_member_id,
-            leave_type,
-            start_date.year,
-        )
-        projected_remaining = (
-            balance.allocated + balance.carriedForward - balance.used - balance.lapsed
-        ) - days
-        if projected_remaining < 0:
-            raise HTTPException(status_code=400, detail="Insufficient leave balance")
+    # A request should only reserve eligibility; the actual balance is consumed on approval.
+    balance = await _get_or_create_leave_balance(
+        db,
+        organization_id,
+        target_member_id,
+        leave_type,
+        start_date.year,
+    )
+    projected_remaining = (
+        balance.allocated + balance.carriedForward - balance.used - balance.lapsed
+    ) - days
+    if projected_remaining < 0:
+        raise HTTPException(status_code=400, detail="Insufficient leave balance")
 
+    now = _utcnow()
     leave_request = LeaveRequest(
         id=generate_uuid(),
         organizationId=organization_id,
@@ -516,6 +557,8 @@ async def create_leave_request(
         status=LeaveRequestStatus.PENDING,
         approvedById=None,
         approverComment=None,
+        createdAt=now,
+        updatedAt=now,
     )
     db.add(leave_request)
     await db.commit()
@@ -534,25 +577,28 @@ async def approve_leave_request(
         raise HTTPException(status_code=400, detail="Only pending leave requests can be approved")
 
     leave_type = await get_leave_type_or_404(db, organization_id, leave_request.leaveTypeId)
-    if leave_type.isPaid:
-        balance = await _get_or_create_leave_balance(
-            db,
-            organization_id,
-            leave_request.memberId,
-            leave_type,
-            leave_request.startDate.year,
-        )
-        new_used = balance.used + leave_request.days
-        new_remaining = balance.allocated + balance.carriedForward - new_used - balance.lapsed
-        if new_remaining < 0:
-            raise HTTPException(status_code=400, detail="Approving this request would make the leave balance negative")
-        balance.used = new_used
-        balance.remaining = new_remaining
+    balance = await _get_or_create_leave_balance(
+        db,
+        organization_id,
+        leave_request.memberId,
+        leave_type,
+        leave_request.startDate.year,
+    )
+    new_used = balance.used + leave_request.days
+    new_remaining = balance.allocated + balance.carriedForward - new_used - balance.lapsed
+    if new_remaining < 0:
+        raise HTTPException(status_code=400, detail="Approving this request would make the leave balance negative")
+
+    now = _utcnow()
+    balance.used = new_used
+    balance.remaining = new_remaining
+    balance.updatedAt = now
 
     leave_request.status = LeaveRequestStatus.APPROVED
     leave_request.approvedById = approver_member_id
     leave_request.approverComment = approver_comment
     leave_request.cancelledAt = None
+    leave_request.updatedAt = now
     await db.commit()
     return await get_leave_request_or_404(db, organization_id, leave_request_id)
 
@@ -568,9 +614,11 @@ async def reject_leave_request(
     if leave_request.status != LeaveRequestStatus.PENDING:
         raise HTTPException(status_code=400, detail="Only pending leave requests can be rejected")
 
+    now = _utcnow()
     leave_request.status = LeaveRequestStatus.REJECTED
     leave_request.approvedById = approver_member_id
     leave_request.approverComment = approver_comment
+    leave_request.updatedAt = now
     await db.commit()
     return await get_leave_request_or_404(db, organization_id, leave_request_id)
 
@@ -589,8 +637,10 @@ async def cancel_leave_request(
     if not can_cancel_any and leave_request.memberId != actor_member_id:
         raise HTTPException(status_code=403, detail="You can only cancel your own pending leave requests")
 
+    now = _utcnow()
     leave_request.status = LeaveRequestStatus.CANCELLED
-    leave_request.cancelledAt = _utcnow()
+    leave_request.cancelledAt = now
+    leave_request.updatedAt = now
     await db.commit()
     return await get_leave_request_or_404(db, organization_id, leave_request_id)
 
@@ -705,6 +755,69 @@ async def list_leave_balances(
     ))
 
     return rows, len(rows)
+
+
+async def upsert_leave_balance(
+    db: AsyncSession,
+    organization_id: str,
+    *,
+    member_id: str,
+    leave_type_id: str,
+    year: int,
+    allocated: float,
+    carried_forward: float,
+    lapsed: float,
+) -> LeaveBalance:
+    await resolve_target_member(db, organization_id, member_id)
+    leave_type = await get_leave_type_or_404(db, organization_id, leave_type_id)
+
+    result = await db.execute(
+        select(LeaveBalance).where(
+            LeaveBalance.organizationId == organization_id,
+            LeaveBalance.memberId == member_id,
+            LeaveBalance.leaveTypeId == leave_type.id,
+            LeaveBalance.year == year,
+        )
+    )
+    balance = result.scalar_one_or_none()
+    now = _utcnow()
+    if balance is None:
+        balance = LeaveBalance(
+            id=generate_uuid(),
+            organizationId=organization_id,
+            memberId=member_id,
+            leaveTypeId=leave_type.id,
+            year=year,
+            used=0,
+            createdAt=now,
+            updatedAt=now,
+        )
+        db.add(balance)
+
+    remaining = allocated + carried_forward - balance.used - lapsed
+    if remaining < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Assigned balance cannot be lower than already used leave days",
+        )
+
+    balance.allocated = allocated
+    balance.carriedForward = carried_forward
+    balance.lapsed = lapsed
+    balance.remaining = remaining
+    balance.updatedAt = now
+
+    await db.commit()
+
+    refreshed = await db.execute(
+        select(LeaveBalance)
+        .options(
+            joinedload(LeaveBalance.member).joinedload(Member.user),
+            joinedload(LeaveBalance.leave_type),
+        )
+        .where(LeaveBalance.id == balance.id)
+    )
+    return refreshed.unique().scalar_one()
 
 
 def _resolve_calendar_range(filters: LeaveCalendarFilters) -> tuple[dt.date, dt.date]:

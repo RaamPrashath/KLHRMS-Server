@@ -12,6 +12,7 @@ class AssetMaintenanceLog(Base):
     __tablename__ = "asset_maintenance_log"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    ticketId: Mapped[str] = mapped_column(String(7), nullable=False)
     assetId: Mapped[str] = mapped_column(String(36), ForeignKey("asset.id", ondelete="CASCADE"), nullable=False)
     assetUnitId: Mapped[str | None] = mapped_column(String(36), ForeignKey("asset_unit.id", ondelete="SET NULL"), nullable=True)
     loggedByMemberId: Mapped[str | None] = mapped_column(String(36), ForeignKey("member.id", ondelete="SET NULL"))
@@ -37,6 +38,7 @@ class AssetMaintenanceLog(Base):
     loggedByMember = relationship("Member", foreign_keys=[loggedByMemberId])
 
     __table_args__ = (
+        Index("asset_maintenance_log_ticketId_key", "ticketId", unique=True),
         Index("asset_maintenance_log_assetId_idx", "assetId"),
         Index("asset_maintenance_log_status_idx", "status"),
         Index("asset_maintenance_log_serviceDate_idx", "serviceDate"),
