@@ -24,6 +24,7 @@ from app.modules.leave.controller import (
     handle_reject_leave_request,
     handle_update_holiday,
     handle_update_leave_type,
+    handle_upsert_leave_balance,
 )
 from app.modules.leave.permissions import LeaveAccessContext, require_leave_permission
 from app.modules.leave.schema import (
@@ -34,6 +35,8 @@ from app.modules.leave.schema import (
     HolidayUpdateRequest,
     LeaveBalanceFilters,
     LeaveBalanceListResponse,
+    LeaveBalanceResponse,
+    LeaveBalanceUpsertRequest,
     LeaveCalendarFilters,
     LeaveCalendarResponse,
     LeaveRequestCreateRequest,
@@ -210,6 +213,15 @@ async def list_leave_balances(
 ) -> LeaveBalanceListResponse:
     filters = LeaveBalanceFilters(year=year, member_id=member_id, leave_type_id=leave_type_id)
     return await handle_list_leave_balances(access, db, filters)
+
+
+@router.put("/balances", response_model=LeaveBalanceResponse, status_code=status.HTTP_200_OK)
+async def upsert_leave_balance(
+    body: LeaveBalanceUpsertRequest,
+    access: Annotated[LeaveAccessContext, Depends(require_leave_permission("approve"))],
+    db: AsyncSession = Depends(get_db),
+) -> LeaveBalanceResponse:
+    return await handle_upsert_leave_balance(access, db, body)
 
 
 @router.get("/calendar", response_model=LeaveCalendarResponse, status_code=status.HTTP_200_OK)

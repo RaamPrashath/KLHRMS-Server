@@ -23,6 +23,7 @@ from app.modules.employee.schema import (
     AttendanceTodayResponse,
     EmployeeDeletePreview,
     EmployeeDeleteResponse,
+    EmployeeDeactivateResponse,
     EmployeeListFilters,
     EmployeeListItem,
     EmployeeListResponse,
@@ -288,4 +289,30 @@ async def delete_employee(
         member_id=member_id,
         unassigned_interviews=interview_count,
         removed_team_memberships=team_count,
+    )
+
+
+async def deactivate_employee(
+    organization_id: str,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDeactivateResponse:
+    """Set a member's status to INACTIVE (soft-delete)."""
+
+    member = await db.get(Member, member_id)
+    if member is None or member.organizationId != organization_id:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    member.status = "INACTIVE"
+    db.add(member)
+    await db.commit()
+    await db.refresh(member)
+
+    user_name = member.user.name or member.user.email if member.user else "Unknown"
+
+    return EmployeeDeactivateResponse(
+        member_id=member.id,
+        name=user_name,
+        email=member.user.email if member.user else "",
+        status=member.status,
     )

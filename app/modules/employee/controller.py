@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.employee.schema import (
     EmployeeDeletePreview,
     EmployeeDeleteResponse,
+    EmployeeDeactivateResponse,
     EmployeeListFilters,
     EmployeeListResponse,
 )
@@ -51,3 +52,11 @@ async def handle_delete_employee(
     db: AsyncSession,
 ) -> EmployeeDeleteResponse:
     return await service.delete_employee(ctx.organization.id, member_id, db)
+
+
+async def handle_deactivate_employee(
+    ctx: MemberContext,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDeactivateResponse:
+    return await service.deactivate_employee(ctx.organization.id, member_id, db)

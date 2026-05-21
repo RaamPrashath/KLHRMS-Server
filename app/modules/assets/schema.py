@@ -24,6 +24,7 @@ MAINTENANCE_TYPES = {
     "DAMAGE_CHECK",
 }
 MAINTENANCE_STATUSES = {"OPEN", "IN_PROGRESS", "COMPLETED", "CANCELLED"}
+TICKET_MODES = {"ASSET_ISSUE", "GENERAL_HELP_REQUEST"}
 REPORT_TYPES = {
     "ALL_ASSETS",
     "AVAILABLE_ASSETS",
@@ -43,11 +44,14 @@ def _normalize_enum(value: str) -> str:
 
 # ── Asset ID Schemas ─────────────────────────────────────────────────────────
 
+
 class AssetIdCreate(BaseModel):
     assetIdName: str = Field(min_length=1, max_length=120)
 
+
 class AssetIdUpdate(BaseModel):
     assetIdName: str | None = Field(default=None, min_length=1, max_length=120)
+
 
 class AssetIdResponse(BaseModel):
     id: str
@@ -70,7 +74,9 @@ class CategoryFieldDefinitionCreate(BaseModel):
     def validate_field_type(cls, value: str) -> str:
         normalized = _normalize_enum(value)
         if normalized not in CATEGORY_FIELD_TYPES:
-            raise ValueError(f"Invalid field type. Must be one of: {', '.join(sorted(CATEGORY_FIELD_TYPES))}")
+            raise ValueError(
+                f"Invalid field type. Must be one of: {', '.join(sorted(CATEGORY_FIELD_TYPES))}"
+            )
         return normalized
 
 
@@ -88,7 +94,9 @@ class CategoryFieldDefinitionUpdate(BaseModel):
             return None
         normalized = _normalize_enum(value)
         if normalized not in CATEGORY_FIELD_TYPES:
-            raise ValueError(f"Invalid field type. Must be one of: {', '.join(sorted(CATEGORY_FIELD_TYPES))}")
+            raise ValueError(
+                f"Invalid field type. Must be one of: {', '.join(sorted(CATEGORY_FIELD_TYPES))}"
+            )
         return normalized
 
 
@@ -222,7 +230,11 @@ class AssetUpsertRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_dates(self) -> AssetUpsertRequest:
-        if self.purchaseDate and self.warrantyExpiryDate and self.warrantyExpiryDate < self.purchaseDate:
+        if (
+            self.purchaseDate
+            and self.warrantyExpiryDate
+            and self.warrantyExpiryDate < self.purchaseDate
+        ):
             raise ValueError("Warranty expiry date must be on or after the purchase date")
         return self
 
@@ -262,6 +274,9 @@ class AssetMaintenanceCreateRequest(BaseModel):
     expectedCompletionDate: date | None = None
     cost: float | None = Field(default=None, ge=0)
     status: str = Field(default="OPEN")
+    category: str | None = Field(default=None, max_length=80)
+    subject: str | None = Field(default=None, max_length=160)
+    attachmentsMetadata: list[dict[str, str | int | float | bool | None]] = []
     conditionBeforeMaintenance: str | None = None
     notes: str | None = None
     assetUnitId: str | None = None
@@ -336,6 +351,55 @@ class AssetMaintenanceUpdateRequest(BaseModel):
                 raise ValueError("Completed date is required when maintenance is completed")
             if self.nextAssetStatus is None:
                 raise ValueError("Next asset status is required when maintenance is completed")
+        return self
+
+
+class HelpdeskTicketCreateRequest(BaseModel):
+    ticketMode: str = Field(default="GENERAL_HELP_REQUEST")
+    assetId: str | None = None
+    assetUnitId: str | None = None
+    category: str | None = Field(default=None, max_length=80)
+    subject: str = Field(min_length=1, max_length=160)
+    issueDescription: str = Field(min_length=1)
+    attachmentsMetadata: list[dict[str, str | int | float | bool | None]] = []
+    maintenanceType: str = Field(default="REPAIR")
+    serviceDate: date | None = None
+    expectedCompletionDate: date | None = None
+    conditionBeforeMaintenance: str | None = None
+    notes: str | None = None
+
+    @field_validator("ticketMode")
+    @classmethod
+    def validate_ticket_mode(cls, value: str) -> str:
+        normalized = _normalize_enum(value)
+        if normalized not in TICKET_MODES:
+            raise ValueError("Invalid ticket mode")
+        return normalized
+
+    @field_validator("maintenanceType")
+    @classmethod
+    def validate_maintenance_type(cls, value: str) -> str:
+        normalized = _normalize_enum(value)
+        if normalized not in MAINTENANCE_TYPES:
+            raise ValueError("Invalid maintenance type")
+        return normalized
+
+    @field_validator("conditionBeforeMaintenance")
+    @classmethod
+    def validate_condition(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        normalized = _normalize_enum(value)
+        if normalized not in ASSET_CONDITIONS:
+            raise ValueError("Invalid condition before maintenance")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_asset_linkage(self) -> HelpdeskTicketCreateRequest:
+        if self.ticketMode == "ASSET_ISSUE" and self.assetId is None:
+            raise ValueError("Asset issue tickets require assetId")
+        if self.ticketMode == "GENERAL_HELP_REQUEST" and self.assetUnitId is not None:
+            raise ValueError("General help requests cannot be linked to an asset unit")
         return self
 
 
@@ -445,7 +509,13 @@ class AssetIssueResponse(BaseModel):
 
 class AssetMaintenanceSummary(BaseModel):
     id: str
+    ticketId: str
+    ticketMode: str
+    assetId: str | None
     assetUnitId: str | None
+    category: str | None
+    subject: str | None
+    attachmentsMetadata: list[dict[str, str | int | float | bool | None]]
     maintenanceType: str
     issueDescription: str
     serviceDate: date
@@ -508,6 +578,7 @@ class AssetMetaResponse(BaseModel):
     conditions: list[str]
     maintenanceTypes: list[str]
     maintenanceStatuses: list[str]
+    ticketModes: list[str]
     reportTypes: list[str]
 
 
@@ -532,7 +603,11 @@ class RecentActivityItem(BaseModel):
 
 class TicketAlertItem(BaseModel):
     id: str
-    assetName: str
+    ticketId: str
+    ticketMode: str
+    assetName: str | None
+    category: str | None = None
+    subject: str | None = None
     maintenanceType: str
     status: str
     issueDescription: str
@@ -555,9 +630,14 @@ class AssetDashboardResponse(BaseModel):
 
 class MyTicketResponse(BaseModel):
     id: str
-    assetId: str
-    assetName: str
-    assetCode: str
+    ticketId: str
+    ticketMode: str
+    assetId: str | None
+    assetName: str | None
+    assetCode: str | None
+    category: str | None
+    subject: str | None
+    attachmentsMetadata: list[dict[str, str | int | float | bool | None]]
     maintenanceType: str
     issueDescription: str
     status: str
@@ -567,10 +647,15 @@ class MyTicketResponse(BaseModel):
 
 class MaintenanceTicketResponse(BaseModel):
     id: str
-    assetId: str
-    assetName: str
-    assetCode: str
-    assetCondition: str
+    ticketId: str
+    ticketMode: str
+    assetId: str | None
+    assetName: str | None
+    assetCode: str | None
+    assetCondition: str | None
+    category: str | None
+    subject: str | None
+    attachmentsMetadata: list[dict[str, str | int | float | bool | None]]
     maintenanceType: str
     issueDescription: str
     status: str

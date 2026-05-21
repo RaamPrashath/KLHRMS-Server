@@ -1,44 +1,46 @@
 from __future__ import annotations
 
 import csv
-import io
 import hashlib
-from datetime import UTC, datetime
+import io
+import secrets
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
-from sqlalchemy import Select, extract, func, or_, select, update
+from sqlalchemy import Select, extract, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from app.models.base import generate_uuid
 from app.models.asset import Asset
 from app.models.asset_assignment import AssetAssignment
 from app.models.asset_category_definition import AssetCategoryDefinition
 from app.models.asset_category_field_definition import AssetCategoryFieldDefinition
 from app.models.asset_custom_field_value import AssetCustomFieldValue
+from app.models.asset_id_definition import AssetIdDefinition
 from app.models.asset_maintenance_log import AssetMaintenanceLog
 from app.models.asset_unit import AssetUnit
-from app.models.asset_id_definition import AssetIdDefinition
+from app.models.base import generate_uuid
 from app.models.member import Member
 from app.models.user import User
 from app.modules.assets.schema import (
-    AssetIdCreate,
-    AssetIdUpdate,
-    AssetIdResponse,
     ASSET_CONDITIONS,
     ASSET_STATUSES,
     MAINTENANCE_STATUSES,
     MAINTENANCE_TYPES,
     REPORT_TYPES,
+    TICKET_MODES,
     AssetCategoryCreate,
     AssetCategoryResponse,
     AssetCategoryUpdate,
     AssetDashboardResponse,
     AssetDetailResponse,
     AssetFilters,
+    AssetIdCreate,
+    AssetIdResponse,
+    AssetIdUpdate,
     AssetIssueRequest,
     AssetIssueResponse,
     AssetListResponse,
@@ -61,8 +63,9 @@ from app.modules.assets.schema import (
     CategoryFieldDefinitionResponse,
     CategoryFieldDefinitionUpdate,
     CustomFieldValueResponse,
-    MonthlyTrend,
+    HelpdeskTicketCreateRequest,
     MaintenanceTicketResponse,
+    MonthlyTrend,
     MyTicketResponse,
     RecentActivityItem,
     TicketAlertItem,
@@ -72,6 +75,18 @@ from app.shared.deps.organization_member import MemberContext
 
 def _to_title(value: str) -> str:
     return value.lower().replace("_", " ").title()
+
+
+async def _generate_ticket_id(db: AsyncSession) -> str:
+    for _ in range(10):
+        ticket_id = f"#{secrets.randbelow(1_000_000):06d}"
+        result = await db.execute(
+            select(AssetMaintenanceLog.id).where(AssetMaintenanceLog.ticketId == ticket_id)
+        )
+        if result.scalar_one_or_none() is None:
+            return ticket_id
+
+    raise HTTPException(status_code=500, detail="Unable to generate a unique ticket ID")
 
 
 def _csv_to_pdf_bytes(report_type: str, csv_text: str) -> bytes:
@@ -89,7 +104,9 @@ def _csv_to_pdf_bytes(report_type: str, csv_text: str) -> bytes:
         pdf.drawString(margin, y_cursor, f"{_to_title(report_type)} Report")
         y_cursor -= 16
         pdf.setFont("Helvetica", 9)
-        pdf.drawString(margin, y_cursor, f"Generated at: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}")
+        pdf.drawString(
+            margin, y_cursor, f"Generated at: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
+        )
         y_cursor -= 18
         return y_cursor
 
@@ -99,7 +116,9 @@ def _csv_to_pdf_bytes(report_type: str, csv_text: str) -> bytes:
             pdf.showPage()
             y = draw_header()
 
-        pdf.setFont("Helvetica-Bold" if row_index == 0 else "Helvetica", 8 if row_index == 0 else 7.8)
+        pdf.setFont(
+            "Helvetica-Bold" if row_index == 0 else "Helvetica", 8 if row_index == 0 else 7.8
+        )
         line_text = " | ".join((col or "").replace("\n", " ").strip() for col in row)
         if len(line_text) > 220:
             line_text = f"{line_text[:217]}..."
@@ -150,7 +169,9 @@ async def _get_member_or_404(db: AsyncSession, organization_id: str, member_id: 
     return member
 
 
-async def _get_maintenance_or_404(db: AsyncSession, asset_id: str, maintenance_id: str) -> AssetMaintenanceLog:
+async def _get_maintenance_or_404(
+    db: AsyncSession, asset_id: str, maintenance_id: str
+) -> AssetMaintenanceLog:
     result = await db.execute(
         select(AssetMaintenanceLog).where(
             AssetMaintenanceLog.id == maintenance_id,
@@ -163,7 +184,9 @@ async def _get_maintenance_or_404(db: AsyncSession, asset_id: str, maintenance_i
     return log
 
 
-async def _get_category_or_404(db: AsyncSession, organization_id: str, category_id: str) -> AssetCategoryDefinition:
+async def _get_category_or_404(
+    db: AsyncSession, organization_id: str, category_id: str
+) -> AssetCategoryDefinition:
     result = await db.execute(
         select(AssetCategoryDefinition)
         .where(
@@ -214,7 +237,9 @@ def _unit_summary(units: list[AssetUnit]) -> AssetUnitSummary | None:
     return summary
 
 
-async def _active_provision_map(db: AsyncSession, organization_id: str) -> dict[str, AssetAssignment]:
+async def _active_provision_map(
+    db: AsyncSession, organization_id: str
+) -> dict[str, AssetAssignment]:
     result = await db.execute(
         select(AssetAssignment)
         .join(Asset, Asset.id == AssetAssignment.assetId)
@@ -233,9 +258,35 @@ async def _active_provision_map(db: AsyncSession, organization_id: str) -> dict[
     return {provision.assetId: provision for provision in provisions}
 
 
-def _asset_summary(asset: Asset, active_provision: AssetAssignment | None) -> AssetSummary:
-    holder = active_provision.member.user if active_provision and active_provision.member and active_provision.member.user else None
-    open_maintenance_count = sum(1 for log in asset.maintenanceLogs if log.status in {"OPEN", "IN_PROGRESS"})
+async def _open_maintenance_counts(db: AsyncSession, asset_ids: list[str]) -> dict[str, int]:
+    if not asset_ids:
+        return {}
+
+    result = await db.execute(
+        select(AssetMaintenanceLog.assetId, func.count(AssetMaintenanceLog.id))
+        .where(
+            AssetMaintenanceLog.assetId.in_(asset_ids),
+            AssetMaintenanceLog.status.in_(("OPEN", "IN_PROGRESS")),
+        )
+        .group_by(AssetMaintenanceLog.assetId)
+    )
+    return {asset_id: count for asset_id, count in result.all()}
+
+
+def _asset_summary(
+    asset: Asset,
+    active_provision: AssetAssignment | None,
+    open_maintenance_count: int | None = None,
+) -> AssetSummary:
+    holder = (
+        active_provision.member.user
+        if active_provision and active_provision.member and active_provision.member.user
+        else None
+    )
+    if open_maintenance_count is None:
+        open_maintenance_count = sum(
+            1 for log in asset.maintenanceLogs if log.status in {"OPEN", "IN_PROGRESS"}
+        )
 
     custom_fields = [
         CustomFieldValueResponse(
@@ -277,8 +328,16 @@ def _asset_summary(asset: Asset, active_provision: AssetAssignment | None) -> As
 
 def _provide_record_summary(record: AssetAssignment) -> AssetProvideRecordSummary:
     holder = record.member.user if record.member and record.member.user else None
-    provider = record.providedByMember.user if record.providedByMember and record.providedByMember.user else None
-    receiver = record.receivedByMember.user if record.receivedByMember and record.receivedByMember.user else None
+    provider = (
+        record.providedByMember.user
+        if record.providedByMember and record.providedByMember.user
+        else None
+    )
+    receiver = (
+        record.receivedByMember.user
+        if record.receivedByMember and record.receivedByMember.user
+        else None
+    )
     return AssetProvideRecordSummary(
         id=record.id,
         assetUnitId=record.assetUnitId,
@@ -302,7 +361,13 @@ def _maintenance_summary(log: AssetMaintenanceLog) -> AssetMaintenanceSummary:
     actor = log.loggedByMember.user if log.loggedByMember and log.loggedByMember.user else None
     return AssetMaintenanceSummary(
         id=log.id,
+        ticketId=log.ticketId,
+        ticketMode=log.ticketMode,
+        assetId=log.assetId,
         assetUnitId=log.assetUnitId,
+        category=log.category,
+        subject=log.subject,
+        attachmentsMetadata=log.attachmentsMetadata or [],
         maintenanceType=log.maintenanceType,
         issueDescription=log.issueDescription,
         serviceDate=log.serviceDate,
@@ -318,10 +383,66 @@ def _maintenance_summary(log: AssetMaintenanceLog) -> AssetMaintenanceSummary:
     )
 
 
+def _ticket_title(log: AssetMaintenanceLog) -> str:
+    if log.subject and log.subject.strip():
+        return log.subject.strip()
+    if log.asset and log.asset.name:
+        return log.asset.name
+    if log.category and log.category.strip():
+        return _to_title(log.category)
+    return "Help Request"
+
+
+def _my_ticket_response(log: AssetMaintenanceLog) -> MyTicketResponse:
+    return MyTicketResponse(
+        id=log.id,
+        ticketId=log.ticketId,
+        ticketMode=log.ticketMode,
+        assetId=log.assetId,
+        assetName=log.asset.name if log.asset else None,
+        assetCode=log.asset.assetCode if log.asset else None,
+        category=log.category,
+        subject=log.subject,
+        attachmentsMetadata=log.attachmentsMetadata or [],
+        maintenanceType=log.maintenanceType,
+        issueDescription=log.issueDescription,
+        status=log.status,
+        serviceDate=log.serviceDate.isoformat() if log.serviceDate else "",
+        createdAt=log.createdAt.isoformat() if log.createdAt else "",
+    )
+
+
+def _maintenance_ticket_response(log: AssetMaintenanceLog) -> MaintenanceTicketResponse:
+    return MaintenanceTicketResponse(
+        id=log.id,
+        ticketId=log.ticketId,
+        ticketMode=log.ticketMode,
+        assetId=log.assetId,
+        assetName=log.asset.name if log.asset else None,
+        assetCode=log.asset.assetCode if log.asset else None,
+        assetCondition=log.asset.condition if log.asset else None,
+        category=log.category,
+        subject=log.subject,
+        attachmentsMetadata=log.attachmentsMetadata or [],
+        maintenanceType=log.maintenanceType,
+        issueDescription=log.issueDescription,
+        status=log.status,
+        serviceDate=log.serviceDate.isoformat() if log.serviceDate else "",
+        createdAt=log.createdAt.isoformat() if log.createdAt else "",
+        loggedByMemberId=log.loggedByMemberId,
+        loggedByName=log.loggedByMember.user.name
+        if log.loggedByMember and log.loggedByMember.user
+        else None,
+    )
+
+
 # ── Asset ID CRUD ────────────────────────────────────────────────────────────
 
+
 async def create_asset_id(
-    db: AsyncSession, ctx: MemberContext, payload: AssetIdCreate,
+    db: AsyncSession,
+    ctx: MemberContext,
+    payload: AssetIdCreate,
 ) -> AssetIdResponse:
     existing = await db.execute(
         select(AssetIdDefinition).where(
@@ -339,7 +460,8 @@ async def create_asset_id(
     db.add(asset_id)
     await db.commit()
     return AssetIdResponse(
-        id=asset_id.id, assetIdName=asset_id.assetIdName,
+        id=asset_id.id,
+        assetIdName=asset_id.assetIdName,
         isActive=asset_id.isActive,
     )
 
@@ -354,14 +476,14 @@ async def list_asset_ids(db: AsyncSession, ctx: MemberContext) -> list[AssetIdRe
         .order_by(AssetIdDefinition.assetIdName.asc())
     )
     items = result.scalars().all()
-    return [
-        AssetIdResponse(id=a.id, assetIdName=a.assetIdName, isActive=a.isActive)
-        for a in items
-    ]
+    return [AssetIdResponse(id=a.id, assetIdName=a.assetIdName, isActive=a.isActive) for a in items]
 
 
 async def update_asset_id(
-    db: AsyncSession, ctx: MemberContext, asset_id_id: str, payload: AssetIdUpdate,
+    db: AsyncSession,
+    ctx: MemberContext,
+    asset_id_id: str,
+    payload: AssetIdUpdate,
 ) -> AssetIdResponse:
     result = await db.execute(
         select(AssetIdDefinition).where(
@@ -387,7 +509,8 @@ async def update_asset_id(
         entry.assetIdName = payload.assetIdName.strip()
     await db.commit()
     return AssetIdResponse(
-        id=entry.id, assetIdName=entry.assetIdName,
+        id=entry.id,
+        assetIdName=entry.assetIdName,
         isActive=entry.isActive,
     )
 
@@ -408,6 +531,7 @@ async def delete_asset_id(db: AsyncSession, ctx: MemberContext, asset_id_id: str
 
 
 # ── Category CRUD ─────────────────────────────────────────────────────────────
+
 
 async def create_category(
     db: AsyncSession,
@@ -526,14 +650,18 @@ async def update_category(
 async def delete_category(db: AsyncSession, ctx: MemberContext, category_id: str) -> None:
     category = await _get_category_or_404(db, ctx.organization.id, category_id)
     assets_with_category = await db.execute(
-        select(Asset).where(
+        select(Asset)
+        .where(
             Asset.organizationId == ctx.organization.id,
             Asset.categoryDefinitionId == category_id,
             Asset.deletedAt.is_(None),
-        ).limit(1)
+        )
+        .limit(1)
     )
     if assets_with_category.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=422, detail="Cannot delete category that has assets assigned to it")
+        raise HTTPException(
+            status_code=422, detail="Cannot delete category that has assets assigned to it"
+        )
     category.isActive = False
     await db.commit()
 
@@ -579,7 +707,10 @@ async def update_category_field(
 ) -> CategoryFieldDefinitionResponse:
     result = await db.execute(
         select(AssetCategoryFieldDefinition)
-        .join(AssetCategoryDefinition, AssetCategoryDefinition.id == AssetCategoryFieldDefinition.categoryId)
+        .join(
+            AssetCategoryDefinition,
+            AssetCategoryDefinition.id == AssetCategoryFieldDefinition.categoryId,
+        )
         .where(
             AssetCategoryFieldDefinition.id == field_id,
             AssetCategoryDefinition.organizationId == ctx.organization.id,
@@ -615,7 +746,10 @@ async def update_category_field(
 async def delete_category_field(db: AsyncSession, ctx: MemberContext, field_id: str) -> None:
     result = await db.execute(
         select(AssetCategoryFieldDefinition)
-        .join(AssetCategoryDefinition, AssetCategoryDefinition.id == AssetCategoryFieldDefinition.categoryId)
+        .join(
+            AssetCategoryDefinition,
+            AssetCategoryDefinition.id == AssetCategoryFieldDefinition.categoryId,
+        )
         .where(
             AssetCategoryFieldDefinition.id == field_id,
             AssetCategoryDefinition.organizationId == ctx.organization.id,
@@ -626,7 +760,9 @@ async def delete_category_field(db: AsyncSession, ctx: MemberContext, field_id: 
         raise HTTPException(status_code=404, detail="Category field not found")
 
     await db.execute(
-        select(AssetCustomFieldValue).where(AssetCustomFieldValue.fieldDefinitionId == field_id).limit(1)
+        select(AssetCustomFieldValue)
+        .where(AssetCustomFieldValue.fieldDefinitionId == field_id)
+        .limit(1)
     )
     await db.delete(field)
     await db.commit()
@@ -635,7 +771,9 @@ async def delete_category_field(db: AsyncSession, ctx: MemberContext, field_id: 
 # ── Asset CRUD (modified) ──────────────────────────────────────────────────────
 
 
-async def list_assets(db: AsyncSession, ctx: MemberContext, filters: AssetFilters) -> AssetListResponse:
+async def list_assets(
+    db: AsyncSession, ctx: MemberContext, filters: AssetFilters
+) -> AssetListResponse:
     scope = getattr(ctx, "scope", "organization")
 
     active_provision_subquery = (
@@ -655,14 +793,16 @@ async def list_assets(db: AsyncSession, ctx: MemberContext, filters: AssetFilter
     joined_active_provision = False
 
     if scope == "self":
-        query = query.join(active_provision_subquery, active_provision_subquery.c.assetId == Asset.id).where(
-            active_provision_subquery.c.memberId == ctx.member.id
-        )
+        query = query.join(
+            active_provision_subquery, active_provision_subquery.c.assetId == Asset.id
+        ).where(active_provision_subquery.c.memberId == ctx.member.id)
         joined_active_provision = True
 
     if filters.currentHolderMemberId:
         if not joined_active_provision:
-            query = query.join(active_provision_subquery, active_provision_subquery.c.assetId == Asset.id)
+            query = query.join(
+                active_provision_subquery, active_provision_subquery.c.assetId == Asset.id
+            )
             joined_active_provision = True
         query = query.where(active_provision_subquery.c.memberId == filters.currentHolderMemberId)
 
@@ -684,7 +824,9 @@ async def list_assets(db: AsyncSession, ctx: MemberContext, filters: AssetFilter
     if filters.status:
         query = query.where(Asset.status == filters.status)
 
-    total_result = await db.execute(select(func.count()).select_from(query.order_by(None).subquery()))
+    total_result = await db.execute(
+        select(func.count()).select_from(query.order_by(None).subquery())
+    )
     total = total_result.scalar_one()
 
     rows = await db.execute(
@@ -692,7 +834,6 @@ async def list_assets(db: AsyncSession, ctx: MemberContext, filters: AssetFilter
         .limit(filters.page_size)
         .options(
             joinedload(Asset.provisions),
-            joinedload(Asset.maintenanceLogs),
             joinedload(Asset.units),
             joinedload(Asset.customFieldValues).joinedload(AssetCustomFieldValue.fieldDefinition),
         )
@@ -700,7 +841,11 @@ async def list_assets(db: AsyncSession, ctx: MemberContext, filters: AssetFilter
     assets = rows.unique().scalars().all()
 
     active_map = await _active_provision_map(db, ctx.organization.id)
-    items = [_asset_summary(asset, active_map.get(asset.id)) for asset in assets]
+    maintenance_counts = await _open_maintenance_counts(db, [asset.id for asset in assets])
+    items = [
+        _asset_summary(asset, active_map.get(asset.id), maintenance_counts.get(asset.id, 0))
+        for asset in assets
+    ]
 
     return AssetListResponse(
         items=items,
@@ -739,9 +884,7 @@ async def get_asset(db: AsyncSession, ctx: MemberContext, asset_id: str) -> Asse
     )
     logs = logs_result.unique().scalars().all()
 
-    units_result = await db.execute(
-        select(AssetUnit).where(AssetUnit.assetId == asset_id)
-    )
+    units_result = await db.execute(select(AssetUnit).where(AssetUnit.assetId == asset_id))
     units = units_result.scalars().all()
 
     unit_responses = [
@@ -783,19 +926,25 @@ async def upsert_asset(
     # Check active provision via query to avoid lazy relationship access
     if not is_new:
         provision_result = await db.execute(
-            select(AssetAssignment).where(
+            select(AssetAssignment)
+            .where(
                 AssetAssignment.assetId == asset.id,
                 AssetAssignment.returnDate.is_(None),
-            ).limit(1)
+            )
+            .limit(1)
         )
         active_provision = provision_result.scalar_one_or_none()
     else:
         active_provision = None
 
     if active_provision is not None and payload.status != "PROVIDED":
-        raise HTTPException(status_code=422, detail="Provided assets must be returned before changing their status")
+        raise HTTPException(
+            status_code=422, detail="Provided assets must be returned before changing their status"
+        )
     if active_provision is None and payload.status == "PROVIDED":
-        raise HTTPException(status_code=422, detail="Use Provide Asset to mark an asset as provided")
+        raise HTTPException(
+            status_code=422, detail="Use Provide Asset to mark an asset as provided"
+        )
 
     asset.assetCode = payload.assetCode.strip()
     asset.name = payload.name.strip()
@@ -836,9 +985,7 @@ async def upsert_asset(
     # Handle custom fields
     if not is_new:
         result = await db.execute(
-            select(AssetCustomFieldValue).where(
-                AssetCustomFieldValue.assetId == asset.id
-            )
+            select(AssetCustomFieldValue).where(AssetCustomFieldValue.assetId == asset.id)
         )
         existing_cfvs = result.scalars().all()
         incoming_cf_ids = {cf.fieldDefinitionId for cf in (payload.customFields or [])}
@@ -846,7 +993,7 @@ async def upsert_asset(
             if old.fieldDefinitionId not in incoming_cf_ids:
                 await db.delete(old)
 
-    for cf in (payload.customFields or []):
+    for cf in payload.customFields or []:
         if not is_new:
             result = await db.execute(
                 select(AssetCustomFieldValue).where(
@@ -859,40 +1006,50 @@ async def upsert_asset(
                 existing_cfv.value = cf.value
                 continue
 
-        db.add(AssetCustomFieldValue(
-            assetId=asset.id,
-            fieldDefinitionId=cf.fieldDefinitionId,
-            value=cf.value,
-        ))
+        db.add(
+            AssetCustomFieldValue(
+                assetId=asset.id,
+                fieldDefinitionId=cf.fieldDefinitionId,
+                value=cf.value,
+            )
+        )
 
     # Handle units
     if not is_new:
-        result = await db.execute(
-            select(AssetUnit).where(AssetUnit.assetId == asset.id)
-        )
+        result = await db.execute(select(AssetUnit).where(AssetUnit.assetId == asset.id))
         existing_units = result.scalars().all()
         existing_count = len(existing_units)
         for i, unit_input in enumerate(payload.units or []):
             if i < existing_count:
-                existing_units[i].serialNumber = unit_input.serialNumber.strip() if unit_input.serialNumber else None
+                existing_units[i].serialNumber = (
+                    unit_input.serialNumber.strip() if unit_input.serialNumber else None
+                )
             else:
-                db.add(AssetUnit(
-                    assetId=asset.id,
-                    serialNumber=unit_input.serialNumber.strip() if unit_input.serialNumber else None,
-                    status="AVAILABLE",
-                    condition=payload.condition,
-                ))
+                db.add(
+                    AssetUnit(
+                        assetId=asset.id,
+                        serialNumber=unit_input.serialNumber.strip()
+                        if unit_input.serialNumber
+                        else None,
+                        status="AVAILABLE",
+                        condition=payload.condition,
+                    )
+                )
         if len(payload.units or []) < existing_count:
-            for unit in existing_units[len(payload.units or []):]:
+            for unit in existing_units[len(payload.units or []) :]:
                 await db.delete(unit)
     else:
-        for unit_input in (payload.units or []):
-            db.add(AssetUnit(
-                assetId=asset.id,
-                serialNumber=unit_input.serialNumber.strip() if unit_input.serialNumber else None,
-                status="AVAILABLE",
-                condition=payload.condition,
-            ))
+        for unit_input in payload.units or []:
+            db.add(
+                AssetUnit(
+                    assetId=asset.id,
+                    serialNumber=unit_input.serialNumber.strip()
+                    if unit_input.serialNumber
+                    else None,
+                    status="AVAILABLE",
+                    condition=payload.condition,
+                )
+            )
 
     await db.commit()
     return await get_asset(db, ctx, asset.id)
@@ -928,9 +1085,14 @@ async def bulk_create_assets(
             )
             field_def = result.scalar_one_or_none()
             if field_def is None:
-                raise HTTPException(status_code=422, detail=f"Custom field definition {cf.fieldDefinitionId} not found")
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Custom field definition {cf.fieldDefinitionId} not found",
+                )
             if field_def.isRequired and (not cf.value or not cf.value.strip()):
-                raise HTTPException(status_code=422, detail=f"Required field '{field_def.fieldName}' is missing")
+                raise HTTPException(
+                    status_code=422, detail=f"Required field '{field_def.fieldName}' is missing"
+                )
 
     asset_code = payload.assetCode.strip()
     condition = payload.condition
@@ -956,12 +1118,14 @@ async def bulk_create_assets(
         await db.flush()
 
         # Create custom field values
-        for cf in (payload.customFields or []):
-            db.add(AssetCustomFieldValue(
-                assetId=asset.id,
-                fieldDefinitionId=cf.fieldDefinitionId,
-                value=cf.value,
-            ))
+        for cf in payload.customFields or []:
+            db.add(
+                AssetCustomFieldValue(
+                    assetId=asset.id,
+                    fieldDefinitionId=cf.fieldDefinitionId,
+                    value=cf.value,
+                )
+            )
 
         created_assets.append(asset)
 
@@ -1101,7 +1265,9 @@ async def issue_assets(
 
 async def delete_asset(db: AsyncSession, ctx: MemberContext, asset_id: str) -> None:
     asset = await _get_asset_or_404(db, ctx.organization.id, asset_id)
-    active_provision = next((record for record in asset.provisions if record.returnDate is None), None)
+    active_provision = next(
+        (record for record in asset.provisions if record.returnDate is None), None
+    )
     if active_provision is not None:
         raise HTTPException(status_code=422, detail="Return the provided asset before archiving it")
     asset.deletedAt = datetime.now(UTC)
@@ -1128,14 +1294,20 @@ async def return_asset(
     if provision is None:
         raise HTTPException(status_code=422, detail="This asset is not currently provided")
     if provision.memberId != payload.memberId:
-        raise HTTPException(status_code=422, detail="The selected employee does not hold this asset")
+        raise HTTPException(
+            status_code=422, detail="The selected employee does not hold this asset"
+        )
 
     receiver_id = payload.receivedByMemberId or ctx.member.id
     await _get_member_or_404(db, ctx.organization.id, receiver_id)
 
     next_status = payload.nextStatus
     if next_status is None:
-        next_status = "AVAILABLE" if payload.returnedCondition in {"NEW", "GOOD", "FAIR"} else "UNDER_MAINTENANCE"
+        next_status = (
+            "AVAILABLE"
+            if payload.returnedCondition in {"NEW", "GOOD", "FAIR"}
+            else "UNDER_MAINTENANCE"
+        )
 
     provision.returnDate = payload.returnDate or datetime.now(UTC)
     provision.returnedCondition = payload.returnedCondition
@@ -1181,9 +1353,15 @@ async def create_maintenance_record(
 
     db.add(
         AssetMaintenanceLog(
+            ticketId=await _generate_ticket_id(db),
+            organizationId=ctx.organization.id,
+            ticketMode="ASSET_ISSUE",
             assetId=asset.id,
             assetUnitId=payload.assetUnitId,
             loggedByMemberId=ctx.member.id,
+            category=payload.category.strip() if payload.category else None,
+            subject=payload.subject.strip() if payload.subject else None,
+            attachmentsMetadata=payload.attachmentsMetadata,
             maintenanceType=payload.maintenanceType,
             issueDescription=payload.issueDescription.strip(),
             serviceDate=payload.serviceDate,
@@ -1199,6 +1377,57 @@ async def create_maintenance_record(
 
     await db.commit()
     return await get_asset(db, ctx, asset.id)
+
+
+async def create_helpdesk_ticket(
+    db: AsyncSession,
+    ctx: MemberContext,
+    payload: HelpdeskTicketCreateRequest,
+) -> MyTicketResponse:
+    asset: Asset | None = None
+    if payload.assetId is not None:
+        asset = await _get_asset_or_404(db, ctx.organization.id, payload.assetId)
+
+    if payload.assetUnitId and asset is not None:
+        unit = next((u for u in (asset.units or []) if u.id == payload.assetUnitId), None)
+        if unit is None:
+            raise HTTPException(status_code=404, detail="Asset unit not found")
+        unit.status = "UNDER_MAINTENANCE"
+
+    ticket = AssetMaintenanceLog(
+        ticketId=await _generate_ticket_id(db),
+        organizationId=ctx.organization.id,
+        ticketMode=payload.ticketMode,
+        assetId=asset.id if asset else None,
+        assetUnitId=payload.assetUnitId if asset else None,
+        loggedByMemberId=ctx.member.id,
+        category=payload.category.strip() if payload.category else None,
+        subject=payload.subject.strip(),
+        attachmentsMetadata=payload.attachmentsMetadata,
+        maintenanceType=payload.maintenanceType,
+        issueDescription=payload.issueDescription.strip(),
+        serviceDate=payload.serviceDate or date.today(),
+        expectedCompletionDate=payload.expectedCompletionDate,
+        status="OPEN",
+        conditionBeforeMaintenance=(
+            payload.conditionBeforeMaintenance or (asset.condition if asset is not None else None)
+        ),
+        notes=payload.notes.strip() if payload.notes else None,
+    )
+    db.add(ticket)
+
+    if asset is not None:
+        asset.status = "UNDER_MAINTENANCE"
+
+    await db.commit()
+
+    result = await db.execute(
+        select(AssetMaintenanceLog)
+        .where(AssetMaintenanceLog.id == ticket.id)
+        .options(joinedload(AssetMaintenanceLog.asset))
+    )
+    created = result.unique().scalar_one()
+    return _my_ticket_response(created)
 
 
 async def update_maintenance_record(
@@ -1252,6 +1481,40 @@ async def update_maintenance_record(
 
     await db.commit()
     return await get_asset(db, ctx, asset.id)
+
+
+async def update_maintenance_record_by_id(
+    db: AsyncSession,
+    ctx: MemberContext,
+    maintenance_id: str,
+    payload: AssetMaintenanceUpdateRequest,
+) -> None:
+    result = await db.execute(
+        select(AssetMaintenanceLog)
+        .where(
+            AssetMaintenanceLog.id == maintenance_id,
+            AssetMaintenanceLog.organizationId == ctx.organization.id,
+        )
+        .options(
+            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.units),
+        )
+    )
+    log = result.unique().scalar_one_or_none()
+    if log is None:
+        raise HTTPException(status_code=404, detail="Maintenance record not found")
+
+    if log.assetId:
+        await update_maintenance_record(db, ctx, log.assetId, maintenance_id, payload)
+        return
+
+    log.status = payload.status
+    log.expectedCompletionDate = payload.expectedCompletionDate or log.expectedCompletionDate
+    log.completedDate = payload.completedDate
+    log.conditionAfterMaintenance = payload.conditionAfterMaintenance
+    if payload.notes:
+        log.notes = payload.notes.strip()
+
+    await db.commit()
 
 
 # ── Meta ───────────────────────────────────────────────────────────────────────
@@ -1314,6 +1577,7 @@ async def get_asset_meta(db: AsyncSession, ctx: MemberContext) -> AssetMetaRespo
         conditions=sorted(ASSET_CONDITIONS),
         maintenanceTypes=sorted(MAINTENANCE_TYPES),
         maintenanceStatuses=sorted(MAINTENANCE_STATUSES),
+        ticketModes=sorted(TICKET_MODES),
         reportTypes=sorted(REPORT_TYPES),
     )
 
@@ -1328,7 +1592,13 @@ async def export_asset_report(
 ) -> str:
     report_type = request.reportType
 
-    if report_type in {"ALL_ASSETS", "AVAILABLE_ASSETS", "PROVIDED_ASSETS", "DAMAGED_ASSETS", "OFFBOARDING_PENDING_RETURN"}:
+    if report_type in {
+        "ALL_ASSETS",
+        "AVAILABLE_ASSETS",
+        "PROVIDED_ASSETS",
+        "DAMAGED_ASSETS",
+        "OFFBOARDING_PENDING_RETURN",
+    }:
         status_filter = None
         if report_type == "AVAILABLE_ASSETS":
             status_filter = "AVAILABLE"
@@ -1428,18 +1698,27 @@ async def export_asset_report(
 
     if report_type == "MAINTENANCE_HISTORY":
         rows = (
-            await db.execute(
-                select(AssetMaintenanceLog)
-                .join(Asset, Asset.id == AssetMaintenanceLog.assetId)
-                .where(Asset.organizationId == ctx.organization.id, Asset.deletedAt.is_(None))
-                .options(joinedload(AssetMaintenanceLog.asset))
-                .order_by(AssetMaintenanceLog.createdAt.desc())
+            (
+                await db.execute(
+                    select(AssetMaintenanceLog)
+                    .outerjoin(Asset, Asset.id == AssetMaintenanceLog.assetId)
+                    .where(
+                        AssetMaintenanceLog.organizationId == ctx.organization.id,
+                        or_(Asset.id.is_(None), Asset.deletedAt.is_(None)),
+                    )
+                    .options(joinedload(AssetMaintenanceLog.asset))
+                    .order_by(AssetMaintenanceLog.createdAt.desc())
+                )
             )
-        ).unique().scalars().all()
+            .unique()
+            .scalars()
+            .all()
+        )
         buffer = io.StringIO()
         writer = csv.writer(buffer)
         writer.writerow(
             [
+                "Ticket ID",
                 "Asset Code",
                 "Asset Name",
                 "Maintenance Type",
@@ -1453,6 +1732,7 @@ async def export_asset_report(
         for row in rows:
             writer.writerow(
                 [
+                    row.ticketId,
                     row.asset.assetCode if row.asset else "",
                     row.asset.name if row.asset else "",
                     row.maintenanceType,
@@ -1559,13 +1839,15 @@ async def get_dashboard(db: AsyncSession, ctx: MemberContext) -> AssetDashboardR
         .limit(5)
     )
     for p in provisions.unique().scalars().all():
-        recent_activity.append(RecentActivityItem(
-            type="PROVIDED",
-            assetName=p.asset.name if p.asset else "",
-            memberName=p.member.user.name if p.member and p.member.user else None,
-            date=p.providedDate.isoformat() if p.providedDate else "",
-            detail=p.provideNotes.strip() if p.provideNotes else None,
-        ))
+        recent_activity.append(
+            RecentActivityItem(
+                type="PROVIDED",
+                assetName=p.asset.name if p.asset else "",
+                memberName=p.member.user.name if p.member and p.member.user else None,
+                date=p.providedDate.isoformat() if p.providedDate else "",
+                detail=p.provideNotes.strip() if p.provideNotes else None,
+            )
+        )
 
     returns = await db.execute(
         select(AssetAssignment)
@@ -1583,20 +1865,22 @@ async def get_dashboard(db: AsyncSession, ctx: MemberContext) -> AssetDashboardR
         .limit(5)
     )
     for r in returns.unique().scalars().all():
-        recent_activity.append(RecentActivityItem(
-            type="RETURNED",
-            assetName=r.asset.name if r.asset else "",
-            memberName=r.member.user.name if r.member and r.member.user else None,
-            date=r.returnDate.isoformat() if r.returnDate else "",
-            detail=r.returnNotes.strip() if r.returnNotes else None,
-        ))
+        recent_activity.append(
+            RecentActivityItem(
+                type="RETURNED",
+                assetName=r.asset.name if r.asset else "",
+                memberName=r.member.user.name if r.member and r.member.user else None,
+                date=r.returnDate.isoformat() if r.returnDate else "",
+                detail=r.returnNotes.strip() if r.returnNotes else None,
+            )
+        )
 
     maintenance = await db.execute(
         select(AssetMaintenanceLog)
-        .join(Asset, Asset.id == AssetMaintenanceLog.assetId)
+        .outerjoin(Asset, Asset.id == AssetMaintenanceLog.assetId)
         .where(
-            Asset.organizationId == org_id,
-            Asset.deletedAt.is_(None),
+            AssetMaintenanceLog.organizationId == org_id,
+            or_(Asset.id.is_(None), Asset.deletedAt.is_(None)),
         )
         .options(
             joinedload(AssetMaintenanceLog.asset),
@@ -1605,23 +1889,25 @@ async def get_dashboard(db: AsyncSession, ctx: MemberContext) -> AssetDashboardR
         .limit(5)
     )
     for m in maintenance.unique().scalars().all():
-        recent_activity.append(RecentActivityItem(
-            type="MAINTENANCE",
-            assetName=m.asset.name if m.asset else "",
-            memberName=None,
-            date=m.createdAt.isoformat() if m.createdAt else "",
-            detail=m.issueDescription.strip() if m.issueDescription else None,
-        ))
+        recent_activity.append(
+            RecentActivityItem(
+                type="MAINTENANCE",
+                assetName=m.asset.name if m.asset else (m.subject or "General help request"),
+                memberName=None,
+                date=m.createdAt.isoformat() if m.createdAt else "",
+                detail=m.issueDescription.strip() if m.issueDescription else None,
+            )
+        )
 
     recent_activity.sort(key=lambda x: x.date, reverse=True)
     recent_activity = recent_activity[:8]
 
     open_tickets_result = await db.execute(
         select(AssetMaintenanceLog)
-        .join(Asset, Asset.id == AssetMaintenanceLog.assetId)
+        .outerjoin(Asset, Asset.id == AssetMaintenanceLog.assetId)
         .where(
-            Asset.organizationId == org_id,
-            Asset.deletedAt.is_(None),
+            AssetMaintenanceLog.organizationId == org_id,
+            or_(Asset.id.is_(None), Asset.deletedAt.is_(None)),
             AssetMaintenanceLog.status.in_(["OPEN", "IN_PROGRESS"]),
         )
         .options(
@@ -1635,7 +1921,11 @@ async def get_dashboard(db: AsyncSession, ctx: MemberContext) -> AssetDashboardR
     recent_tickets = [
         TicketAlertItem(
             id=t.id,
-            assetName=t.asset.name if t.asset else "",
+            ticketId=t.ticketId,
+            ticketMode=t.ticketMode,
+            assetName=t.asset.name if t.asset else None,
+            category=t.category,
+            subject=t.subject,
             maintenanceType=t.maintenanceType,
             status=t.status,
             issueDescription=t.issueDescription.strip() if t.issueDescription else "",
@@ -1659,44 +1949,29 @@ async def get_dashboard(db: AsyncSession, ctx: MemberContext) -> AssetDashboardR
     )
 
 
-
 async def list_my_tickets(db: AsyncSession, ctx: MemberContext) -> list[MyTicketResponse]:
     result = await db.execute(
         select(AssetMaintenanceLog)
-        .join(Asset, Asset.id == AssetMaintenanceLog.assetId)
+        .outerjoin(Asset, Asset.id == AssetMaintenanceLog.assetId)
         .where(
-            Asset.organizationId == ctx.organization.id,
-            Asset.deletedAt.is_(None),
+            AssetMaintenanceLog.organizationId == ctx.organization.id,
+            or_(Asset.id.is_(None), Asset.deletedAt.is_(None)),
             AssetMaintenanceLog.loggedByMemberId == ctx.member.id,
         )
         .options(joinedload(AssetMaintenanceLog.asset))
         .order_by(AssetMaintenanceLog.createdAt.desc())
     )
     logs = result.unique().scalars().all()
-    return [
-        MyTicketResponse(
-            id=log.id,
-            assetId=log.assetId,
-            assetName=log.asset.name if log.asset else "",
-            assetCode=log.asset.assetCode if log.asset else "",
-            maintenanceType=log.maintenanceType,
-            issueDescription=log.issueDescription,
-            status=log.status,
-            serviceDate=log.serviceDate.isoformat() if log.serviceDate else "",
-            createdAt=log.createdAt.isoformat() if log.createdAt else "",
-        )
-        for log in logs
-    ]
-
+    return [_my_ticket_response(log) for log in logs]
 
 
 async def list_tickets(db: AsyncSession, ctx: MemberContext) -> list[MaintenanceTicketResponse]:
     result = await db.execute(
         select(AssetMaintenanceLog)
-        .join(Asset, Asset.id == AssetMaintenanceLog.assetId)
+        .outerjoin(Asset, Asset.id == AssetMaintenanceLog.assetId)
         .where(
-            Asset.organizationId == ctx.organization.id,
-            Asset.deletedAt.is_(None),
+            AssetMaintenanceLog.organizationId == ctx.organization.id,
+            or_(Asset.id.is_(None), Asset.deletedAt.is_(None)),
         )
         .options(
             joinedload(AssetMaintenanceLog.asset),
@@ -1708,17 +1983,24 @@ async def list_tickets(db: AsyncSession, ctx: MemberContext) -> list[Maintenance
     return [
         MaintenanceTicketResponse(
             id=log.id,
+            ticketId=log.ticketId,
+            ticketMode=log.ticketMode,
             assetId=log.assetId,
-            assetName=log.asset.name if log.asset else "",
-            assetCode=log.asset.assetCode if log.asset else "",
-            assetCondition=log.asset.condition if log.asset else "",
+            assetName=log.asset.name if log.asset else None,
+            assetCode=log.asset.assetCode if log.asset else None,
+            assetCondition=log.asset.condition if log.asset else None,
+            category=log.category,
+            subject=log.subject,
+            attachmentsMetadata=log.attachmentsMetadata or [],
             maintenanceType=log.maintenanceType,
             issueDescription=log.issueDescription,
             status=log.status,
             serviceDate=log.serviceDate.isoformat() if log.serviceDate else "",
             createdAt=log.createdAt.isoformat() if log.createdAt else "",
             loggedByMemberId=log.loggedByMemberId,
-            loggedByName=log.loggedByMember.user.name if log.loggedByMember and log.loggedByMember.user else None,
+            loggedByName=log.loggedByMember.user.name
+            if log.loggedByMember and log.loggedByMember.user
+            else None,
         )
         for log in logs
     ]

@@ -24,6 +24,7 @@ class Member(Base):
         String(36), ForeignKey("user.id", ondelete="CASCADE"), nullable=False
     )
     roleId: Mapped[str | None] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(20), server_default="ACTIVE")
 
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

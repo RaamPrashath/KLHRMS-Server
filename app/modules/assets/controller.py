@@ -3,15 +3,15 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.assets.schema import (
-    AssetIdCreate,
-    AssetIdUpdate,
-    AssetIdResponse,
     AssetCategoryCreate,
     AssetCategoryResponse,
     AssetCategoryUpdate,
     AssetDashboardResponse,
     AssetDetailResponse,
     AssetFilters,
+    AssetIdCreate,
+    AssetIdResponse,
+    AssetIdUpdate,
     AssetIssueRequest,
     AssetIssueResponse,
     AssetListResponse,
@@ -26,50 +26,59 @@ from app.modules.assets.schema import (
     CategoryFieldDefinitionCreate,
     CategoryFieldDefinitionResponse,
     CategoryFieldDefinitionUpdate,
+    HelpdeskTicketCreateRequest,
     MaintenanceTicketResponse,
     MyTicketResponse,
 )
 from app.modules.assets.service import (
     bulk_create_assets,
     create_asset_id,
-    list_asset_ids,
-    update_asset_id,
-    delete_asset_id,
     create_category,
     create_category_field,
+    create_helpdesk_ticket,
     create_maintenance_record,
     delete_asset,
+    delete_asset_id,
     delete_category,
     delete_category_field,
     export_asset_report,
     export_asset_report_pdf,
     get_asset,
-    get_dashboard,
     get_asset_meta,
+    get_dashboard,
     issue_assets,
+    list_asset_ids,
+    list_assets,
     list_available_groups,
     list_categories,
-    list_assets,
     list_my_tickets,
     list_tickets,
     return_asset,
+    update_asset_id,
     update_category,
     update_category_field,
     update_maintenance_record,
+    update_maintenance_record_by_id,
     upsert_asset,
 )
 from app.shared.deps.organization_member import MemberContext
 
 
-async def handle_list_assets(ctx: MemberContext, db: AsyncSession, filters: AssetFilters) -> AssetListResponse:
+async def handle_list_assets(
+    ctx: MemberContext, db: AsyncSession, filters: AssetFilters
+) -> AssetListResponse:
     return await list_assets(db, ctx, filters)
 
 
-async def handle_get_asset(ctx: MemberContext, db: AsyncSession, asset_id: str) -> AssetDetailResponse:
+async def handle_get_asset(
+    ctx: MemberContext, db: AsyncSession, asset_id: str
+) -> AssetDetailResponse:
     return await get_asset(db, ctx, asset_id)
 
 
-async def handle_create_asset(ctx: MemberContext, db: AsyncSession, payload: AssetUpsertRequest) -> AssetDetailResponse:
+async def handle_create_asset(
+    ctx: MemberContext, db: AsyncSession, payload: AssetUpsertRequest
+) -> AssetDetailResponse:
     return await upsert_asset(db, ctx, payload)
 
 
@@ -114,6 +123,23 @@ async def handle_update_maintenance(
     return await update_maintenance_record(db, ctx, asset_id, maintenance_id, payload)
 
 
+async def handle_create_helpdesk_ticket(
+    ctx: MemberContext,
+    db: AsyncSession,
+    payload: HelpdeskTicketCreateRequest,
+) -> MyTicketResponse:
+    return await create_helpdesk_ticket(db, ctx, payload)
+
+
+async def handle_update_maintenance_by_id(
+    ctx: MemberContext,
+    db: AsyncSession,
+    maintenance_id: str,
+    payload: AssetMaintenanceUpdateRequest,
+) -> None:
+    await update_maintenance_record_by_id(db, ctx, maintenance_id, payload)
+
+
 async def handle_get_dashboard(ctx: MemberContext, db: AsyncSession) -> AssetDashboardResponse:
     return await get_dashboard(db, ctx)
 
@@ -126,37 +152,55 @@ async def handle_list_my_tickets(ctx: MemberContext, db: AsyncSession) -> list[M
     return await list_my_tickets(db, ctx)
 
 
-async def handle_list_tickets(ctx: MemberContext, db: AsyncSession) -> list[MaintenanceTicketResponse]:
+async def handle_list_tickets(
+    ctx: MemberContext, db: AsyncSession
+) -> list[MaintenanceTicketResponse]:
     return await list_tickets(db, ctx)
 
 
-async def handle_export_report(ctx: MemberContext, db: AsyncSession, payload: AssetReportRequest) -> str:
+async def handle_export_report(
+    ctx: MemberContext, db: AsyncSession, payload: AssetReportRequest
+) -> str:
     return await export_asset_report(db, ctx, payload)
 
 
-async def handle_export_report_pdf(ctx: MemberContext, db: AsyncSession, payload: AssetReportRequest) -> bytes:
+async def handle_export_report_pdf(
+    ctx: MemberContext, db: AsyncSession, payload: AssetReportRequest
+) -> bytes:
     return await export_asset_report_pdf(db, ctx, payload)
 
 
 # ── Asset ID CRUD handlers ────────────────────────────────────────────────────
 
+
 async def handle_create_asset_id(
-    ctx: MemberContext, db: AsyncSession, payload: AssetIdCreate,
+    ctx: MemberContext,
+    db: AsyncSession,
+    payload: AssetIdCreate,
 ) -> AssetIdResponse:
     return await create_asset_id(db, ctx, payload)
 
+
 async def handle_list_asset_ids(
-    ctx: MemberContext, db: AsyncSession,
+    ctx: MemberContext,
+    db: AsyncSession,
 ) -> list[AssetIdResponse]:
     return await list_asset_ids(db, ctx)
 
+
 async def handle_update_asset_id(
-    ctx: MemberContext, db: AsyncSession, asset_id_id: str, payload: AssetIdUpdate,
+    ctx: MemberContext,
+    db: AsyncSession,
+    asset_id_id: str,
+    payload: AssetIdUpdate,
 ) -> AssetIdResponse:
     return await update_asset_id(db, ctx, asset_id_id, payload)
 
+
 async def handle_delete_asset_id(
-    ctx: MemberContext, db: AsyncSession, asset_id_id: str,
+    ctx: MemberContext,
+    db: AsyncSession,
+    asset_id_id: str,
 ) -> None:
     await delete_asset_id(db, ctx, asset_id_id)
 
@@ -172,7 +216,9 @@ async def handle_create_category(
     return await create_category(db, ctx, payload)
 
 
-async def handle_list_categories(ctx: MemberContext, db: AsyncSession) -> list[AssetCategoryResponse]:
+async def handle_list_categories(
+    ctx: MemberContext, db: AsyncSession
+) -> list[AssetCategoryResponse]:
     return await list_categories(db, ctx)
 
 

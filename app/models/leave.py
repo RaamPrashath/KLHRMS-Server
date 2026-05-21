@@ -1,9 +1,20 @@
 """Leave management models."""
-import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, generate_uuid
@@ -51,7 +62,15 @@ class LeaveRequest(Base):
     endDate: Mapped[date] = mapped_column(Date, nullable=False)
     days: Mapped[float] = mapped_column(Float, nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default=LeaveRequestStatus.PENDING)
+    status: Mapped[LeaveRequestStatus] = mapped_column(
+        PGEnum(
+            LeaveRequestStatus,
+            name="LeaveRequestStatus",
+            create_type=False,
+        ),
+        nullable=False,
+        default=LeaveRequestStatus.PENDING,
+    )
 
     approvedById: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("member.id", ondelete="SET NULL"), nullable=True

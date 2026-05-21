@@ -29,6 +29,7 @@ from app.models.recruitment import (
     StageEventParticipant,
 )
 from app.models.user import User
+from app.shared.utils.enums import LeaveRequestStatus
 
 
 class CandidatePipelineRepository:
@@ -273,7 +274,7 @@ class CandidatePipelineRepository:
             select(LeaveRequest).where(
                 LeaveRequest.organizationId == organization_id,
                 LeaveRequest.memberId.in_(member_ids),
-                LeaveRequest.status == "APPROVED",
+                LeaveRequest.status == LeaveRequestStatus.APPROVED,
                 LeaveRequest.deletedAt.is_(None),
                 or_(
                     *[
