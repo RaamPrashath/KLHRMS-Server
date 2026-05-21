@@ -13,6 +13,7 @@ from app.models.recruitment import (
     JobPosting,
     JobPostingStatus,
     JobRequisition,
+    JobRequisitionStatus,
     PipelineStage,
     RequisitionActivityLog,
     RequisitionApproval,
@@ -53,6 +54,31 @@ class JobRequisitionRepository:
         if team_member_ids is not None:
             query = query.where(JobRequisition.raisedById.in_(team_member_ids))
 
+        result = await self.db.execute(query)
+        return list(result.unique().scalars().all())
+
+    async def list_requisitions_by_statuses(
+        self,
+        organization_id: str,
+        statuses: list[JobRequisitionStatus],
+    ) -> list[JobRequisition]:
+        query = (
+            select(JobRequisition)
+            .options(
+                joinedload(JobRequisition.organization),
+                joinedload(JobRequisition.department),
+                joinedload(JobRequisition.raisedBy).joinedload(Member.user),
+                joinedload(JobRequisition.replacementFor).joinedload(Member.user),
+                selectinload(JobRequisition.approvals)
+                .joinedload(RequisitionApproval.approver)
+                .joinedload(Member.user),
+            )
+            .where(
+                JobRequisition.organizationId == organization_id,
+                JobRequisition.status.in_(statuses),
+            )
+            .order_by(JobRequisition.createdAt.desc())
+        )
         result = await self.db.execute(query)
         return list(result.unique().scalars().all())
 

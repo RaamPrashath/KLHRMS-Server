@@ -970,6 +970,7 @@ async def create_stage(
     actor_member_id: str,
     actor_user_id: str,
     body: PipelineStageCreateRequest,
+    access_scope: str | None = None,
 ) -> PipelineStageRead:
     repository = CandidatePipelineRepository(db)
     posting = await repository.get_job_posting(organization_id, body.jobPostingId)

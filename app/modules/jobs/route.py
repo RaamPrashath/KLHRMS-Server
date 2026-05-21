@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.jobs.controller import (
@@ -62,7 +62,11 @@ def _pick_best_scope(*scopes: str | None) -> str | None:
 
 def require_requisition_view_or_approve(
     ctx: MemberContext = Depends(get_member_context),
+    view_scope_override: str | None = Query(None, alias="view_scope"),
 ) -> MemberContext:
+    if view_scope_override:
+        ctx.scope = view_scope_override  # type: ignore[attr-defined]
+        return ctx
     view_scope = get_member_permission_scope(ctx.member, "jobs", "view")
     approve_scope = get_member_permission_scope(ctx.member, "jobs", "approve")
     best = _pick_best_scope(view_scope, approve_scope)

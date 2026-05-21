@@ -584,25 +584,32 @@ async def list_requisitions(
 ) -> list[JobRequisitionListItemRead]:
     repository = JobRequisitionRepository(db)
     if view_scope == "organization":
-        raised_by_id = None
+        requisitions = await repository.list_requisitions(organization_id, raised_by_id=None)
     elif view_scope == "self":
-        raised_by_id = actor_member_id
+        own = await repository.list_requisitions(organization_id, raised_by_id=actor_member_id)
+        open_statuses = [
+            JobRequisitionStatus.APPROVED,
+            JobRequisitionStatus.PUBLISHED,
+            JobRequisitionStatus.ACTIVE_HIRING,
+        ]
+        open_reqs = await repository.list_requisitions_by_statuses(organization_id, open_statuses)
+        merged = {r.id: r for r in own}
+        for r in open_reqs:
+            merged[r.id] = r
+        requisitions = list(merged.values())
     elif view_scope == "department":
         department_ids = await _get_member_department_ids(db, actor_member_id)
         requisitions = await repository.list_requisitions(
             organization_id, department_ids=department_ids
         )
-        return [_serialize_requisition(requisition, actor_member_id) for requisition in requisitions]
     elif view_scope == "team":
         team_member_ids = await _get_team_member_ids(db, actor_member_id)
         requisitions = await repository.list_requisitions(
             organization_id, team_member_ids=team_member_ids
         )
-        return [_serialize_requisition(requisition, actor_member_id) for requisition in requisitions]
     else:
         raise HTTPException(status_code=403, detail="you dont have permission")
-    requisitions = await repository.list_requisitions(organization_id, raised_by_id=raised_by_id)
-    return [_serialize_requisition(requisition, actor_member_id) for requisition in requisitions]
+    return [_serialize_requisition(r, actor_member_id) for r in requisitions]
 
 
 async def get_requisition(
