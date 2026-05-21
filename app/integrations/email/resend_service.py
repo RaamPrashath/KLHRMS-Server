@@ -7,6 +7,49 @@ from app.shared.config import get_settings
 
 RESEND_EMAILS_URL = "https://api.resend.com/emails"
 
+EMAIL_HEAD = """\
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700&display=swap');
+  </style>
+</head>
+<body style="margin:0;padding:0;background:#f5f5f7;font-family:'Figtree','Inter','Segoe UI',Arial,sans-serif;">"""
+
+
+def _email_wrapper(content: str) -> str:
+    return f"""\
+{EMAIL_HEAD}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f7;padding:40px 20px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;">
+          <tr>
+            <td style="padding:32px 40px 0;">
+              <div style="font-size:22px;font-weight:700;color:#1d1d1f;letter-spacing:-0.5px;">Kovan Labs</div>
+              <hr style="border:none;border-top:1px solid #e5e5e7;margin:24px 0;" />
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 40px 32px;font-size:15px;line-height:1.6;color:#1d1d1f;font-weight:400;">
+              {content}
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#f5f5f7;padding:24px 40px;font-size:13px;color:#86868b;text-align:center;">
+              <p style="margin:0 0 4px;font-weight:600;color:#6e6e73;">Kovan Labs</p>
+              <p style="margin:0;">&copy; 2026 Kovan Labs. All rights reserved.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
 
 class ResendEmailService:
     def __init__(self) -> None:
@@ -40,27 +83,32 @@ class ResendEmailService:
             raise HTTPException(status_code=400, detail="Resend API key is not configured")
 
         subject = f"Interview invitation for {job_title}"
-        html = f"""
-        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#1d1d1f">
-          <p>Hello {candidate_name},</p>
-          <p>Your interview for <strong>{job_title}</strong> has been scheduled.</p>
-          <p><strong>Stage:</strong> {stage_name}<br />
-          <strong>Time:</strong> {starts_at_text}</p>
-          <p>
-            <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:10px 14px;border-radius:8px">
-              Join Google Meet
-            </a>
-          </p>
-          <p>If the button does not work, open this link:<br />
-          <a href="{meeting_url}">{meeting_url}</a></p>
-        </div>
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {candidate_name},</p>
+          <p style="margin:0 0 16px;">Your interview for <strong>{job_title}</strong> has been scheduled.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Stage</td><td style="padding:2px 0;font-size:14px;">{stage_name}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Time</td><td style="padding:2px 0;font-size:14px;">{starts_at_text}</td></tr>
+          </table>
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Google Meet</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If the button does not work, open this link:<br /><a href="{meeting_url}" style="color:#00874a;">{meeting_url}</a></p>
         """
+        html = _email_wrapper(body)
         text = (
+            f"Kovan Labs\n\n"
             f"Hello {candidate_name},\n\n"
             f"Your interview for {job_title} has been scheduled.\n"
             f"Stage: {stage_name}\n"
-            f"Time: {starts_at_text}\n"
-            f"Google Meet: {meeting_url}\n"
+            f"Time: {starts_at_text}\n\n"
+            f"Google Meet: {meeting_url}\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
         )
         from_email, recipient_list = self._resolve_delivery(to_email)
 
@@ -94,23 +142,27 @@ class ResendEmailService:
         starts_at_text: str,
     ) -> None:
         subject = f"Interview assigned: {candidate_name}"
-        html = f"""
-        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#1d1d1f">
-          <p>Hello {interviewer_name},</p>
-          <p>You have been assigned an interview for <strong>{candidate_name}</strong>.</p>
-          <p><strong>Organization:</strong> {organization_name}<br />
-          <strong>Stage:</strong> {stage_name}<br />
-          <strong>Time:</strong> {starts_at_text}<br />
-          <strong>Candidate email:</strong> {candidate_email}</p>
-        </div>
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {interviewer_name},</p>
+          <p style="margin:0 0 16px;">You have been assigned an interview for <strong>{candidate_name}</strong>.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 8px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Organization</td><td style="padding:2px 0;font-size:14px;">{organization_name}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Stage</td><td style="padding:2px 0;font-size:14px;">{stage_name}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Time</td><td style="padding:2px 0;font-size:14px;">{starts_at_text}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Candidate email</td><td style="padding:2px 0;font-size:14px;">{candidate_email}</td></tr>
+          </table>
         """
+        html = _email_wrapper(body)
         text = (
+            f"Kovan Labs\n\n"
             f"Hello {interviewer_name},\n\n"
             f"You have been assigned an interview for {candidate_name}.\n"
             f"Organization: {organization_name}\n"
             f"Stage: {stage_name}\n"
             f"Time: {starts_at_text}\n"
-            f"Candidate email: {candidate_email}\n"
+            f"Candidate email: {candidate_email}\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
         )
         await self._send_email(to_email, subject, html, text)
 
@@ -123,19 +175,23 @@ class ResendEmailService:
         starts_at_text: str,
     ) -> None:
         subject = f"Interview scheduled with {organization_name}"
-        html = f"""
-        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#1d1d1f">
-          <p>Hello {candidate_name},</p>
-          <p>Your interview with <strong>{organization_name}</strong> has been scheduled.</p>
-          <p><strong>Interviewer:</strong> {interviewer_name}<br />
-          <strong>Time:</strong> {starts_at_text}</p>
-        </div>
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {candidate_name},</p>
+          <p style="margin:0 0 16px;">Your interview with <strong>{organization_name}</strong> has been scheduled.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 8px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Interviewer</td><td style="padding:2px 0;font-size:14px;">{interviewer_name}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Time</td><td style="padding:2px 0;font-size:14px;">{starts_at_text}</td></tr>
+          </table>
         """
+        html = _email_wrapper(body)
         text = (
+            f"Kovan Labs\n\n"
             f"Hello {candidate_name},\n\n"
             f"Your interview with {organization_name} has been scheduled.\n"
             f"Interviewer: {interviewer_name}\n"
-            f"Time: {starts_at_text}\n"
+            f"Time: {starts_at_text}\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
         )
         await self._send_email(to_email, subject, html, text)
 
@@ -152,27 +208,32 @@ class ResendEmailService:
             raise HTTPException(status_code=400, detail="Resend API key is not configured")
 
         subject = f"Interview rescheduled – {job_title}"
-        html = f"""
-        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#1d1d1f">
-          <p>Hello {candidate_name},</p>
-          <p>Your interview for <strong>{job_title}</strong> has been <strong>rescheduled</strong>.</p>
-          <p><strong>Stage:</strong> {stage_name}<br />
-          <strong>New time:</strong> {starts_at_text}</p>
-          <p>
-            <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:10px 14px;border-radius:8px">
-              Join Google Meet
-            </a>
-          </p>
-          <p>If the button does not work, open this link:<br />
-          <a href="{meeting_url}">{meeting_url}</a></p>
-        </div>
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {candidate_name},</p>
+          <p style="margin:0 0 16px;">Your interview for <strong>{job_title}</strong> has been <strong>rescheduled</strong>.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Stage</td><td style="padding:2px 0;font-size:14px;">{stage_name}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">New time</td><td style="padding:2px 0;font-size:14px;">{starts_at_text}</td></tr>
+          </table>
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Google Meet</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If the button does not work, open this link:<br /><a href="{meeting_url}" style="color:#00874a;">{meeting_url}</a></p>
         """
+        html = _email_wrapper(body)
         text = (
+            f"Kovan Labs\n\n"
             f"Hello {candidate_name},\n\n"
             f"Your interview for {job_title} has been rescheduled.\n"
             f"Stage: {stage_name}\n"
-            f"New time: {starts_at_text}\n"
-            f"Google Meet: {meeting_url}\n"
+            f"New time: {starts_at_text}\n\n"
+            f"Google Meet: {meeting_url}\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
         )
         from_email, recipient_list = self._resolve_delivery(to_email)
 
@@ -206,23 +267,26 @@ class ResendEmailService:
             raise HTTPException(status_code=400, detail="Resend API key is not configured")
 
         subject = f"Your interview for {job_title} is ready"
-        html = f"""
-        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#1d1d1f">
-          <p>Hello {candidate_name},</p>
-          <p>Your interview for <strong>{job_title}</strong> is ready to join.</p>
-          <p>
-            <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:10px 14px;border-radius:8px">
-              Join Google Meet
-            </a>
-          </p>
-          <p>If the button does not work, open this link:<br />
-          <a href="{meeting_url}">{meeting_url}</a></p>
-        </div>
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {candidate_name},</p>
+          <p style="margin:0 0 20px;">Your interview for <strong>{job_title}</strong> is ready to join.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Google Meet</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If the button does not work, open this link:<br /><a href="{meeting_url}" style="color:#00874a;">{meeting_url}</a></p>
         """
+        html = _email_wrapper(body)
         text = (
+            f"Kovan Labs\n\n"
             f"Hello {candidate_name},\n\n"
-            f"Your interview for {job_title} is ready to join.\n"
-            f"Google Meet: {meeting_url}\n"
+            f"Your interview for {job_title} is ready to join.\n\n"
+            f"Google Meet: {meeting_url}\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
         )
         from_email, recipient_list = self._resolve_delivery(to_email)
 
@@ -256,25 +320,29 @@ class ResendEmailService:
         reason: str,
     ) -> None:
         subject = f"Interview reassignment request - {candidate_name} for {stage_name}"
-        html = f"""
-        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#1d1d1f">
-          <p>Hello HR Team,</p>
-          <p>An interviewer has requested reassignment for an interview.</p>
-          <p><strong>Candidate:</strong> {candidate_name}<br />
-          <strong>Stage:</strong> {stage_name}<br />
-          <strong>Interviewer:</strong> {interviewer_name} ({interviewer_email})<br />
-          <strong>Reason:</strong> {reason}</p>
-          <p>Please review and reassign this interview as appropriate.</p>
-        </div>
+        body = f"""
+          <p style="margin:0 0 16px;">Hello HR Team,</p>
+          <p style="margin:0 0 16px;">An interviewer has requested reassignment for an interview.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 8px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Candidate</td><td style="padding:2px 0;font-size:14px;">{candidate_name}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Stage</td><td style="padding:2px 0;font-size:14px;">{stage_name}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Interviewer</td><td style="padding:2px 0;font-size:14px;">{interviewer_name} ({interviewer_email})</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Reason</td><td style="padding:2px 0;font-size:14px;">{reason}</td></tr>
+          </table>
+          <p style="margin:16px 0 0;">Please review and reassign this interview as appropriate.</p>
         """
+        html = _email_wrapper(body)
         text = (
+            f"Kovan Labs\n\n"
             f"Hello HR Team,\n\n"
             f"An interviewer has requested reassignment for an interview.\n"
             f"Candidate: {candidate_name}\n"
             f"Stage: {stage_name}\n"
             f"Interviewer: {interviewer_name} ({interviewer_email})\n"
             f"Reason: {reason}\n\n"
-            f"Please review and reassign this interview as appropriate.\n"
+            f"Please review and reassign this interview as appropriate.\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
         )
         await self._send_email(to_email, subject, html, text)
 
@@ -288,23 +356,27 @@ class ResendEmailService:
         organization_name: str,
     ) -> None:
         subject = f"You are a backup interviewer for {candidate_name} - {organization_name}"
-        html = f"""
-        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5;color:#1d1d1f">
-          <p>Hello {backup_name},</p>
-          <p>You have been added as a backup interviewer for an upcoming interview at <strong>{organization_name}</strong>.</p>
-          <p><strong>Candidate:</strong> {candidate_name}<br />
-          <strong>Stage:</strong> {stage_name}<br />
-          <strong>Time:</strong> {starts_at_text}</p>
-          <p>You will be contacted if the primary interviewer is unavailable.</p>
-        </div>
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {backup_name},</p>
+          <p style="margin:0 0 16px;">You have been added as a backup interviewer for an upcoming interview at <strong>{organization_name}</strong>.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 8px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Candidate</td><td style="padding:2px 0;font-size:14px;">{candidate_name}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Stage</td><td style="padding:2px 0;font-size:14px;">{stage_name}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Time</td><td style="padding:2px 0;font-size:14px;">{starts_at_text}</td></tr>
+          </table>
+          <p style="margin:16px 0 0;">You will be contacted if the primary interviewer is unavailable.</p>
         """
+        html = _email_wrapper(body)
         text = (
+            f"Kovan Labs\n\n"
             f"Hello {backup_name},\n\n"
             f"You have been added as a backup interviewer for an upcoming interview at {organization_name}.\n"
             f"Candidate: {candidate_name}\n"
             f"Stage: {stage_name}\n"
             f"Time: {starts_at_text}\n\n"
-            f"You will be contacted if the primary interviewer is unavailable.\n"
+            f"You will be contacted if the primary interviewer is unavailable.\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
         )
         await self._send_email(to_email, subject, html, text)
 

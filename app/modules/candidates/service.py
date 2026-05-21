@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
@@ -86,6 +85,7 @@ from app.modules.candidates.schema import (
     TeamDistributionRequest,
     TeamDistributionResponse,
 )
+from app.shared.utils.slugs import generate_unique_slug
 
 DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
     {"name": "Applied", "order": 1.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.DEFAULT},
@@ -105,11 +105,6 @@ def _is_protected_stage(stage: PipelineStage) -> bool:
     return stage.name.strip().lower() == "applied" and stage.order == 1
 
 
-def _slugify_stage_name(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
-    return slug or "stage"
-
-
 async def _generate_stage_slug(
     repository: CandidatePipelineRepository,
     organization_id: str,
@@ -122,13 +117,7 @@ async def _generate_stage_slug(
         excluded_stage = await repository.get_stage(organization_id, excluded_stage_id)
         if excluded_stage is not None:
             used_slugs.discard(excluded_stage.slug)
-    base_slug = _slugify_stage_name(name)
-    candidate = base_slug
-    suffix = 2
-    while candidate in used_slugs:
-        candidate = f"{base_slug}-{suffix}"
-        suffix += 1
-    return candidate
+    return generate_unique_slug(name, used_slugs, fallback="stage")
 
 
 def _next_working_day_from_stage(stage: PipelineStage) -> None:
@@ -179,7 +168,7 @@ def _serialize_candidate(candidate: Candidate) -> CandidateSummaryRead:
         currentTitle=candidate.currentTitle,
         totalExperience=candidate.totalExperience,
         resumeUrl=candidate.resumeUrl,
-        image=candidate.user.image if candidate.user else None,
+        image=None,
     )
 
 
@@ -552,6 +541,22 @@ def _primary_participant(event: StageEvent) -> StageEventParticipant | None:
         if participant.role == "INTERVIEWER" or participant.role is None:
             return participant
     return None
+
+
+def _is_primary_interviewer(event: StageEvent, member_id: str) -> bool:
+    participant = _primary_participant(event)
+    return (
+        participant is not None
+        and participant.memberId == member_id
+        and participant.approvalStatus != "REJECTED"
+    )
+
+
+def _ensure_self_interview_access(event: StageEvent, member_id: str, access_scope: str | None) -> None:
+    if access_scope != "self":
+        return
+    if not _is_primary_interviewer(event, member_id):
+        raise HTTPException(status_code=403, detail="you dont have permission")
 
 
 def _is_locked_assignment(event: StageEvent | None) -> bool:
@@ -1814,6 +1819,7 @@ async def move_interview_assignment(
 async def accept_interview(
     db: AsyncSession,
     organization_id: str,
+    organization_name: str,
     member_id: str,
     actor_user_id: str,
     event_id: str,
@@ -1889,6 +1895,18 @@ async def accept_interview(
                 durationMinutes=body.durationMinutes,
             ),
         )
+        if event.status == EventStatus.COMPLETED and meeting.id != event.id:
+            db.add(
+                StageEventParticipant(
+                    eventId=meeting.id,
+                    memberId=member_id,
+                    role="INTERVIEWER",
+                    approvalStatus="SCHEDULED",
+                    approvedAt=now,
+                    scheduledTime=starts_at,
+                )
+            )
+            await db.commit()
     else:
         participant.approvalStatus = "ACCEPTED"
         db.add(participant)
@@ -2057,10 +2075,11 @@ async def list_my_interviews(
             status = "PENDING_ACCEPTANCE"
         if status in {"PENDING_ACCEPTANCE", "ACCEPTED", "REJECTED"}:
             display_status = status
+        elif status == "SCHEDULED":
+            computed_status = _computed_interview_status(event)
+            display_status = "SCHEDULED" if computed_status == "PENDING" else computed_status
         else:
             display_status = _computed_interview_status(event)
-            if status == "SCHEDULED":
-                display_status = "SCHEDULED" if display_status == "PENDING" else display_status
         items.append(
             MyInterviewRead(
                 eventId=event.id,
@@ -2069,12 +2088,19 @@ async def list_my_interviews(
                 stageName=stage.name if stage else "",
                 candidate=_serialize_candidate(candidate),
                 jobTitle=application.jobPosting.title if application.jobPosting else "",
+                jobPostingId=application.jobPosting.id if application.jobPosting else "",
+                jobSlug=application.jobPosting.slug if application.jobPosting else None,
                 scheduledStartAt=event.scheduledStartAt,
                 scheduledEndAt=event.scheduledEndAt,
                 status=display_status,
                 role=participant.role or "INTERVIEWER",
                 isBackup=is_backup,
                 meetingUrl=event.meetingUrl,
+                stageDueDate=stage.dueDate if stage else None,
+                evaluationCategories=[
+                    _serialize_category(category)
+                    for category in sorted(stage.evaluationCategories or [], key=lambda item: item.order)
+                ] if stage else [],
             )
         )
     return MyInterviewListResponse(items=items)
@@ -2143,6 +2169,7 @@ async def create_interview_meeting(
     actor_user_id: str,
     application_id: str,
     body: InterviewMeetingCreateRequest,
+    access_scope: str | None = None,
 ) -> InterviewMeetingRead:
     repository = CandidatePipelineRepository(db)
     application = await repository.get_application(organization_id, application_id)
@@ -2159,6 +2186,10 @@ async def create_interview_meeting(
         application.id,
         stage.id,
     )
+    if access_scope == "self":
+        if latest_event is None:
+            raise HTTPException(status_code=403, detail="you dont have permission")
+        _ensure_self_interview_access(latest_event, actor_member_id, access_scope)
 
     starts_at = body.scheduledStartAt if body.mode == "SCHEDULE" else datetime.now(UTC)
     if starts_at is None:
@@ -2197,11 +2228,8 @@ async def create_interview_meeting(
             meeting_url=meeting.meeting_url,
         )
 
-        event = (
-            None
-            if latest_event is not None and latest_event.status == EventStatus.COMPLETED
-            else latest_event
-        ) or StageEvent(
+        created_new_event = latest_event is not None and latest_event.status == EventStatus.COMPLETED
+        event = (None if created_new_event else latest_event) or StageEvent(
             organizationId=organization_id,
             applicationId=application.id,
             stageId=stage.id,
@@ -2222,6 +2250,18 @@ async def create_interview_meeting(
         event.googleCalendarEventUrl = meeting.html_link
         event.emailSentAt = datetime.now(UTC)
         await repository.add_stage_event(event)
+        if access_scope == "self" and created_new_event:
+            await db.flush()
+            db.add(
+                StageEventParticipant(
+                    eventId=event.id,
+                    memberId=actor_member_id,
+                    role="INTERVIEWER",
+                    approvalStatus="SCHEDULED",
+                    approvedAt=datetime.now(UTC),
+                    scheduledTime=meeting.starts_at,
+                )
+            )
         await db.commit()
         return _serialize_interview_meeting(event)
 
@@ -2246,11 +2286,8 @@ async def create_interview_meeting(
         meeting_url=meeting.meeting_url,
     )
 
-    event = (
-        None
-        if latest_event is not None and latest_event.status == EventStatus.COMPLETED
-        else latest_event
-    ) or StageEvent(
+    created_new_event = latest_event is not None and latest_event.status == EventStatus.COMPLETED
+    event = (None if created_new_event else latest_event) or StageEvent(
         organizationId=organization_id,
         applicationId=application.id,
         stageId=stage.id,
@@ -2271,6 +2308,18 @@ async def create_interview_meeting(
     event.notes = body.notes
     event.emailSentAt = datetime.now(UTC)
     await repository.add_stage_event(event)
+    if access_scope == "self" and created_new_event:
+        await db.flush()
+        db.add(
+            StageEventParticipant(
+                eventId=event.id,
+                memberId=actor_member_id,
+                role="INTERVIEWER",
+                approvalStatus="SCHEDULED",
+                approvedAt=datetime.now(UTC),
+                scheduledTime=meeting.starts_at,
+            )
+        )
     await db.commit()
     return _serialize_interview_meeting(event)
 
@@ -2283,6 +2332,7 @@ async def update_interview_meeting(
     application_id: str,
     event_id: str,
     body: InterviewMeetingUpdateRequest,
+    access_scope: str | None = None,
 ) -> InterviewMeetingRead:
     repository = CandidatePipelineRepository(db)
     application = await repository.get_application(organization_id, application_id)
@@ -2301,6 +2351,7 @@ async def update_interview_meeting(
     )
     if latest_event is None or latest_event.id != event_id:
         raise HTTPException(status_code=404, detail="Interview meeting not found")
+    _ensure_self_interview_access(latest_event, actor_member_id, access_scope)
     if latest_event.status != EventStatus.SCHEDULED:
         raise HTTPException(status_code=400, detail="Only scheduled interviews can be rescheduled")
 
@@ -2361,11 +2412,13 @@ async def start_interview_meeting(
     actor_user_id: str,
     application_id: str,
     event_id: str,
+    access_scope: str | None = None,
 ) -> InterviewMeetingRead:
     repository = CandidatePipelineRepository(db)
     event = await repository.get_stage_event(organization_id, application_id, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Interview meeting not found")
+    _ensure_self_interview_access(event, actor_member_id, access_scope)
     if event.status != EventStatus.SCHEDULED:
         raise HTTPException(status_code=400, detail="Only scheduled interviews can be started")
 
@@ -2397,11 +2450,13 @@ async def complete_interview_meeting(
     actor_member_id: str,
     actor_user_id: str,
     body: InterviewMeetingCompleteRequest,
+    access_scope: str | None = None,
 ) -> InterviewMeetingRead:
     repository = CandidatePipelineRepository(db)
     event = await repository.get_stage_event(organization_id, application_id, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Interview meeting not found")
+    _ensure_self_interview_access(event, actor_member_id, access_scope)
     if event.scheduledStartAt is None or event.scheduledEndAt is None:
         raise HTTPException(status_code=400, detail="Interview meeting is missing schedule metadata")
 

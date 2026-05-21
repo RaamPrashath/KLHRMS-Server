@@ -49,18 +49,27 @@ from app.shared.utils.permissions import get_member_permission_scope
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
+_SCOPE_RANK = {"none": 0, None: 0, "self": 1, "team": 2, "department": 3, "organization": 4}
+
+
+def _pick_best_scope(*scopes: str | None) -> str | None:
+    """Return the highest-ranked scope from the provided options."""
+    valid = [s for s in scopes if s]
+    if not valid:
+        return None
+    return max(valid, key=lambda s: _SCOPE_RANK.get(s, 0))
+
+
 def require_requisition_view_or_approve(
     ctx: MemberContext = Depends(get_member_context),
 ) -> MemberContext:
     view_scope = get_member_permission_scope(ctx.member, "jobs", "view")
     approve_scope = get_member_permission_scope(ctx.member, "jobs", "approve")
-    if approve_scope == "organization" or view_scope == "organization":
-        ctx.scope = "organization"  # type: ignore[attr-defined]
-        return ctx
-    if view_scope == "self":
-        ctx.scope = "self"  # type: ignore[attr-defined]
-        return ctx
-    raise HTTPException(status_code=403, detail="you dont have permission")
+    best = _pick_best_scope(view_scope, approve_scope)
+    if best is None or _SCOPE_RANK.get(best, 0) == 0:
+        raise HTTPException(status_code=403, detail="you dont have permission")
+    ctx.scope = best  # type: ignore[attr-defined]
+    return ctx
 
 
 def require_requisition_pipeline_edit(
@@ -68,13 +77,11 @@ def require_requisition_pipeline_edit(
 ) -> MemberContext:
     edit_scope = get_member_permission_scope(ctx.member, "jobs", "edit")
     approve_scope = get_member_permission_scope(ctx.member, "jobs", "approve")
-    if approve_scope == "organization" or edit_scope == "organization":
-        ctx.scope = "organization"  # type: ignore[attr-defined]
-        return ctx
-    if edit_scope == "self":
-        ctx.scope = "self"  # type: ignore[attr-defined]
-        return ctx
-    raise HTTPException(status_code=403, detail="you dont have permission")
+    best = _pick_best_scope(edit_scope, approve_scope)
+    if best is None or _SCOPE_RANK.get(best, 0) == 0:
+        raise HTTPException(status_code=403, detail="you dont have permission")
+    ctx.scope = best  # type: ignore[attr-defined]
+    return ctx
 
 
 @router.get("/requisitions", response_model=list[JobRequisitionListItemRead])

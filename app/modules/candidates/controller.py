@@ -79,6 +79,7 @@ async def handle_move_application_stage(
         ctx.member.userId,
         application_id,
         body,
+        getattr(ctx, "scope", None),
     )
 
 
@@ -94,6 +95,7 @@ async def handle_create_stage(
         ctx.member.id,
         ctx.member.userId,
         body,
+        getattr(ctx, "scope", None),
     )
 
 
@@ -276,6 +278,7 @@ async def handle_create_interview_meeting(
         ctx.member.userId,
         application_id,
         body,
+        getattr(ctx, "scope", None),
     )
 
 
@@ -294,6 +297,7 @@ async def handle_complete_interview_meeting(
         ctx.member.id,
         ctx.member.userId,
         body,
+        getattr(ctx, "scope", None),
     )
 
 
@@ -312,6 +316,7 @@ async def handle_update_interview_meeting(
         application_id,
         event_id,
         body,
+        getattr(ctx, "scope", None),
     )
 
 
@@ -328,6 +333,7 @@ async def handle_start_interview_meeting(
         ctx.member.userId,
         application_id,
         event_id,
+        getattr(ctx, "scope", None),
     )
 
 
@@ -340,6 +346,7 @@ async def handle_accept_interview(
     return await service.accept_interview(
         db,
         ctx.organization.id,
+        ctx.organization.name,
         ctx.member.id,
         ctx.member.userId,
         event_id,

@@ -27,7 +27,7 @@ from app.modules.departments.schema import (
     TeamUpsertRequest,
 )
 from app.shared.database import get_db
-from app.shared.deps.organization_member import MemberContext
+from app.shared.deps.organization_member import MemberContext, get_member_context
 from app.shared.deps.permissions import require_permission
 
 router = APIRouter(prefix="/departments", tags=["departments"])
@@ -45,7 +45,7 @@ async def list_departments(
 
 @router.get("/meta", response_model=DepartmentMetaResponse)
 async def get_department_meta(
-    access: Annotated[MemberContext, Depends(require_permission("departments", "view"))],
+    access: Annotated[MemberContext, Depends(get_member_context)],
     db: DbSession,
 ) -> DepartmentMetaResponse:
     return await handle_get_meta(access, db)

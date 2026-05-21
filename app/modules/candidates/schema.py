@@ -265,12 +265,16 @@ class MyInterviewRead(BaseModel):
     stageName: str
     candidate: CandidateSummaryRead
     jobTitle: str
+    jobPostingId: str
+    jobSlug: str | None = None
     scheduledStartAt: datetime | None
     scheduledEndAt: datetime | None
     status: str
     role: str
     isBackup: bool
     meetingUrl: str | None = None
+    stageDueDate: datetime | None = None
+    evaluationCategories: list[StageEvaluationCategoryRead] = Field(default_factory=list)
 
 
 class MyInterviewListResponse(BaseModel):

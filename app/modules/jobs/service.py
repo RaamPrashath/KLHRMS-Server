@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.department_member import DepartmentMember
 from app.models.recruitment import (
     ApplicationSource,
     ApplicationStageHistory,
@@ -22,6 +23,7 @@ from app.models.recruitment import (
     StageEvaluationCategory,
     StageType,
 )
+from app.models.team_member import TeamMember
 from app.modules.jobs.repository import JobRequisitionRepository
 from app.modules.jobs.schema import (
     CreatePipelineStageRequest,
@@ -45,6 +47,60 @@ from app.shared.notifications.email import (
     send_requisition_decided,
     send_requisition_submitted,
 )
+from app.shared.utils.slugs import generate_unique_slug, slugify
+
+_SCOPE_RANK = {"none": 0, "self": 1, "team": 2, "department": 3, "organization": 4}
+
+
+async def _get_member_department_ids(db: AsyncSession, member_id: str) -> list[str]:
+    result = await db.execute(
+        select(DepartmentMember.departmentId).where(DepartmentMember.memberId == member_id)
+    )
+    return [row[0] for row in result.all()]
+
+
+async def _get_team_member_ids(db: AsyncSession, member_id: str) -> list[str]:
+    """Get all member IDs in the same teams as the given member."""
+    result = await db.execute(
+        select(TeamMember.teamId).where(TeamMember.memberId == member_id)
+    )
+    team_ids = [row[0] for row in result.all()]
+    if not team_ids:
+        return []
+
+    result = await db.execute(
+        select(TeamMember.memberId).where(TeamMember.teamId.in_(team_ids))
+    )
+    return list({row[0] for row in result.all()})
+
+
+async def _check_single_requisition_access(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    scope: str,
+    requisition: JobRequisition,
+) -> None:
+    """Raise 403 if the actor's scope doesn't grant access to this requisition."""
+    if scope == "organization":
+        return
+    if scope == "department":
+        if requisition.departmentId is None:
+            raise HTTPException(status_code=403, detail="you dont have permission")
+        dept_ids = await _get_member_department_ids(db, actor_member_id)
+        if requisition.departmentId not in dept_ids:
+            raise HTTPException(status_code=403, detail="you dont have permission")
+        return
+    if scope == "team":
+        team_member_ids = await _get_team_member_ids(db, actor_member_id)
+        if requisition.raisedById not in team_member_ids:
+            raise HTTPException(status_code=403, detail="you dont have permission")
+        return
+    if scope == "self":
+        if requisition.raisedById != actor_member_id:
+            raise HTTPException(status_code=403, detail="you dont have permission")
+        return
+    raise HTTPException(status_code=403, detail="you dont have permission")
 
 SETUP_DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
     {"name": "Screening", "stageType": StageType.DEFAULT, "isFinal": False},
@@ -56,8 +112,7 @@ SETUP_DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
 
 
 def _slugify(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
-    return slug or "item"
+    return slugify(value, fallback="item")
 
 
 async def _generate_job_slug(
@@ -77,14 +132,7 @@ async def _generate_job_slug(
 
 
 def _generate_stage_slug(name: str, used: set[str]) -> str:
-    base_slug = _slugify(name)
-    candidate = base_slug
-    suffix = 2
-    while candidate in used:
-        candidate = f"{base_slug}-{suffix}"
-        suffix += 1
-    used.add(candidate)
-    return candidate
+    return generate_unique_slug(name, used, fallback="stage")
 
 
 def _to_utc_datetime(value: datetime | None) -> datetime | None:
@@ -539,6 +587,18 @@ async def list_requisitions(
         raised_by_id = None
     elif view_scope == "self":
         raised_by_id = actor_member_id
+    elif view_scope == "department":
+        department_ids = await _get_member_department_ids(db, actor_member_id)
+        requisitions = await repository.list_requisitions(
+            organization_id, department_ids=department_ids
+        )
+        return [_serialize_requisition(requisition, actor_member_id) for requisition in requisitions]
+    elif view_scope == "team":
+        team_member_ids = await _get_team_member_ids(db, actor_member_id)
+        requisitions = await repository.list_requisitions(
+            organization_id, team_member_ids=team_member_ids
+        )
+        return [_serialize_requisition(requisition, actor_member_id) for requisition in requisitions]
     else:
         raise HTTPException(status_code=403, detail="you dont have permission")
     requisitions = await repository.list_requisitions(organization_id, raised_by_id=raised_by_id)
@@ -556,14 +616,12 @@ async def get_requisition(
     requisition = await repository.get_requisition(organization_id, requisition_id)
     if requisition is None:
         raise HTTPException(status_code=404, detail="Job requisition not found")
-    if view_scope == "self" and requisition.raisedById != actor_member_id:
-        raise HTTPException(status_code=403, detail="you dont have permission")
-    if view_scope != "self" and view_scope != "organization":
-        raise HTTPException(status_code=403, detail="you dont have permission")
+    await _check_single_requisition_access(db, organization_id, actor_member_id, view_scope, requisition)
     return JobRequisitionDetailRead(**_serialize_requisition(requisition, actor_member_id).model_dump())
 
 
 async def _get_pipeline_posting(
+    db: AsyncSession,
     repository: JobRequisitionRepository,
     organization_id: str,
     actor_member_id: str,
@@ -573,10 +631,7 @@ async def _get_pipeline_posting(
     requisition = await repository.get_requisition(organization_id, requisition_id)
     if requisition is None:
         raise HTTPException(status_code=404, detail="Job requisition not found")
-    if scope == "self" and requisition.raisedById != actor_member_id:
-        raise HTTPException(status_code=403, detail="you dont have permission")
-    if scope not in {"self", "organization"}:
-        raise HTTPException(status_code=403, detail="you dont have permission")
+    await _check_single_requisition_access(db, organization_id, actor_member_id, scope, requisition)
 
     posting = await repository.get_job_posting_by_requisition(organization_id, requisition_id)
     if posting is None:
@@ -632,6 +687,7 @@ async def get_requisition_pipeline(
 ) -> PipelineBoardRead:
     repository = JobRequisitionRepository(db)
     posting = await _get_pipeline_posting(
+        db,
         repository,
         organization_id,
         actor_member_id,
@@ -652,6 +708,7 @@ async def create_pipeline_stage(
 ) -> PipelineStageRead:
     repository = JobRequisitionRepository(db)
     posting = await _get_pipeline_posting(
+        db,
         repository,
         organization_id,
         actor_member_id,
@@ -712,6 +769,7 @@ async def create_default_pipeline(
 ) -> PipelineBoardRead:
     repository = JobRequisitionRepository(db)
     posting = await _get_pipeline_posting(
+        db,
         repository,
         organization_id,
         actor_member_id,
@@ -756,6 +814,7 @@ async def import_pipeline(
 ) -> PipelineBoardRead:
     repository = JobRequisitionRepository(db)
     target_posting = await _get_pipeline_posting(
+        db,
         repository,
         organization_id,
         actor_member_id,
@@ -832,6 +891,7 @@ async def get_import_options(
 ) -> list[ImportableJobPostingRead]:
     repository = JobRequisitionRepository(db)
     posting = await _get_pipeline_posting(
+        db,
         repository,
         organization_id,
         actor_member_id,
@@ -1041,7 +1101,6 @@ async def apply_to_public_posting(
         raise HTTPException(status_code=400, detail="No pipeline stage is configured for this job posting")
 
     candidate = await repository.get_candidate_by_email(posting.organizationId, body.email)
-    existing_user = await repository.get_user_by_email(body.email)
     if candidate is not None:
         existing_application = await repository.get_candidate_application(
             posting.organizationId,
@@ -1054,7 +1113,6 @@ async def apply_to_public_posting(
     if candidate is None:
         candidate = Candidate(
             organizationId=posting.organizationId,
-            userId=existing_user.id if existing_user is not None else None,
             firstName=body.firstName,
             lastName=body.lastName,
             email=body.email,
@@ -1064,8 +1122,6 @@ async def apply_to_public_posting(
         )
         await repository.add_candidate(candidate)
     else:
-        if candidate.userId is None and existing_user is not None:
-            candidate.userId = existing_user.id
         candidate.firstName = body.firstName
         candidate.lastName = body.lastName
         candidate.phone = body.phone
@@ -1201,10 +1257,7 @@ async def close_requisition(
     requisition = await repository.get_requisition(organization_id, requisition_id)
     if requisition is None:
         raise HTTPException(status_code=404, detail="Job requisition not found")
-    if delete_scope == "self" and requisition.raisedById != actor_member_id:
-        raise HTTPException(status_code=403, detail="you dont have permission")
-    if delete_scope != "self" and delete_scope != "organization":
-        raise HTTPException(status_code=403, detail="you dont have permission")
+    await _check_single_requisition_access(db, organization_id, actor_member_id, delete_scope, requisition)
     closable_statuses = {
         JobRequisitionStatus.APPROVED,
         JobRequisitionStatus.PUBLISHED,
@@ -1241,10 +1294,7 @@ async def reopen_requisition(
     requisition = await repository.get_requisition(organization_id, requisition_id)
     if requisition is None:
         raise HTTPException(status_code=404, detail="Job requisition not found")
-    if create_scope == "self" and requisition.raisedById != actor_member_id:
-        raise HTTPException(status_code=403, detail="you dont have permission")
-    if create_scope not in {"self", "organization"}:
-        raise HTTPException(status_code=403, detail="you dont have permission")
+    await _check_single_requisition_access(db, organization_id, actor_member_id, create_scope, requisition)
     if requisition.status not in (JobRequisitionStatus.CLOSED, JobRequisitionStatus.ARCHIVED):
         raise HTTPException(status_code=400, detail="Only closed/archived requisitions can be reopened")
 
@@ -1271,10 +1321,7 @@ async def get_requisition_activity(
     requisition = await repository.get_requisition(organization_id, requisition_id)
     if requisition is None:
         raise HTTPException(status_code=404, detail="Job requisition not found")
-    if view_scope == "self" and requisition.raisedById != actor_member_id:
-        raise HTTPException(status_code=403, detail="you dont have permission")
-    if view_scope not in {"self", "organization"}:
-        raise HTTPException(status_code=403, detail="you dont have permission")
+    await _check_single_requisition_access(db, organization_id, actor_member_id, view_scope, requisition)
 
     logs = await repository.list_activity_logs(organization_id, requisition_id)
     result = []

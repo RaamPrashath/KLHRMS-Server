@@ -18,7 +18,6 @@ from app.models.recruitment import (
     RequisitionApproval,
     StageEvaluationCategory,
 )
-from app.models.user import User
 from app.shared.utils.permissions import get_permission_scope
 
 
@@ -30,6 +29,8 @@ class JobRequisitionRepository:
         self,
         organization_id: str,
         raised_by_id: str | None = None,
+        department_ids: list[str] | None = None,
+        team_member_ids: list[str] | None = None,
     ) -> list[JobRequisition]:
         query = (
             select(JobRequisition)
@@ -47,6 +48,10 @@ class JobRequisitionRepository:
         )
         if raised_by_id is not None:
             query = query.where(JobRequisition.raisedById == raised_by_id)
+        if department_ids is not None:
+            query = query.where(JobRequisition.departmentId.in_(department_ids))
+        if team_member_ids is not None:
+            query = query.where(JobRequisition.raisedById.in_(team_member_ids))
 
         result = await self.db.execute(query)
         return list(result.unique().scalars().all())
@@ -189,17 +194,6 @@ class JobRequisitionRepository:
             select(Candidate).where(
                 Candidate.organizationId == organization_id,
                 func.lower(Candidate.email) == email.lower(),
-            )
-        )
-        return result.scalar_one_or_none()
-
-    async def get_user_by_email(
-        self,
-        email: str,
-    ) -> User | None:
-        result = await self.db.execute(
-            select(User).where(
-                func.lower(User.email) == email.lower(),
             )
         )
         return result.scalar_one_or_none()
