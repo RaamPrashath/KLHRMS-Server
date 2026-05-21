@@ -38,7 +38,7 @@ class LeaveBalanceRow:
 
 
 def _utcnow() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.UTC)
 
 
 async def resolve_target_member(db: AsyncSession, organization_id: str, member_id: str) -> Member:
@@ -481,14 +481,8 @@ async def create_leave_request(
     await resolve_target_member(db, organization_id, target_member_id)
     await _ensure_no_overlapping_request(db, organization_id, target_member_id, start_date, end_date)
 
-    # Validate days — must not exceed actual working days in range
-    max_working_days = await _count_working_days(db, organization_id, start_date, end_date)
-    if days > max_working_days:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Leave days ({days}) exceeds working days ({max_working_days}) in the selected range. "
-                   f"Weekends and holidays are automatically excluded.",
-        )
+    working_days = await _count_working_days(db, organization_id, start_date, end_date)
+    chargeable_days = min(days, float(working_days))
 
     if leave_type.isPaid:
         balance = await _get_or_create_leave_balance(
@@ -500,7 +494,7 @@ async def create_leave_request(
         )
         projected_remaining = (
             balance.allocated + balance.carriedForward - balance.used - balance.lapsed
-        ) - days
+        ) - chargeable_days
         if projected_remaining < 0:
             raise HTTPException(status_code=400, detail="Insufficient leave balance")
 
@@ -511,7 +505,7 @@ async def create_leave_request(
         leaveTypeId=leave_type.id,
         startDate=start_date,
         endDate=end_date,
-        days=days,
+        days=chargeable_days,
         reason=reason,
         status=LeaveRequestStatus.PENDING,
         approvedById=None,
@@ -535,6 +529,13 @@ async def approve_leave_request(
 
     leave_type = await get_leave_type_or_404(db, organization_id, leave_request.leaveTypeId)
     if leave_type.isPaid:
+        working_days = await _count_working_days(
+            db,
+            organization_id,
+            leave_request.startDate,
+            leave_request.endDate,
+        )
+        chargeable_days = min(leave_request.days, float(working_days))
         balance = await _get_or_create_leave_balance(
             db,
             organization_id,
@@ -542,10 +543,11 @@ async def approve_leave_request(
             leave_type,
             leave_request.startDate.year,
         )
-        new_used = balance.used + leave_request.days
+        new_used = balance.used + chargeable_days
         new_remaining = balance.allocated + balance.carriedForward - new_used - balance.lapsed
         if new_remaining < 0:
             raise HTTPException(status_code=400, detail="Approving this request would make the leave balance negative")
+        leave_request.days = chargeable_days
         balance.used = new_used
         balance.remaining = new_remaining
 
@@ -607,7 +609,7 @@ async def list_leave_balances(
     Leave types that have never been used still appear with zero values.
     """
     year = filters.year or dt.date.today().year
-    _now = dt.datetime.now(dt.timezone.utc)
+    _now = dt.datetime.now(dt.UTC)
 
     # ── 1. Resolve which members to include ──────────────────────────────────
     member_query = (

@@ -82,7 +82,7 @@ class LeaveRequestCreateRequest(BaseModel):
     member_id: str | None = Field(default=None, alias="memberId")
     start_date: dt.date = Field(..., alias="startDate")
     end_date: dt.date = Field(..., alias="endDate")
-    days: float = Field(..., gt=0)
+    days: float = Field(..., ge=0)
     reason: str | None = Field(default=None, max_length=2000)
 
     model_config = {"populate_by_name": True}
@@ -96,7 +96,7 @@ class LeaveRequestCreateRequest(BaseModel):
         return trimmed or None
 
     @model_validator(mode="after")
-    def validate_dates(self) -> "LeaveRequestCreateRequest":
+    def validate_dates(self) -> LeaveRequestCreateRequest:
         if self.end_date < self.start_date:
             raise ValueError("endDate must be on or after startDate")
         return self

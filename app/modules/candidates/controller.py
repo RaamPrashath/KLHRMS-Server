@@ -79,7 +79,6 @@ async def handle_move_application_stage(
         ctx.member.userId,
         application_id,
         body,
-        getattr(ctx, "scope", None),
     )
 
 
