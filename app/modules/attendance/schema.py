@@ -70,6 +70,18 @@ class ClockOutRequest(BaseModel):
         default=None,
         description="Explicit clock-out timestamp (UTC). Defaults to now.",
     )
+    work_log_text: str = Field(
+        ...,
+        min_length=20,
+        max_length=1000,
+        description="Mandatory daily work-log narrative saved with the clock-out action.",
+    )
+
+    @model_validator(mode="after")
+    def validate_work_log_text(self) -> "ClockOutRequest":
+        if len(self.work_log_text.strip()) < 20:
+            raise ValueError("work_log_text must be at least 20 non-space characters")
+        return self
 
 
 class ManualDayEntryRequest(BaseModel):
@@ -317,6 +329,71 @@ class BulkRangeResponse(BaseModel):
     """Response for GET /attendance/bulk-work-logs."""
 
     days: list[BulkDayResponse]
+
+
+class WorkLogReportFilters(BaseModel):
+    """Query parameters for the admin work-log reporting view."""
+
+    date_from: dt.date | None = Field(default=None)
+    date_to: dt.date | None = Field(default=None)
+    department_id: str | None = Field(default=None, max_length=36)
+    team_id: str | None = Field(default=None, max_length=36)
+    employee_id: str | None = Field(default=None, max_length=36)
+    employee_name: str | None = Field(default=None, max_length=255)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=200)
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "WorkLogReportFilters":
+        if self.date_from is not None and self.date_to is not None:
+            if self.date_to < self.date_from:
+                raise ValueError("date_to must be >= date_from")
+        return self
+
+
+class WorkLogReportSummary(BaseModel):
+    total_days: int
+    total_hours: float
+    employee_count: int
+
+
+class WorkLogReportRow(BaseModel):
+    attendanceRecordId: str
+    employeeId: str
+    employeeName: str
+    date: dt.date
+    clockIn: dt.datetime | None
+    clockOut: dt.datetime | None
+    totalHours: float | None
+    departmentName: str | None = None
+    teamName: str | None = None
+    projectName: str | None = None
+    taskName: str | None = None
+    dailyWorkLogPreview: str | None = None
+    hasFullLog: bool = False
+
+
+class WorkLogReportListResponse(BaseModel):
+    items: list[WorkLogReportRow]
+    total: int
+    page: int
+    page_size: int
+    summary: WorkLogReportSummary
+
+
+class WorkLogReportDetailResponse(BaseModel):
+    attendanceRecordId: str
+    employeeId: str
+    employeeName: str
+    date: dt.date
+    clockIn: dt.datetime | None
+    clockOut: dt.datetime | None
+    totalHours: float | None
+    departmentName: str | None = None
+    teamName: str | None = None
+    projectName: str | None = None
+    taskName: str | None = None
+    dailyWorkLog: str | None = None
 
 
 class BulkDaySingleResponse(BaseModel):

@@ -290,6 +290,109 @@ def generate_csv(
     return buf.getvalue().encode("utf-8-sig")  # utf-8-sig for Excel compatibility
 
 
+def _fmt_work_log_text(value: str | None) -> str:
+    if not value:
+        return "—"
+    return " ".join(value.split())
+
+
+def _build_work_log_report_rows(
+    records: list[object],
+) -> tuple[list[str], list[list[str]]]:
+    headers = [
+        "Employee Name",
+        "Date",
+        "Clock In",
+        "Clock Out",
+        "Total Hours",
+        "Department",
+        "Team",
+        "Project",
+        "Task",
+        "Daily Work Log",
+    ]
+    rows: list[list[str]] = []
+    for record in records:
+        rows.append(
+            [
+                getattr(record, "employeeName", None) or "—",
+                _fmt_date(getattr(record, "date", None).isoformat() if getattr(record, "date", None) else None),
+                _fmt_datetime(getattr(record, "clockIn", None).isoformat() if getattr(record, "clockIn", None) else None),
+                _fmt_datetime(getattr(record, "clockOut", None).isoformat() if getattr(record, "clockOut", None) else None),
+                _fmt_hours(getattr(record, "totalHours", None)),
+                getattr(record, "departmentName", None) or "—",
+                getattr(record, "teamName", None) or "—",
+                getattr(record, "projectName", None) or "—",
+                getattr(record, "taskName", None) or "—",
+                _fmt_work_log_text(getattr(record, "dailyWorkLog", None)),
+            ]
+        )
+    return headers, rows
+
+
+def generate_work_log_report_csv(records: list[object]) -> bytes:
+    headers, rows = _build_work_log_report_rows(records)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def generate_work_log_report_xlsx(records: list[object], title: str) -> bytes:
+    headers, rows = _build_work_log_report_rows(records)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Work Logs"
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    title_cell = ws.cell(row=1, column=1, value=title)
+    title_cell.font = Font(name="Calibri", bold=True, size=13, color="FFFFFF")
+    title_cell.fill = PatternFill("solid", fgColor=_GREEN)
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    header_fill = PatternFill("solid", fgColor=_GREEN_LIGHT)
+    header_font = Font(name="Calibri", bold=True, size=10, color="1D1D1F")
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=2, column=col_idx, value=header.upper())
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    wrap_alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    center_alignment = Alignment(horizontal="center", vertical="center")
+    default_font = Font(name="Calibri", size=10)
+    for row_idx, row_data in enumerate(rows, start=3):
+        for col_idx, value in enumerate(row_data, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.font = default_font
+            cell.alignment = wrap_alignment if col_idx == len(headers) else center_alignment
+        ws.row_dimensions[row_idx].height = 34
+
+    col_widths = {
+        "Employee Name": 24,
+        "Date": 16,
+        "Clock In": 14,
+        "Clock Out": 14,
+        "Total Hours": 12,
+        "Department": 18,
+        "Team": 18,
+        "Project": 18,
+        "Task": 18,
+        "Daily Work Log": 56,
+    }
+    for col_idx, header in enumerate(headers, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = col_widths.get(header, 16)
+
+    ws.freeze_panes = "A3"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 # ─── Pivot helpers ────────────────────────────────────────────────────────────
 
 def _fmt_pivot_date(ymd: str) -> str:
