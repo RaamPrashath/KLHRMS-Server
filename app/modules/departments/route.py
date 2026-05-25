@@ -27,7 +27,7 @@ from app.modules.departments.schema import (
     TeamUpsertRequest,
 )
 from app.shared.database import get_db
-from app.shared.deps.organization_member import MemberContext
+from app.shared.deps.organization_member import MemberContext, get_member_context
 from app.shared.deps.permissions import require_permission
 
 router = APIRouter(prefix="/departments", tags=["departments"])

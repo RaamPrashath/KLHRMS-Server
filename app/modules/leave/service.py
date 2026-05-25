@@ -38,7 +38,7 @@ class LeaveBalanceRow:
 
 
 def _utcnow() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.UTC)
 
 
 async def resolve_target_member(db: AsyncSession, organization_id: str, member_id: str) -> Member:
@@ -521,28 +521,23 @@ async def create_leave_request(
     await resolve_target_member(db, organization_id, target_member_id)
     await _ensure_no_overlapping_request(db, organization_id, target_member_id, start_date, end_date)
 
-    # Validate days — must not exceed actual working days in range
-    max_working_days = await _count_working_days(db, organization_id, start_date, end_date)
-    if days > max_working_days:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Leave days ({days}) exceeds working days ({max_working_days}) in the selected range. "
-                   f"Weekends and holidays are automatically excluded.",
-        )
+    working_days = await _count_working_days(db, organization_id, start_date, end_date)
+    chargeable_days = min(days, float(working_days))
 
     # A request should only reserve eligibility; the actual balance is consumed on approval.
-    balance = await _get_or_create_leave_balance(
-        db,
-        organization_id,
-        target_member_id,
-        leave_type,
-        start_date.year,
-    )
-    projected_remaining = (
-        balance.allocated + balance.carriedForward - balance.used - balance.lapsed
-    ) - days
-    if projected_remaining < 0:
-        raise HTTPException(status_code=400, detail="Insufficient leave balance")
+    if leave_type.isPaid:
+        balance = await _get_or_create_leave_balance(
+            db,
+            organization_id,
+            target_member_id,
+            leave_type,
+            start_date.year,
+        )
+        projected_remaining = (
+            balance.allocated + balance.carriedForward - balance.used - balance.lapsed
+        ) - chargeable_days
+        if projected_remaining < 0:
+            raise HTTPException(status_code=400, detail="Insufficient leave balance")
 
     now = _utcnow()
     leave_request = LeaveRequest(
@@ -552,7 +547,7 @@ async def create_leave_request(
         leaveTypeId=leave_type.id,
         startDate=start_date,
         endDate=end_date,
-        days=days,
+        days=chargeable_days,
         reason=reason,
         status=LeaveRequestStatus.PENDING,
         approvedById=None,
@@ -577,22 +572,23 @@ async def approve_leave_request(
         raise HTTPException(status_code=400, detail="Only pending leave requests can be approved")
 
     leave_type = await get_leave_type_or_404(db, organization_id, leave_request.leaveTypeId)
-    balance = await _get_or_create_leave_balance(
-        db,
-        organization_id,
-        leave_request.memberId,
-        leave_type,
-        leave_request.startDate.year,
-    )
-    new_used = balance.used + leave_request.days
-    new_remaining = balance.allocated + balance.carriedForward - new_used - balance.lapsed
-    if new_remaining < 0:
-        raise HTTPException(status_code=400, detail="Approving this request would make the leave balance negative")
-
     now = _utcnow()
-    balance.used = new_used
-    balance.remaining = new_remaining
-    balance.updatedAt = now
+    if leave_type.isPaid:
+        balance = await _get_or_create_leave_balance(
+            db,
+            organization_id,
+            leave_request.memberId,
+            leave_type,
+            leave_request.startDate.year,
+        )
+        new_used = balance.used + leave_request.days
+        new_remaining = balance.allocated + balance.carriedForward - new_used - balance.lapsed
+        if new_remaining < 0:
+            raise HTTPException(status_code=400, detail="Approving this request would make the leave balance negative")
+
+        balance.used = new_used
+        balance.remaining = new_remaining
+        balance.updatedAt = now
 
     leave_request.status = LeaveRequestStatus.APPROVED
     leave_request.approvedById = approver_member_id
@@ -657,7 +653,7 @@ async def list_leave_balances(
     Leave types that have never been used still appear with zero values.
     """
     year = filters.year or dt.date.today().year
-    _now = dt.datetime.now(dt.timezone.utc)
+    _now = dt.datetime.now(dt.UTC)
 
     # ── 1. Resolve which members to include ──────────────────────────────────
     member_query = (

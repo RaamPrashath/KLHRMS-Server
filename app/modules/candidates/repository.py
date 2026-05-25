@@ -12,7 +12,6 @@ from app.models.leave import Holiday, LeaveRequest
 from app.models.member import Member
 from app.models.recruitment import (
     ApplicationStageHistory,
-    Candidate,
     CandidateApplication,
     CandidateApplicationNote,
     EventStatus,
@@ -85,7 +84,7 @@ class CandidatePipelineRepository:
             .options(
                 selectinload(PipelineStage.applications).selectinload(
                     CandidateApplication.candidate
-                ).joinedload(Candidate.user),
+                ),
                 selectinload(PipelineStage.applications).selectinload(
                     CandidateApplication.stageHistory
                 ),
@@ -133,8 +132,7 @@ class CandidatePipelineRepository:
                 selectinload(PipelineStage.evaluationCategories),
                 selectinload(PipelineStage.evaluationWorkspace),
                 selectinload(PipelineStage.applications)
-                .joinedload(CandidateApplication.candidate)
-                .joinedload(Candidate.user),
+                .joinedload(CandidateApplication.candidate),
                 joinedload(PipelineStage.jobPosting),
             )
             .where(
@@ -162,7 +160,7 @@ class CandidatePipelineRepository:
             select(PipelineStage)
             .options(
                 selectinload(PipelineStage.applications).options(
-                    selectinload(CandidateApplication.candidate).joinedload(Candidate.user),
+                    selectinload(CandidateApplication.candidate),
                     joinedload(CandidateApplication.jobPosting),
                     selectinload(CandidateApplication.stageEvents)
                     .selectinload(StageEvent.participants)
@@ -197,7 +195,7 @@ class CandidatePipelineRepository:
             select(PipelineStage)
             .options(
                 selectinload(PipelineStage.applications).options(
-                    selectinload(CandidateApplication.candidate).joinedload(Candidate.user),
+                    selectinload(CandidateApplication.candidate),
                     joinedload(CandidateApplication.jobPosting),
                     selectinload(CandidateApplication.stageHistory),
                     selectinload(CandidateApplication.stageEvents)
@@ -329,7 +327,7 @@ class CandidatePipelineRepository:
         result = await self.db.execute(
             select(CandidateApplication)
             .options(
-                selectinload(CandidateApplication.candidate).joinedload(Candidate.user),
+                selectinload(CandidateApplication.candidate),
                 joinedload(CandidateApplication.jobPosting),
                 joinedload(CandidateApplication.pipelineStage),
                 selectinload(CandidateApplication.stageEvents)
@@ -351,7 +349,7 @@ class CandidatePipelineRepository:
         result = await self.db.execute(
             select(CandidateApplication)
             .options(
-                selectinload(CandidateApplication.candidate).joinedload(Candidate.user),
+                selectinload(CandidateApplication.candidate),
                 joinedload(CandidateApplication.jobPosting),
                 joinedload(CandidateApplication.pipelineStage),
                 selectinload(CandidateApplication.stageEvents)
@@ -581,9 +579,10 @@ class CandidatePipelineRepository:
         result = await self.db.execute(
             select(StageEvent)
             .options(
-                joinedload(StageEvent.application).selectinload(CandidateApplication.candidate).joinedload(Candidate.user),
+                joinedload(StageEvent.application).selectinload(CandidateApplication.candidate),
                 joinedload(StageEvent.stage).selectinload(PipelineStage.evaluationCategories),
                 joinedload(StageEvent.stage).joinedload(PipelineStage.evaluationWorkspace),
+                selectinload(StageEvent.participants),
                 selectinload(StageEvent.feedbacks)
                 .selectinload(InterviewFeedback.values),
             )
@@ -662,7 +661,7 @@ class CandidatePipelineRepository:
         result = await self.db.execute(
             select(StageEvent)
             .options(
-                joinedload(StageEvent.application).selectinload(CandidateApplication.candidate).joinedload(Candidate.user),
+                joinedload(StageEvent.application).selectinload(CandidateApplication.candidate),
                 joinedload(StageEvent.application).joinedload(CandidateApplication.jobPosting),
                 joinedload(StageEvent.stage),
                 selectinload(StageEvent.participants).joinedload(StageEventParticipant.member).joinedload(Member.user),
@@ -684,12 +683,13 @@ class CandidatePipelineRepository:
             .options(
                 joinedload(StageEventParticipant.event)
                 .joinedload(StageEvent.application)
-                .selectinload(CandidateApplication.candidate).joinedload(Candidate.user),
+                .selectinload(CandidateApplication.candidate),
                 joinedload(StageEventParticipant.event)
                 .joinedload(StageEvent.application)
                 .joinedload(CandidateApplication.jobPosting),
                 joinedload(StageEventParticipant.event)
-                .joinedload(StageEvent.stage),
+                .joinedload(StageEvent.stage)
+                .selectinload(PipelineStage.evaluationCategories),
                 joinedload(StageEventParticipant.member).joinedload(Member.user),
             )
             .where(

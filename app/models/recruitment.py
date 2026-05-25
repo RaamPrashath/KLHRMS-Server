@@ -471,13 +471,6 @@ class Candidate(Base):
         index=True,
     )
 
-    userId: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("user.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-
     firstName: Mapped[str] = mapped_column(
         String,
         nullable=False,
@@ -523,11 +516,6 @@ class Candidate(Base):
     organization = relationship(
         "Organization",
         back_populates="candidates",
-    )
-
-    user = relationship(
-        "User",
-        back_populates="candidateProfiles",
     )
 
     applications = relationship(

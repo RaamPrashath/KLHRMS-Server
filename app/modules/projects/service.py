@@ -430,13 +430,15 @@ async def list_projects_for_attendance(
     Return active projects with their tasks for attendance work log selection.
     Only returns projects that are ACTIVE and not deleted.
     """
-    # Fetch active projects
+    # Fetch active projects the employee is assigned to
     projects_result = await db.execute(
         select(Project)
+        .join(ProjectMember, ProjectMember.projectId == Project.id)
         .where(
             Project.organizationId == ctx.organization.id,
             Project.status == "ACTIVE",
             Project.deletedAt.is_(None),
+            ProjectMember.memberId == ctx.member.id,
         )
         .order_by(Project.name)
     )

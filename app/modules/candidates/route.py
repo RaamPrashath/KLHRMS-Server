@@ -227,7 +227,7 @@ async def update_application_note(
 async def create_interview_meeting(
     application_id: str,
     body: InterviewMeetingCreateRequest,
-    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "create"))],
     db: AsyncSession = Depends(get_db),
 ) -> InterviewMeetingRead:
     return await handle_create_interview_meeting(ctx, db, application_id, body)
@@ -238,7 +238,7 @@ async def complete_interview_meeting(
     application_id: str,
     event_id: str,
     body: InterviewMeetingCompleteRequest,
-    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> InterviewMeetingRead:
     return await handle_complete_interview_meeting(ctx, db, application_id, event_id, body)
@@ -249,7 +249,7 @@ async def update_interview_meeting(
     application_id: str,
     event_id: str,
     body: InterviewMeetingUpdateRequest,
-    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> InterviewMeetingRead:
     return await handle_update_interview_meeting(ctx, db, application_id, event_id, body)
@@ -259,7 +259,7 @@ async def update_interview_meeting(
 async def start_interview_meeting(
     application_id: str,
     event_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> InterviewMeetingRead:
     return await handle_start_interview_meeting(ctx, db, application_id, event_id)
