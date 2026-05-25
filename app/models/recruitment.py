@@ -2,6 +2,7 @@ import enum
 
 from sqlalchemy import (
     ARRAY,
+    JSON,
     Boolean,
     DateTime,
     Enum,
@@ -9,12 +10,12 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, generate_uuid
@@ -260,7 +261,11 @@ class JobRequisition(Base):
     requisitionNumber: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     status: Mapped[JobRequisitionStatus] = mapped_column(
-        Enum(JobRequisitionStatus),
+        PGEnum(
+            JobRequisitionStatus,
+            name="jobrequisitionstatus",
+            create_type=False,
+        ),
         nullable=False,
         default=JobRequisitionStatus.DRAFT,
         index=True,

@@ -66,6 +66,8 @@ class HolidayBasePayload(BaseModel):
         if value is None:
             return None
         trimmed = value.strip()
+        if trimmed.lower() == "null":
+            return None
         return trimmed or None
 
 
@@ -133,6 +135,17 @@ class LeaveBalanceFilters(BaseModel):
     year: int | None = None
     member_id: str | None = Field(default=None, alias="memberId")
     leave_type_id: str | None = Field(default=None, alias="leaveTypeId")
+
+    model_config = {"populate_by_name": True}
+
+
+class LeaveBalanceUpsertRequest(BaseModel):
+    member_id: str = Field(..., alias="memberId")
+    leave_type_id: str = Field(..., alias="leaveTypeId")
+    year: int = Field(..., ge=2000, le=3000)
+    allocated: float = Field(..., ge=0)
+    carried_forward: float = Field(default=0, alias="carriedForward", ge=0)
+    lapsed: float = Field(default=0, ge=0)
 
     model_config = {"populate_by_name": True}
 

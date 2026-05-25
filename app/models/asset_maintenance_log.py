@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, Text, func
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, generate_uuid
@@ -12,9 +12,23 @@ class AssetMaintenanceLog(Base):
     __tablename__ = "asset_maintenance_log"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
-    assetId: Mapped[str] = mapped_column(String(36), ForeignKey("asset.id", ondelete="CASCADE"), nullable=False)
-    assetUnitId: Mapped[str | None] = mapped_column(String(36), ForeignKey("asset_unit.id", ondelete="SET NULL"), nullable=True)
-    loggedByMemberId: Mapped[str | None] = mapped_column(String(36), ForeignKey("member.id", ondelete="SET NULL"))
+    ticketId: Mapped[str] = mapped_column(String(7), nullable=False)
+    organizationId: Mapped[str] = mapped_column(String(36), nullable=False)
+    ticketMode: Mapped[str] = mapped_column(
+        String(40), nullable=False, server_default="ASSET_ISSUE"
+    )
+    assetId: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("asset.id", ondelete="SET NULL"), nullable=True
+    )
+    assetUnitId: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("asset_unit.id", ondelete="SET NULL"), nullable=True
+    )
+    loggedByMemberId: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("member.id", ondelete="SET NULL")
+    )
+    category: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    attachmentsMetadata: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     maintenanceType: Mapped[str] = mapped_column(String(40), nullable=False)
     issueDescription: Mapped[str] = mapped_column(Text, nullable=False)
     serviceDate: Mapped[date] = mapped_column(Date, nullable=False)
@@ -25,7 +39,9 @@ class AssetMaintenanceLog(Base):
     conditionBeforeMaintenance: Mapped[str | None] = mapped_column(String(40), nullable=True)
     conditionAfterMaintenance: Mapped[str | None] = mapped_column(String(40), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    createdAt: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     updatedAt: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -37,6 +53,10 @@ class AssetMaintenanceLog(Base):
     loggedByMember = relationship("Member", foreign_keys=[loggedByMemberId])
 
     __table_args__ = (
+        Index("asset_maintenance_log_ticketId_key", "ticketId", unique=True),
+        Index("asset_maintenance_log_organizationId_idx", "organizationId"),
+        Index("asset_maintenance_log_ticketMode_idx", "ticketMode"),
+        Index("asset_maintenance_log_category_idx", "category"),
         Index("asset_maintenance_log_assetId_idx", "assetId"),
         Index("asset_maintenance_log_status_idx", "status"),
         Index("asset_maintenance_log_serviceDate_idx", "serviceDate"),

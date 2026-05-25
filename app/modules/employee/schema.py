@@ -89,3 +89,13 @@ class EmployeeDeleteResponse(BaseModel):
     member_id: str
     unassigned_interviews: int
     removed_team_memberships: int
+
+
+# ─── Employee Deactivate ──────────────────────────────────────────
+
+
+class EmployeeDeactivateResponse(BaseModel):
+    member_id: str
+    name: str
+    email: str
+    status: str
