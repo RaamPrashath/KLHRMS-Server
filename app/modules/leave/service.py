@@ -421,7 +421,7 @@ async def _ensure_no_overlapping_request(
             LeaveRequest.organizationId == organization_id,
             LeaveRequest.memberId == member_id,
             LeaveRequest.deletedAt.is_(None),
-            LeaveRequest.status.in_([LeaveRequestStatus.PENDING, LeaveRequestStatus.APPROVED]),
+            LeaveRequest.status.in_([LeaveRequestStatus.PENDING.value, LeaveRequestStatus.APPROVED.value]),
             LeaveRequest.startDate <= end_date,
             LeaveRequest.endDate >= start_date,
         )
@@ -549,7 +549,7 @@ async def create_leave_request(
         endDate=end_date,
         days=chargeable_days,
         reason=reason,
-        status=LeaveRequestStatus.PENDING,
+        status=LeaveRequestStatus.PENDING.value,
         approvedById=None,
         approverComment=None,
         createdAt=now,
@@ -568,7 +568,7 @@ async def approve_leave_request(
     approver_comment: str | None,
 ) -> LeaveRequest:
     leave_request = await get_leave_request_or_404(db, organization_id, leave_request_id)
-    if leave_request.status != LeaveRequestStatus.PENDING:
+    if leave_request.status != LeaveRequestStatus.PENDING.value:
         raise HTTPException(status_code=400, detail="Only pending leave requests can be approved")
 
     leave_type = await get_leave_type_or_404(db, organization_id, leave_request.leaveTypeId)
@@ -590,7 +590,7 @@ async def approve_leave_request(
         balance.remaining = new_remaining
         balance.updatedAt = now
 
-    leave_request.status = LeaveRequestStatus.APPROVED
+    leave_request.status = LeaveRequestStatus.APPROVED.value
     leave_request.approvedById = approver_member_id
     leave_request.approverComment = approver_comment
     leave_request.cancelledAt = None
@@ -607,11 +607,11 @@ async def reject_leave_request(
     approver_comment: str | None,
 ) -> LeaveRequest:
     leave_request = await get_leave_request_or_404(db, organization_id, leave_request_id)
-    if leave_request.status != LeaveRequestStatus.PENDING:
+    if leave_request.status != LeaveRequestStatus.PENDING.value:
         raise HTTPException(status_code=400, detail="Only pending leave requests can be rejected")
 
     now = _utcnow()
-    leave_request.status = LeaveRequestStatus.REJECTED
+    leave_request.status = LeaveRequestStatus.REJECTED.value
     leave_request.approvedById = approver_member_id
     leave_request.approverComment = approver_comment
     leave_request.updatedAt = now
@@ -628,13 +628,13 @@ async def cancel_leave_request(
     can_cancel_any: bool,
 ) -> LeaveRequest:
     leave_request = await get_leave_request_or_404(db, organization_id, leave_request_id)
-    if leave_request.status != LeaveRequestStatus.PENDING:
+    if leave_request.status != LeaveRequestStatus.PENDING.value:
         raise HTTPException(status_code=400, detail="Only pending leave requests can be cancelled")
     if not can_cancel_any and leave_request.memberId != actor_member_id:
         raise HTTPException(status_code=403, detail="You can only cancel your own pending leave requests")
 
     now = _utcnow()
-    leave_request.status = LeaveRequestStatus.CANCELLED
+    leave_request.status = LeaveRequestStatus.CANCELLED.value
     leave_request.cancelledAt = now
     leave_request.updatedAt = now
     await db.commit()

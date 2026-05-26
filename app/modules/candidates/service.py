@@ -194,6 +194,7 @@ def _serialize_application(
     application: CandidateApplication,
     stage: PipelineStage,
 ) -> PipelineApplicationRead:
+    ai_analysis = application.resumeAnalysis
     return PipelineApplicationRead(
         id=application.id,
         jobPostingId=application.jobPostingId,
@@ -207,6 +208,15 @@ def _serialize_application(
         lastMovedAt=_last_moved_at(application),
         status=_application_status(application, stage),
         resumeUrl=application.candidate.resumeUrl,
+        aiScore=ai_analysis.compositeScore if ai_analysis is not None else None,
+        aiAnalysisStatus=ai_analysis.status if ai_analysis is not None else None,
+        aiEvaluationStatus=ai_analysis.evaluationStatus if ai_analysis is not None else None,
+        isFlaggedForCheating=(
+            bool(ai_analysis.isFlaggedForCheating) if ai_analysis is not None else False
+        ),
+        aiFailedKnockouts=(
+            list(ai_analysis.failedKnockouts or []) if ai_analysis is not None else []
+        ),
         interviewMeeting=_serialize_application_interview_meeting(
             _latest_stage_event(application, stage.id)
         ),

@@ -1,6 +1,6 @@
 """remove candidate user foreign key
 
-Revision ID: c1d2e3f4a5b6
+Revision ID: c2d3e4f5a6b7
 Revises: 9bc8279279dd
 Create Date: 2026-05-21 00:00:00.000000
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "c1d2e3f4a5b6"
+revision: str = "c2d3e4f5a6b7"
 down_revision: str | Sequence[str] | None = "9bc8279279dd"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

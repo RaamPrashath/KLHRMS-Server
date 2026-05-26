@@ -83,6 +83,7 @@ class JobRequisitionCreateRequest(BaseModel):
     minExperience: int | None = None
     education: str | None = None
     certifications: list[str] = Field(default_factory=list)
+    knockoutRule: str | None = Field(default=None, max_length=2000)
 
     roleSummary: str | None = None
     responsibilities: str | None = None
@@ -170,6 +171,7 @@ class JobRequisitionUpdateRequest(BaseModel):
     minExperience: int | None = None
     education: str | None = None
     certifications: list[str] | None = None
+    knockoutRule: str | None = Field(default=None, max_length=2000)
 
     roleSummary: str | None = None
     responsibilities: str | None = None
@@ -268,6 +270,7 @@ class JobRequisitionDecisionRequest(BaseModel):
     minExperience: int | None = None
     education: str | None = None
     certifications: list[str] | None = None
+    knockoutRule: str | None = Field(default=None, max_length=2000)
 
     @field_validator("skills", "certifications")
     @classmethod
@@ -368,6 +371,7 @@ class JobRequisitionListItemRead(BaseModel):
     minExperience: int | None
     education: str | None
     certifications: list[str]
+    knockoutRule: str | None
     roleSummary: str | None
     responsibilities: str | None
     requirementsRich: str | None
@@ -385,6 +389,64 @@ class JobRequisitionListItemRead(BaseModel):
 
 class JobRequisitionDetailRead(JobRequisitionListItemRead):
     pass
+
+
+class RequisitionKnockoutRulesRead(BaseModel):
+    explicitRule: str | None = None
+
+
+class RequisitionScoringWeightsRead(BaseModel):
+    experiencePointsPerYear: int = 0
+    maxExperiencePoints: int = 0
+    maxSkillPoints: int = 0
+    skillWeights: dict[str, int] = Field(default_factory=dict)
+    educationPoints: int = 0
+    educationKeywords: list[str] = Field(default_factory=list)
+    certificationWeights: dict[str, int] = Field(default_factory=dict)
+    totalPossiblePoints: int = 0
+
+
+class JobRequisitionRulesRead(BaseModel):
+    id: str
+    organizationId: str
+    requisitionId: str
+    jobPostingId: str | None
+    rulesVersion: str
+    knockoutRules: RequisitionKnockoutRulesRead
+    scoringWeights: RequisitionScoringWeightsRead
+    sourceSnapshot: dict[str, Any]
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class RequisitionAiAnalysisStatsRead(BaseModel):
+    totalApplications: int = 0
+    analyzedApplications: int = 0
+    pendingApplications: int = 0
+    flaggedCandidates: int = 0
+    recommendedCandidates: int = 0
+    averageScore: float | None = None
+
+
+class RequisitionAiCandidateRead(BaseModel):
+    applicationId: str
+    candidateId: str
+    candidateName: str
+    email: str
+    aiScore: int | None = None
+    aiAnalysisStatus: str | None = None
+    evaluationStatus: str | None = None
+    isFlaggedForCheating: bool = False
+    failedKnockouts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class JobRequisitionAiAnalysisRead(BaseModel):
+    requisitionId: str
+    jobPostingId: str | None = None
+    rulesMissing: bool
+    rules: JobRequisitionRulesRead | None = None
+    stats: RequisitionAiAnalysisStatsRead
+    candidates: list[RequisitionAiCandidateRead] = Field(default_factory=list)
 
 
 class StageEvaluationCategoryInput(BaseModel):
