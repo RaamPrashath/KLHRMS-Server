@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from app.models.recruitment import (
     JobPosting,
     JobPostingStatus,
     JobRequisition,
+    JobRequisitionRules,
     JobRequisitionStatus,
     PipelineStage,
     RequisitionApproval,
@@ -24,17 +25,23 @@ from app.models.recruitment import (
     StageType,
 )
 from app.models.team_member import TeamMember
+from app.modules.ai_scoring.service import (
+    analyze_resume_for_application_task,
+    create_pending_resume_analysis,
+)
 from app.modules.jobs.repository import JobRequisitionRepository
 from app.modules.jobs.schema import (
     CreatePipelineStageRequest,
     ImportableJobPostingRead,
     ImportPipelineRequest,
+    JobRequisitionAiAnalysisRead,
     JobRequisitionApprovalRead,
     JobRequisitionApprovalSummaryRead,
     JobRequisitionCreateRequest,
     JobRequisitionDecisionRequest,
     JobRequisitionDetailRead,
     JobRequisitionListItemRead,
+    JobRequisitionRulesRead,
     JobRequisitionUpdateRequest,
     PipelineBoardRead,
     PipelineStageRead,
@@ -42,14 +49,46 @@ from app.modules.jobs.schema import (
     PublicJobApplicationRequest,
     PublicJobPostingDetailRead,
     PublicJobPostingListItemRead,
+    RequisitionAiAnalysisStatsRead,
+    RequisitionAiCandidateRead,
 )
 from app.shared.notifications.email import (
     send_requisition_decided,
     send_requisition_submitted,
 )
+from app.shared.skill_aliases import (
+    SKILL_ALIASES,
+    contains_skill_phrase,
+    is_generic_skill_anchor,
+    normalize_keyword,
+    normalize_search_text,
+)
 from app.shared.utils.slugs import generate_unique_slug, slugify
 
 _SCOPE_RANK = {"none": 0, "self": 1, "team": 2, "department": 3, "organization": 4}
+REQUISITION_RULES_VERSION = "1.2"
+TOTAL_SCORE_POINTS = 100
+MAX_EXPERIENCE_POINTS = 40
+MAX_SKILL_POINTS = 60
+MAX_EDUCATION_POINTS = 10
+MAX_CERTIFICATION_POINTS = 10
+MAX_DERIVED_SKILL_ANCHORS = 12
+OPEN_REQUISITION_STATUSES = [
+    JobRequisitionStatus.APPROVED,
+    JobRequisitionStatus.PUBLISHED,
+    JobRequisitionStatus.ACTIVE_HIRING,
+]
+
+_NO_KNOCKOUT_VALUES = {
+    "none",
+    "no",
+    "n/a",
+    "na",
+    "nil",
+    "not applicable",
+    "no knockout",
+    "no knockout rule",
+}
 
 
 async def _get_member_department_ids(db: AsyncSession, member_id: str) -> list[str]:
@@ -80,10 +119,18 @@ async def _check_single_requisition_access(
     actor_member_id: str,
     scope: str,
     requisition: JobRequisition,
+    *,
+    allow_open: bool = False,
 ) -> None:
     """Raise 403 if the actor's scope doesn't grant access to this requisition."""
+    if allow_open and requisition.status in OPEN_REQUISITION_STATUSES:
+        return
     if scope == "organization":
         return
+    if scope == "public_open":
+        if requisition.raisedById == actor_member_id:
+            return
+        raise HTTPException(status_code=403, detail="you dont have permission")
     if scope == "department":
         if requisition.departmentId is None:
             raise HTTPException(status_code=403, detail="you dont have permission")
@@ -109,6 +156,96 @@ SETUP_DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
     {"name": "Hired", "stageType": StageType.HIRED, "isFinal": True},
     {"name": "Rejected", "stageType": StageType.REJECTED, "isFinal": True},
 ]
+
+
+def _normalize_rule_keyword(value: str) -> str:
+    return normalize_keyword(value)
+
+
+def _normalize_search_text(value: object) -> str:
+    return normalize_search_text(value)
+
+
+def _contains_skill_phrase(text: str, phrase: str) -> bool:
+    return contains_skill_phrase(text, phrase)
+
+
+def _normalize_optional_knockout_rule(value: str | None) -> str | None:
+    normalized = (value or "").strip()
+    if not normalized:
+        return None
+    if normalize_keyword(normalized) in _NO_KNOCKOUT_VALUES:
+        return None
+    return normalized
+
+
+def _is_generic_skill_anchor(value: str) -> bool:
+    return is_generic_skill_anchor(value)
+
+
+def _derive_skill_anchors(requisition: JobRequisition) -> list[str]:
+    source_text = "\n".join(
+        item
+        for item in [
+            requisition.title,
+            requisition.roleSummary,
+            requisition.responsibilities,
+            requisition.requirementsRich,
+            requisition.requirements,
+            requisition.description,
+        ]
+        if item
+    )
+    normalized_text = _normalize_search_text(source_text)
+    if not normalized_text:
+        return []
+
+    anchors: list[str] = []
+    for anchor, aliases in SKILL_ALIASES.items():
+        if any(_contains_skill_phrase(normalized_text, alias) for alias in aliases):
+            anchors.append(anchor)
+        if len(anchors) >= MAX_DERIVED_SKILL_ANCHORS:
+            break
+    return anchors
+
+
+def _education_keywords(value: str | None) -> list[str]:
+    normalized = _normalize_search_text(value)
+    if not normalized:
+        return []
+    keywords: list[str] = []
+    if "bachelor" in normalized or "bachelors" in normalized:
+        keywords.append("bachelor")
+    if "master" in normalized or "masters" in normalized:
+        keywords.append("master")
+    if "computer science" in normalized:
+        keywords.append("computer science")
+    if "engineering" in normalized:
+        keywords.append("engineering")
+    return _unique_normalized(keywords or [str(value)])
+
+
+def _unique_normalized(values: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        item = _normalize_rule_keyword(value)
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
+def _distribute_points(total_points: int, keys: list[str]) -> dict[str, int]:
+    if not keys:
+        return {}
+    base = total_points // len(keys)
+    remainder = total_points % len(keys)
+    weights: dict[str, int] = {}
+    for index, key in enumerate(keys):
+        weights[key] = base + (1 if index < remainder else 0)
+    return weights
 
 
 def _slugify(value: str) -> str:
@@ -139,7 +276,7 @@ def _to_utc_datetime(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
+        return value.replace(tzinfo=UTC)
     return value
 
 
@@ -148,7 +285,7 @@ def _to_target_datetime(value: object) -> datetime | None:
         return None
     if isinstance(value, datetime):
         return _to_utc_datetime(value)
-    return datetime.combine(value, datetime.min.time(), tzinfo=timezone.utc)
+    return datetime.combine(value, datetime.min.time(), tzinfo=UTC)
 
 
 def _build_approval_summary(approvals: list[RequisitionApproval]) -> JobRequisitionApprovalSummaryRead:
@@ -294,6 +431,7 @@ def _serialize_requisition(
         minExperience=requisition.minExperience,
         education=requisition.education,
         certifications=list(requisition.certifications or []),
+        knockoutRule=requisition.knockoutRule,
         roleSummary=requisition.roleSummary,
         responsibilities=requisition.responsibilities,
         requirementsRich=requisition.requirementsRich,
@@ -317,6 +455,105 @@ def _serialize_requisition(
             and requisition.status == JobRequisitionStatus.DRAFT
         ),
         approvals=[_serialize_approval(approval) for approval in approvals],
+    )
+
+
+def _compile_requisition_rules(
+    requisition: JobRequisition,
+    job_posting_id: str | None,
+) -> JobRequisitionRules:
+    explicit_skills = [
+        skill
+        for skill in _unique_normalized(list(requisition.skills or []))
+        if not _is_generic_skill_anchor(skill)
+    ]
+    derived_skills = _derive_skill_anchors(requisition)
+    normalized_skills = _unique_normalized([*explicit_skills, *derived_skills])
+    min_experience = requisition.minExperience if requisition.minExperience is not None else None
+    has_experience_target = min_experience is not None and min_experience > 0
+    max_experience_points = MAX_EXPERIENCE_POINTS if has_experience_target else 0
+    experience_points_per_year = (
+        max(1, MAX_EXPERIENCE_POINTS // int(min_experience))
+        if has_experience_target
+        else 0
+    )
+    education_keywords = _education_keywords(requisition.education)
+    education_points = MAX_EDUCATION_POINTS if education_keywords else 0
+    normalized_certifications = _unique_normalized(list(requisition.certifications or []))
+    certification_points = MAX_CERTIFICATION_POINTS if normalized_certifications else 0
+    max_skill_points = max(
+        0,
+        TOTAL_SCORE_POINTS
+        - max_experience_points
+        - education_points
+        - certification_points,
+    )
+    skill_weights = _distribute_points(max_skill_points, normalized_skills)
+    certification_weights = _distribute_points(certification_points, normalized_certifications)
+    total_possible_points = TOTAL_SCORE_POINTS
+    explicit_knockout_rule = _normalize_optional_knockout_rule(requisition.knockoutRule)
+    knockout_rules = {"explicitRule": explicit_knockout_rule}
+    scoring_weights = {
+        "experiencePointsPerYear": experience_points_per_year,
+        "maxExperiencePoints": max_experience_points,
+        "maxSkillPoints": max_skill_points,
+        "skillWeights": skill_weights,
+        "educationPoints": education_points,
+        "educationKeywords": education_keywords,
+        "certificationWeights": certification_weights,
+        "totalPossiblePoints": total_possible_points,
+    }
+    source_snapshot = {
+        "title": requisition.title,
+        "departmentId": requisition.departmentId,
+        "employmentType": requisition.employmentType.value,
+        "skills": list(requisition.skills or []),
+        "explicitSkills": explicit_skills,
+        "derivedSkills": derived_skills,
+        "normalizedSkills": normalized_skills,
+        "experienceLevel": requisition.experienceLevel,
+        "minExperience": requisition.minExperience,
+        "education": requisition.education,
+        "certifications": list(requisition.certifications or []),
+        "knockoutRule": explicit_knockout_rule,
+        "roleSummary": requisition.roleSummary,
+        "responsibilities": requisition.responsibilities,
+        "requirements": requisition.requirements,
+        "requirementsRich": requisition.requirementsRich,
+        "compiledFrom": "job_requisition",
+    }
+    return JobRequisitionRules(
+        organizationId=requisition.organizationId,
+        requisitionId=requisition.id,
+        jobPostingId=job_posting_id,
+        rulesVersion=REQUISITION_RULES_VERSION,
+        knockoutRules=knockout_rules,
+        scoringWeights=scoring_weights,
+        sourceSnapshot=source_snapshot,
+    )
+
+
+async def _upsert_requisition_rules(
+    repository: JobRequisitionRepository,
+    requisition: JobRequisition,
+    job_posting_id: str | None,
+) -> JobRequisitionRules:
+    rules = _compile_requisition_rules(requisition, job_posting_id)
+    return await repository.upsert_requisition_rules(rules)
+
+
+def _serialize_requisition_rules(rules: JobRequisitionRules) -> JobRequisitionRulesRead:
+    return JobRequisitionRulesRead(
+        id=rules.id,
+        organizationId=rules.organizationId,
+        requisitionId=rules.requisitionId,
+        jobPostingId=rules.jobPostingId,
+        rulesVersion=rules.rulesVersion,
+        knockoutRules=rules.knockoutRules,
+        scoringWeights=rules.scoringWeights,
+        sourceSnapshot=rules.sourceSnapshot,
+        createdAt=rules.createdAt,
+        updatedAt=rules.updatedAt,
     )
 
 
@@ -373,7 +610,7 @@ async def _create_job_posting_for_requisition(
     repository: JobRequisitionRepository,
     requisition: JobRequisition,
 ) -> JobPosting:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     rich_sections = [
         requisition.roleSummary,
         requisition.responsibilities,
@@ -546,6 +783,7 @@ def _apply_requisition_updates(
         "minExperience",
         "education",
         "certifications",
+        "knockoutRule",
         "roleSummary",
         "responsibilities",
         "requirementsRich",
@@ -561,11 +799,14 @@ def _apply_requisition_updates(
         if field_name not in update_fields:
             continue
         value = getattr(body, field_name)
+        if field_name == "knockoutRule":
+            value = _normalize_optional_knockout_rule(value)
+            setattr(requisition, field_name, value)
+            changed_fields.append(field_name)
+            continue
         if value is None:
             continue
-        if field_name == "title":
-            value = value.strip()
-        elif field_name == "currency":
+        if field_name == "title" or field_name == "currency":
             value = value.strip()
         elif field_name == "employmentType":
             value = EmploymentType(value)
@@ -585,27 +826,33 @@ async def list_requisitions(
     repository = JobRequisitionRepository(db)
     if view_scope == "organization":
         requisitions = await repository.list_requisitions(organization_id, raised_by_id=None)
-    elif view_scope == "self":
-        own = await repository.list_requisitions(organization_id, raised_by_id=actor_member_id)
-        open_statuses = [
-            JobRequisitionStatus.APPROVED,
-            JobRequisitionStatus.PUBLISHED,
-            JobRequisitionStatus.ACTIVE_HIRING,
+    elif view_scope in {"self", "team", "department", "public_open"}:
+        requisition_groups = [
+            await repository.list_requisitions(organization_id, raised_by_id=actor_member_id),
+            await repository.list_requisitions_by_statuses(
+                organization_id,
+                OPEN_REQUISITION_STATUSES,
+            ),
         ]
-        open_reqs = await repository.list_requisitions_by_statuses(organization_id, open_statuses)
-        merged = {r.id: r for r in own}
-        for r in open_reqs:
-            merged[r.id] = r
-        requisitions = list(merged.values())
-    elif view_scope == "department":
-        department_ids = await _get_member_department_ids(db, actor_member_id)
-        requisitions = await repository.list_requisitions(
-            organization_id, department_ids=department_ids
-        )
-    elif view_scope == "team":
-        team_member_ids = await _get_team_member_ids(db, actor_member_id)
-        requisitions = await repository.list_requisitions(
-            organization_id, team_member_ids=team_member_ids
+        if view_scope == "department":
+            department_ids = await _get_member_department_ids(db, actor_member_id)
+            requisition_groups.append(
+                await repository.list_requisitions(
+                    organization_id, department_ids=department_ids
+                )
+            )
+        elif view_scope == "team":
+            team_member_ids = await _get_team_member_ids(db, actor_member_id)
+            requisition_groups.append(
+                await repository.list_requisitions(
+                    organization_id, team_member_ids=team_member_ids
+                )
+            )
+        merged = {r.id: r for group in requisition_groups for r in group}
+        requisitions = sorted(
+            merged.values(),
+            key=lambda requisition: requisition.createdAt or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
         )
     else:
         raise HTTPException(status_code=403, detail="you dont have permission")
@@ -623,7 +870,14 @@ async def get_requisition(
     requisition = await repository.get_requisition(organization_id, requisition_id)
     if requisition is None:
         raise HTTPException(status_code=404, detail="Job requisition not found")
-    await _check_single_requisition_access(db, organization_id, actor_member_id, view_scope, requisition)
+    await _check_single_requisition_access(
+        db,
+        organization_id,
+        actor_member_id,
+        view_scope,
+        requisition,
+        allow_open=True,
+    )
     return JobRequisitionDetailRead(**_serialize_requisition(requisition, actor_member_id).model_dump())
 
 
@@ -926,6 +1180,234 @@ async def get_import_options(
     ]
 
 
+async def get_requisition_ai_analysis(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    view_scope: str,
+    requisition_id: str,
+) -> JobRequisitionAiAnalysisRead:
+    repository = JobRequisitionRepository(db)
+    requisition = await repository.get_requisition(organization_id, requisition_id)
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Job requisition not found")
+    await _check_single_requisition_access(
+        db,
+        organization_id,
+        actor_member_id,
+        view_scope,
+        requisition,
+    )
+
+    posting = await repository.get_job_posting_by_requisition(organization_id, requisition_id)
+    rules = await repository.get_requisition_rules(organization_id, requisition_id)
+    job_posting_id = posting.id if posting is not None else (rules.jobPostingId if rules else None)
+    total_applications = await repository.count_applications_for_job_posting(
+        organization_id,
+        job_posting_id,
+    )
+    analysis_stats = await repository.list_resume_analysis_stats_for_job_posting(
+        organization_id,
+        job_posting_id,
+    )
+    analysis_candidates = await repository.list_resume_analysis_candidates_for_job_posting(
+        organization_id,
+        job_posting_id,
+    )
+    completed_scores = [
+        score
+        for status, score, _flagged in analysis_stats
+        if status == "COMPLETED" and score is not None
+    ]
+    analyzed_count = len(
+        [
+            status
+            for status, _score, _flagged in analysis_stats
+            if status in {"TEXT_EXTRACTED", "FLAGGED", "COMPLETED"}
+        ]
+    )
+    flagged_count = len(
+        [
+            flagged
+            for _status, _score, flagged in analysis_stats
+            if flagged
+        ]
+    )
+
+    return JobRequisitionAiAnalysisRead(
+        requisitionId=requisition.id,
+        jobPostingId=job_posting_id,
+        rulesMissing=rules is None,
+        rules=_serialize_requisition_rules(rules) if rules is not None else None,
+        stats=RequisitionAiAnalysisStatsRead(
+            totalApplications=total_applications,
+            analyzedApplications=analyzed_count,
+            pendingApplications=max(total_applications - analyzed_count, 0),
+            flaggedCandidates=flagged_count,
+            recommendedCandidates=len(
+                [
+                    analysis
+                    for _application, analysis in analysis_candidates
+                    if analysis.compositeScore is not None
+                    and analysis.compositeScore >= 70
+                    and analysis.evaluationStatus == "QUALIFIED"
+                ]
+            ),
+            averageScore=(
+                round(sum(completed_scores) / len(completed_scores), 2)
+                if completed_scores
+                else None
+            ),
+        ),
+        candidates=[
+            RequisitionAiCandidateRead(
+                applicationId=application.id,
+                candidateId=application.candidateId,
+                candidateName=(
+                    f"{application.candidate.firstName} {application.candidate.lastName}".strip()
+                    if application.candidate is not None
+                    else "Candidate"
+                ),
+                email=application.candidate.email if application.candidate is not None else "",
+                aiScore=analysis.compositeScore,
+                aiAnalysisStatus=analysis.status,
+                evaluationStatus=analysis.evaluationStatus,
+                isFlaggedForCheating=bool(analysis.isFlaggedForCheating),
+                failedKnockouts=list(analysis.failedKnockouts or []),
+            )
+            for application, analysis in analysis_candidates
+        ],
+    )
+
+
+async def rebuild_requisition_ai_analysis(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    edit_scope: str,
+    requisition_id: str,
+) -> JobRequisitionAiAnalysisRead:
+    repository = JobRequisitionRepository(db)
+    requisition = await repository.get_requisition(organization_id, requisition_id)
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Job requisition not found")
+    await _check_single_requisition_access(
+        db,
+        organization_id,
+        actor_member_id,
+        edit_scope,
+        requisition,
+    )
+    rebuildable_statuses = {
+        JobRequisitionStatus.APPROVED,
+        JobRequisitionStatus.PUBLISHED,
+        JobRequisitionStatus.ACTIVE_HIRING,
+        JobRequisitionStatus.FILLED,
+        JobRequisitionStatus.CLOSED,
+    }
+    if requisition.status not in rebuildable_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail="AI screening rules can only be built for approved or active requisitions",
+        )
+
+    posting = await repository.get_job_posting_by_requisition(organization_id, requisition_id)
+    rules = await _upsert_requisition_rules(
+        repository,
+        requisition,
+        posting.id if posting is not None else None,
+    )
+    await db.commit()
+    await db.refresh(rules)
+    return await get_requisition_ai_analysis(
+        db=db,
+        organization_id=organization_id,
+        actor_member_id=actor_member_id,
+        view_scope=edit_scope,
+        requisition_id=requisition_id,
+    )
+
+
+async def re_evaluate_requisition(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    edit_scope: str,
+    requisition_id: str,
+    background_tasks: BackgroundTasks,
+) -> JobRequisitionAiAnalysisRead:
+    repository = JobRequisitionRepository(db)
+    requisition = await repository.get_requisition(organization_id, requisition_id)
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Job requisition not found")
+    await _check_single_requisition_access(
+        db,
+        organization_id,
+        actor_member_id,
+        edit_scope,
+        requisition,
+    )
+    rebuildable_statuses = {
+        JobRequisitionStatus.APPROVED,
+        JobRequisitionStatus.PUBLISHED,
+        JobRequisitionStatus.ACTIVE_HIRING,
+        JobRequisitionStatus.FILLED,
+        JobRequisitionStatus.CLOSED,
+    }
+    if requisition.status not in rebuildable_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail="AI screening rules can only be built for approved or active requisitions",
+        )
+
+    posting = await repository.get_job_posting_by_requisition(organization_id, requisition_id)
+    rules = await _upsert_requisition_rules(
+        repository,
+        requisition,
+        posting.id if posting is not None else None,
+    )
+
+    application_ids = await repository.list_application_ids_for_job_posting(
+        organization_id,
+        posting.id if posting is not None else None,
+    )
+    for application_id in application_ids:
+        analysis = await create_pending_resume_analysis(
+            db=db,
+            organization_id=organization_id,
+            application_id=application_id,
+            resume_url=None,
+        )
+        analysis.status = "PENDING"
+        analysis.lastError = None
+        analysis.extractedFacts = None
+        analysis.compositeScore = None
+        analysis.rawScore = None
+        analysis.maxScore = None
+        analysis.extractionConfidence = None
+        analysis.evaluationStatus = None
+        analysis.failedKnockouts = []
+        analysis.scoreBreakdown = None
+
+    await db.commit()
+    await db.refresh(rules)
+
+    for application_id in application_ids:
+        background_tasks.add_task(
+            analyze_resume_for_application_task,
+            organization_id,
+            application_id,
+        )
+
+    return await get_requisition_ai_analysis(
+        db=db,
+        organization_id=organization_id,
+        actor_member_id=actor_member_id,
+        view_scope=edit_scope,
+        requisition_id=requisition_id,
+    )
+
+
 async def create_requisition(
     db: AsyncSession,
     organization_id: str,
@@ -963,6 +1445,7 @@ async def create_requisition(
         minExperience=body.minExperience,
         education=body.education,
         certifications=body.certifications,
+        knockoutRule=_normalize_optional_knockout_rule(body.knockoutRule),
         roleSummary=body.roleSummary,
         responsibilities=body.responsibilities,
         requirementsRich=body.requirementsRich,
@@ -1097,6 +1580,7 @@ async def apply_to_public_posting(
     db: AsyncSession,
     posting_id: str,
     body: PublicJobApplicationRequest,
+    background_tasks: BackgroundTasks | None = None,
 ) -> PublicJobApplicationRead:
     repository = JobRequisitionRepository(db)
     posting = await repository.get_public_posting(posting_id)
@@ -1156,7 +1640,20 @@ async def apply_to_public_posting(
         note="Applied via public careers portal",
     )
     await repository.add_stage_history(history)
+    await create_pending_resume_analysis(
+        db=db,
+        organization_id=posting.organizationId,
+        application_id=application.id,
+        resume_url=body.resumeUrl,
+    )
     await db.commit()
+
+    if background_tasks is not None:
+        background_tasks.add_task(
+            analyze_resume_for_application_task,
+            posting.organizationId,
+            application.id,
+        )
 
     return PublicJobApplicationRead(
         applicationId=application.id,
@@ -1214,7 +1711,7 @@ async def decide_requisition(
 
     approval.decision = decision
     approval.comment = body.comment
-    approval.decidedAt = datetime.now(timezone.utc)
+    approval.decidedAt = datetime.now(UTC)
 
     if any(item.decision == RequisitionApprovalDecision.REJECTED for item in requisition.approvals):
         requisition.status = JobRequisitionStatus.REJECTED
@@ -1222,7 +1719,8 @@ async def decide_requisition(
     elif all(item.decision == RequisitionApprovalDecision.APPROVED for item in requisition.approvals):
         requisition.status = JobRequisitionStatus.APPROVED
         log_action = "APPROVED"
-        await _create_job_posting_for_requisition(repository, requisition)
+        posting = await _create_job_posting_for_requisition(repository, requisition)
+        await _upsert_requisition_rules(repository, requisition, posting.id)
     else:
         requisition.status = JobRequisitionStatus.PARTIALLY_APPROVED
         log_action = "APPROVED"
@@ -1279,7 +1777,7 @@ async def close_requisition(
         raise HTTPException(status_code=400, detail="This requisition cannot be closed")
 
     requisition.status = JobRequisitionStatus.CLOSED
-    requisition.closedAt = datetime.now(timezone.utc)
+    requisition.closedAt = datetime.now(UTC)
     db.add(requisition)
     await db.commit()
     await _log_activity(repository, organization_id, requisition.id, actor_member_id, "CLOSED")

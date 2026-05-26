@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.jobs.controller import (
@@ -16,10 +16,13 @@ from app.modules.jobs.controller import (
     handle_get_public_posting,
     handle_get_requisition,
     handle_get_requisition_activity,
+    handle_get_requisition_ai_analysis,
     handle_get_requisition_pipeline,
     handle_import_pipeline,
     handle_list_public_postings,
     handle_list_requisitions,
+    handle_re_evaluate_requisition,
+    handle_rebuild_requisition_ai_analysis,
     handle_reject_requisition,
     handle_reopen_requisition,
     handle_submit_requisition,
@@ -29,6 +32,7 @@ from app.modules.jobs.schema import (
     CreatePipelineStageRequest,
     ImportableJobPostingRead,
     ImportPipelineRequest,
+    JobRequisitionAiAnalysisRead,
     JobRequisitionCreateRequest,
     JobRequisitionDecisionRequest,
     JobRequisitionDetailRead,
@@ -64,14 +68,17 @@ def require_requisition_view_or_approve(
     ctx: MemberContext = Depends(get_member_context),
     view_scope_override: str | None = Query(None, alias="view_scope"),
 ) -> MemberContext:
-    if view_scope_override:
-        ctx.scope = view_scope_override  # type: ignore[attr-defined]
-        return ctx
     view_scope = get_member_permission_scope(ctx.member, "jobs", "view")
     approve_scope = get_member_permission_scope(ctx.member, "jobs", "approve")
     best = _pick_best_scope(view_scope, approve_scope)
     if best is None or _SCOPE_RANK.get(best, 0) == 0:
-        raise HTTPException(status_code=403, detail="you dont have permission")
+        ctx.scope = "public_open"  # type: ignore[attr-defined]
+        return ctx
+
+    if view_scope_override and _SCOPE_RANK.get(view_scope_override, 0) <= _SCOPE_RANK[best]:
+        ctx.scope = view_scope_override  # type: ignore[attr-defined]
+        return ctx
+
     ctx.scope = best  # type: ignore[attr-defined]
     return ctx
 
@@ -180,6 +187,34 @@ async def get_requisition_activity(
     return await handle_get_requisition_activity(ctx, db, requisition_id)
 
 
+@router.get("/requisitions/{requisition_id}/ai-analysis", response_model=JobRequisitionAiAnalysisRead)
+async def get_requisition_ai_analysis(
+    requisition_id: str,
+    ctx: Annotated[MemberContext, Depends(require_requisition_view_or_approve)],
+    db: AsyncSession = Depends(get_db),
+) -> JobRequisitionAiAnalysisRead:
+    return await handle_get_requisition_ai_analysis(ctx, db, requisition_id)
+
+
+@router.post("/requisitions/{requisition_id}/ai-analysis/rebuild", response_model=JobRequisitionAiAnalysisRead)
+async def rebuild_requisition_ai_analysis(
+    requisition_id: str,
+    ctx: Annotated[MemberContext, Depends(require_requisition_pipeline_edit)],
+    db: AsyncSession = Depends(get_db),
+) -> JobRequisitionAiAnalysisRead:
+    return await handle_rebuild_requisition_ai_analysis(ctx, db, requisition_id)
+
+
+@router.post("/requisitions/{requisition_id}/re-evaluate", response_model=JobRequisitionAiAnalysisRead)
+async def re_evaluate_requisition(
+    requisition_id: str,
+    background_tasks: BackgroundTasks,
+    ctx: Annotated[MemberContext, Depends(require_requisition_pipeline_edit)],
+    db: AsyncSession = Depends(get_db),
+) -> JobRequisitionAiAnalysisRead:
+    return await handle_re_evaluate_requisition(ctx, db, requisition_id, background_tasks)
+
+
 @router.get("/requisitions/{requisition_id}/pipeline", response_model=PipelineBoardRead)
 async def get_requisition_pipeline(
     requisition_id: str,
@@ -249,6 +284,7 @@ async def get_public_posting(
 async def apply_public_posting(
     posting_id: str,
     body: PublicJobApplicationRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ) -> PublicJobApplicationRead:
-    return await handle_apply_public_posting(db, posting_id, body)
+    return await handle_apply_public_posting(db, posting_id, body, background_tasks)

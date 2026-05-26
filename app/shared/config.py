@@ -111,6 +111,16 @@ class Settings(BaseSettings):
         alias="RESEND_API_KEY",
     )
 
+    gemini_api_key: str = Field(
+        default=os.getenv("GEMINI_API_KEY", ""),
+        alias="GEMINI_API_KEY",
+    )
+
+    gemini_model: str = Field(
+        default=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        alias="GEMINI_MODEL",
+    )
+
     resend_from_email: str = Field(
         default=os.getenv("RESEND_FROM_EMAIL", "KL HRMS <onboarding@resend.dev>"),
         alias="RESEND_FROM_EMAIL",

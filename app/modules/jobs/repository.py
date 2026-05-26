@@ -10,9 +10,11 @@ from app.models.recruitment import (
     ApplicationStageHistory,
     Candidate,
     CandidateApplication,
+    CandidateResumeAnalysis,
     JobPosting,
     JobPostingStatus,
     JobRequisition,
+    JobRequisitionRules,
     JobRequisitionStatus,
     PipelineStage,
     RequisitionActivityLog,
@@ -104,6 +106,41 @@ class JobRequisitionRepository:
             )
         )
         return result.unique().scalar_one_or_none()
+
+    async def get_requisition_rules(
+        self,
+        organization_id: str,
+        requisition_id: str,
+    ) -> JobRequisitionRules | None:
+        result = await self.db.execute(
+            select(JobRequisitionRules).where(
+                JobRequisitionRules.organizationId == organization_id,
+                JobRequisitionRules.requisitionId == requisition_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert_requisition_rules(
+        self,
+        rules: JobRequisitionRules,
+    ) -> JobRequisitionRules:
+        existing = await self.get_requisition_rules(
+            rules.organizationId,
+            rules.requisitionId,
+        )
+        if existing is None:
+            self.db.add(rules)
+            await self.db.flush()
+            return rules
+
+        existing.jobPostingId = rules.jobPostingId
+        existing.rulesVersion = rules.rulesVersion
+        existing.knockoutRules = rules.knockoutRules
+        existing.scoringWeights = rules.scoringWeights
+        existing.sourceSnapshot = rules.sourceSnapshot
+        self.db.add(existing)
+        await self.db.flush()
+        return existing
 
     async def create_requisition(self, requisition: JobRequisition) -> JobRequisition:
         self.db.add(requisition)
@@ -292,6 +329,90 @@ class JobRequisitionRepository:
             select(JobPosting).where(JobPosting.organizationId == organization_id)
         )
         return list(result.scalars().all())
+
+    async def count_applications_for_job_posting(
+        self,
+        organization_id: str,
+        job_posting_id: str | None,
+    ) -> int:
+        if job_posting_id is None:
+            return 0
+        result = await self.db.execute(
+            select(func.count(CandidateApplication.id)).where(
+                CandidateApplication.organizationId == organization_id,
+                CandidateApplication.jobPostingId == job_posting_id,
+            )
+        )
+        return int(result.scalar() or 0)
+
+    async def list_resume_analysis_stats_for_job_posting(
+        self,
+        organization_id: str,
+        job_posting_id: str | None,
+    ) -> list[tuple[str, int | None, bool]]:
+        if job_posting_id is None:
+            return []
+        result = await self.db.execute(
+            select(
+                CandidateResumeAnalysis.status,
+                CandidateResumeAnalysis.compositeScore,
+                CandidateResumeAnalysis.isFlaggedForCheating,
+            )
+            .join(
+                CandidateApplication,
+                CandidateApplication.id == CandidateResumeAnalysis.applicationId,
+            )
+            .where(
+                CandidateResumeAnalysis.organizationId == organization_id,
+                CandidateApplication.organizationId == organization_id,
+                CandidateApplication.jobPostingId == job_posting_id,
+            )
+        )
+        return [(str(status), score, bool(flagged)) for status, score, flagged in result.all()]
+
+    async def list_application_ids_for_job_posting(
+        self,
+        organization_id: str,
+        job_posting_id: str | None,
+    ) -> list[str]:
+        if job_posting_id is None:
+            return []
+        result = await self.db.execute(
+            select(CandidateApplication.id).where(
+                CandidateApplication.organizationId == organization_id,
+                CandidateApplication.jobPostingId == job_posting_id,
+            )
+        )
+        return [str(row[0]) for row in result.all()]
+
+    async def list_resume_analysis_candidates_for_job_posting(
+        self,
+        organization_id: str,
+        job_posting_id: str | None,
+    ) -> list[tuple[CandidateApplication, CandidateResumeAnalysis]]:
+        if job_posting_id is None:
+            return []
+        result = await self.db.execute(
+            select(CandidateApplication, CandidateResumeAnalysis)
+            .join(Candidate, Candidate.id == CandidateApplication.candidateId)
+            .join(
+                CandidateResumeAnalysis,
+                CandidateApplication.id == CandidateResumeAnalysis.applicationId,
+            )
+            .options(joinedload(CandidateApplication.candidate))
+            .where(
+                CandidateApplication.organizationId == organization_id,
+                Candidate.organizationId == organization_id,
+                CandidateResumeAnalysis.organizationId == organization_id,
+                CandidateApplication.jobPostingId == job_posting_id,
+            )
+            .order_by(
+                CandidateResumeAnalysis.isFlaggedForCheating.desc(),
+                CandidateResumeAnalysis.compositeScore.desc().nullslast(),
+                CandidateApplication.appliedAt.desc(),
+            )
+        )
+        return [(application, analysis) for application, analysis in result.unique().all()]
 
     async def add_pipeline_stages(self, stages: list[PipelineStage]) -> None:
         self.db.add_all(stages)

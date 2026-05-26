@@ -61,6 +61,11 @@ class PipelineApplicationRead(BaseModel):
     lastMovedAt: datetime | None
     status: str
     resumeUrl: str | None
+    aiScore: int | None = None
+    aiAnalysisStatus: str | None = None
+    aiEvaluationStatus: str | None = None
+    isFlaggedForCheating: bool = False
+    aiFailedKnockouts: list[dict] = Field(default_factory=list)
     interviewMeeting: ApplicationInterviewMeetingRead | None = None
     currentAssignment: StageWorkspaceAssignmentRead | None = None
 
