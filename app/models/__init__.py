@@ -6,6 +6,7 @@ from app.models.asset_category_field_definition import AssetCategoryFieldDefinit
 from app.models.asset_custom_field_value import AssetCustomFieldValue
 from app.models.asset_id_definition import AssetIdDefinition
 from app.models.asset_maintenance_log import AssetMaintenanceLog
+from app.models.asset_notification import AssetNotification
 from app.models.asset_unit import AssetUnit
 from app.models.attendance_record import AttendanceRecord
 from app.models.attendance_work_log import AttendanceWorkLog

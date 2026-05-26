@@ -179,3 +179,74 @@ async def send_requisition_decided(
             f"Kovan Labs\n"
         ),
     )
+
+
+async def send_asset_warranty_expiry_alert(
+    *,
+    to_email: str,
+    recipient_name: str,
+    recipient_role: str,
+    organization_name: str,
+    org_slug: str,
+    asset_name: str,
+    asset_code: str,
+    serial_number: str | None,
+    model: str | None,
+    holder_name: str,
+    warranty_expiry_date,
+) -> None:
+    escaped_recipient = html.escape(recipient_name)
+    escaped_org_name = html.escape(organization_name)
+    escaped_asset_name = html.escape(asset_name)
+    escaped_asset_code = html.escape(asset_code)
+    escaped_serial = html.escape(serial_number) if serial_number else "Not recorded"
+    escaped_model = html.escape(model) if model else "Not recorded"
+    escaped_holder = html.escape(holder_name)
+    escaped_role = html.escape(recipient_role)
+    dashboard_link = html.escape(f"{get_settings().better_auth_url.rstrip('/')}/{org_slug}/assets")
+    expiry_text = warranty_expiry_date.isoformat()
+
+    body = f"""
+      <p style="margin:0 0 16px;">Hello {escaped_recipient},</p>
+      <p style="margin:0 0 16px;">
+        This is an automated {escaped_role.lower()} reminder from <strong>{escaped_org_name}</strong>.
+        The warranty for assigned hardware is expiring in <strong>7 days</strong>.
+      </p>
+      <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
+        <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Asset</td><td style="padding:2px 0;font-size:14px;">{escaped_asset_name}</td></tr>
+        <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Asset Code</td><td style="padding:2px 0;font-size:14px;">{escaped_asset_code}</td></tr>
+        <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Model</td><td style="padding:2px 0;font-size:14px;">{escaped_model}</td></tr>
+        <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Serial</td><td style="padding:2px 0;font-size:14px;">{escaped_serial}</td></tr>
+        <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Assigned To</td><td style="padding:2px 0;font-size:14px;">{escaped_holder}</td></tr>
+        <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Warranty Expires</td><td style="padding:2px 0;font-size:14px;">{expiry_text}</td></tr>
+      </table>
+      <p style="margin:0 0 16px;">
+        Please coordinate a renewal, laptop refresh, or asset swap before the expiry date.
+      </p>
+      <table role="presentation" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="border-radius:8px;" bgcolor="#00874a">
+            <a href="{dashboard_link}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Open Asset Dashboard</a>
+          </td>
+        </tr>
+      </table>
+    """
+
+    await _send_email(
+        to_email,
+        f"[Warranty Alert] {asset_name} expires in 7 days",
+        _email_wrapper(body),
+        (
+            f"Kovan Labs\n\n"
+            f"Hello {recipient_name},\n\n"
+            f"This is an automated {recipient_role.lower()} reminder from {organization_name}.\n"
+            f"The warranty for {asset_name} ({asset_code}) expires on {expiry_text}.\n"
+            f"Model: {model or 'Not recorded'}\n"
+            f"Serial: {serial_number or 'Not recorded'}\n"
+            f"Assigned to: {holder_name}\n\n"
+            f"Open asset dashboard: {get_settings().better_auth_url.rstrip('/')}/{org_slug}/assets\n\n"
+            f"Please coordinate a renewal, laptop refresh, or asset swap before the expiry date.\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        ),
+    )

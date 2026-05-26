@@ -6,14 +6,21 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 ASSET_STATUSES = {
     "AVAILABLE",
-    "PROVIDED",
-    "UNDER_MAINTENANCE",
+    "ASSIGNED",
+    "IN_MAINTENANCE",
+    "PENDING_RETURN",
     "DAMAGED",
     "LOST",
     "RETIRED",
     "DISPOSED",
 }
+ASSET_STATUS_ALIASES = {
+    "PROVIDED": "ASSIGNED",
+    "UNDER_MAINTENANCE": "IN_MAINTENANCE",
+}
 ASSET_CONDITIONS = {"NEW", "GOOD", "FAIR", "DAMAGED", "NEEDS_REPAIR"}
+CRITICALITY_TIERS = {"MISSION_CRITICAL", "BUSINESS_CRITICAL", "STANDARD"}
+SWAP_MODES = {"PERMANENT_REPLACEMENT", "TEMPORARY_BACKUP"}
 MAINTENANCE_TYPES = {
     "REPAIR",
     "SERVICE",
@@ -40,6 +47,11 @@ CATEGORY_FIELD_TYPES = {"TEXT", "NUMBER", "DATE", "BOOLEAN", "SELECT"}
 
 def _normalize_enum(value: str) -> str:
     return value.strip().upper().replace("-", "_").replace(" ", "_")
+
+
+def _normalize_asset_status(value: str) -> str:
+    normalized = _normalize_enum(value)
+    return ASSET_STATUS_ALIASES.get(normalized, normalized)
 
 
 # ── Asset ID Schemas ─────────────────────────────────────────────────────────
@@ -188,7 +200,7 @@ class AssetFilters(BaseModel):
     def validate_status(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        normalized = _normalize_enum(value)
+        normalized = _normalize_asset_status(value)
         if normalized not in ASSET_STATUSES:
             raise ValueError("Invalid asset status")
         return normalized
@@ -223,7 +235,7 @@ class AssetUpsertRequest(BaseModel):
     @field_validator("status")
     @classmethod
     def validate_status(cls, value: str) -> str:
-        normalized = _normalize_enum(value)
+        normalized = _normalize_asset_status(value)
         if normalized not in ASSET_STATUSES:
             raise ValueError("Invalid asset status")
         return normalized
@@ -261,8 +273,8 @@ class AssetReturnRequest(BaseModel):
     def validate_next_status(cls, value: str | None) -> str | None:
         if value is None or value == "":
             return None
-        normalized = _normalize_enum(value)
-        if normalized not in {"AVAILABLE", "UNDER_MAINTENANCE", "DAMAGED", "RETIRED", "DISPOSED"}:
+        normalized = _normalize_asset_status(value)
+        if normalized not in {"AVAILABLE", "IN_MAINTENANCE", "PENDING_RETURN", "DAMAGED", "RETIRED", "DISPOSED"}:
             raise ValueError("Invalid next asset status")
         return normalized
 
@@ -272,6 +284,8 @@ class AssetMaintenanceCreateRequest(BaseModel):
     issueDescription: str = Field(min_length=1)
     serviceDate: date
     expectedCompletionDate: date | None = None
+    estimatedDowntimeHours: int | None = Field(default=None, ge=0)
+    operationalCriticalityTier: str = Field(default="STANDARD")
     cost: float | None = Field(default=None, ge=0)
     status: str = Field(default="OPEN")
     category: str | None = Field(default=None, max_length=80)
@@ -295,6 +309,14 @@ class AssetMaintenanceCreateRequest(BaseModel):
         normalized = _normalize_enum(value)
         if normalized not in {"OPEN", "IN_PROGRESS"}:
             raise ValueError("Maintenance can only start as open or in progress")
+        return normalized
+
+    @field_validator("operationalCriticalityTier")
+    @classmethod
+    def validate_operational_criticality_tier(cls, value: str) -> str:
+        normalized = _normalize_enum(value)
+        if normalized not in CRITICALITY_TIERS:
+            raise ValueError("Invalid operational criticality tier")
         return normalized
 
     @field_validator("conditionBeforeMaintenance")
@@ -339,8 +361,8 @@ class AssetMaintenanceUpdateRequest(BaseModel):
     def validate_next_asset_status(cls, value: str | None) -> str | None:
         if value is None or value == "":
             return None
-        normalized = _normalize_enum(value)
-        if normalized not in {"AVAILABLE", "DAMAGED", "RETIRED", "DISPOSED", "UNDER_MAINTENANCE"}:
+        normalized = _normalize_asset_status(value)
+        if normalized not in {"AVAILABLE", "DAMAGED", "RETIRED", "DISPOSED", "IN_MAINTENANCE", "PENDING_RETURN"}:
             raise ValueError("Invalid next asset status")
         return normalized
 
@@ -365,6 +387,8 @@ class HelpdeskTicketCreateRequest(BaseModel):
     maintenanceType: str = Field(default="REPAIR")
     serviceDate: date | None = None
     expectedCompletionDate: date | None = None
+    estimatedDowntimeHours: int | None = Field(default=None, ge=0)
+    operationalCriticalityTier: str = Field(default="STANDARD")
     conditionBeforeMaintenance: str | None = None
     notes: str | None = None
 
@@ -382,6 +406,14 @@ class HelpdeskTicketCreateRequest(BaseModel):
         normalized = _normalize_enum(value)
         if normalized not in MAINTENANCE_TYPES:
             raise ValueError("Invalid maintenance type")
+        return normalized
+
+    @field_validator("operationalCriticalityTier")
+    @classmethod
+    def validate_operational_criticality_tier(cls, value: str) -> str:
+        normalized = _normalize_enum(value)
+        if normalized not in CRITICALITY_TIERS:
+            raise ValueError("Invalid operational criticality tier")
         return normalized
 
     @field_validator("conditionBeforeMaintenance")
@@ -520,12 +552,16 @@ class AssetMaintenanceSummary(BaseModel):
     issueDescription: str
     serviceDate: date
     expectedCompletionDate: date | None
+    estimatedDowntimeHours: int | None
+    operationalCriticalityTier: str | None
     completedDate: date | None
     cost: float | None
     status: str
     conditionBeforeMaintenance: str | None
     conditionAfterMaintenance: str | None
     notes: str | None
+    replacementDecision: str | None
+    replacementAssetUnitId: str | None
     loggedByMemberId: str | None
     loggedByName: str | None
 
@@ -628,6 +664,133 @@ class AssetDashboardResponse(BaseModel):
     recentTickets: list[TicketAlertItem]
 
 
+class AssetBrandModelAnalyticsRow(BaseModel):
+    rowKey: str
+    brand: str
+    model: str
+    totalStock: int
+    inOfficeStock: int
+    providedStock: int
+    maintenanceOrDamagedStock: int
+    temporaryLaptopStockDepth: int
+    lowStockAlert: bool
+    assetIds: list[str]
+    unitIds: list[str]
+    serialNumbers: list[str]
+
+
+class AssetBrandModelAnalyticsResponse(BaseModel):
+    rows: list[AssetBrandModelAnalyticsRow]
+    temporaryLaptopStockDepth: int
+
+
+class AssetOsDistributionRow(BaseModel):
+    osName: str
+    headcount: int
+    percentage: float
+    memberIds: list[str] = []
+
+
+class AssetOsDistributionResponse(BaseModel):
+    rows: list[AssetOsDistributionRow]
+    totalLaptopUsers: int
+
+
+class WarrantyExpirationFeedItem(BaseModel):
+    assetId: str
+    assetUnitId: str | None
+    assetCode: str
+    assetName: str
+    serialNumber: str | None
+    model: str | None
+    category: str
+    employeeMemberId: str
+    employeeName: str | None
+    employeeEmail: str | None
+    warrantyExpiryDate: date
+    daysUntilExpiry: int
+    hasReminderSent: bool
+
+
+class WarrantyExpirationFeedResponse(BaseModel):
+    items: list[WarrantyExpirationFeedItem]
+    total: int
+
+
+class SwapAvailabilityOption(BaseModel):
+    mode: str
+    label: str
+    available: bool
+    availableCount: int
+    assetUnitIds: list[str]
+    serialNumbers: list[str]
+    recommended: bool
+
+
+class AssetSwapPreviewResponse(BaseModel):
+    maintenanceId: str
+    assetId: str
+    assetUnitId: str | None
+    currentAssetStatus: str
+    currentCondition: str | None
+    assignedMemberId: str | None
+    assignedMemberName: str | None
+    model: str | None
+    operationalCriticalityTier: str | None
+    estimatedDowntimeHours: int | None
+    requiresReplacementValidation: bool
+    recommendedMode: str | None
+    reason: str
+    options: list[SwapAvailabilityOption]
+
+
+class AssetRevokeSwapRequest(BaseModel):
+    maintenanceId: str
+    replacementMode: str
+    replacementAssetUnitId: str
+    revokeStatus: str = Field(default="IN_MAINTENANCE")
+    replacementConditionWhileProviding: str = Field(default="GOOD")
+    providedByMemberId: str | None = None
+    notes: str | None = None
+
+    @field_validator("replacementMode")
+    @classmethod
+    def validate_replacement_mode(cls, value: str) -> str:
+        normalized = _normalize_enum(value)
+        if normalized not in SWAP_MODES:
+            raise ValueError("Invalid replacement mode")
+        return normalized
+
+    @field_validator("revokeStatus")
+    @classmethod
+    def validate_revoke_status(cls, value: str) -> str:
+        normalized = _normalize_asset_status(value)
+        if normalized not in {"IN_MAINTENANCE", "PENDING_RETURN"}:
+            raise ValueError("Revoke status must be IN_MAINTENANCE or PENDING_RETURN")
+        return normalized
+
+    @field_validator("replacementConditionWhileProviding")
+    @classmethod
+    def validate_replacement_condition(cls, value: str) -> str:
+        normalized = _normalize_enum(value)
+        if normalized not in ASSET_CONDITIONS:
+            raise ValueError("Invalid replacement condition")
+        return normalized
+
+
+class AssetSwapExecutionResponse(BaseModel):
+    maintenanceId: str
+    revokedAssetId: str
+    revokedAssetUnitId: str | None
+    revokedStatus: str
+    replacementAssetId: str
+    replacementAssetUnitId: str
+    replacementMode: str
+    assignmentId: str
+    assignedMemberId: str
+    assignedMemberName: str | None
+
+
 class MyTicketResponse(BaseModel):
     id: str
     ticketId: str
@@ -650,6 +813,7 @@ class MaintenanceTicketResponse(BaseModel):
     ticketId: str
     ticketMode: str
     assetId: str | None
+    assetUnitId: str | None
     assetName: str | None
     assetCode: str | None
     assetCondition: str | None
@@ -660,6 +824,11 @@ class MaintenanceTicketResponse(BaseModel):
     issueDescription: str
     status: str
     serviceDate: str
+    expectedCompletionDate: str | None = None
+    estimatedDowntimeHours: int | None = None
+    operationalCriticalityTier: str | None = None
+    replacementDecision: str | None = None
     createdAt: str
     loggedByMemberId: str | None = None
     loggedByName: str | None = None
+    swapPreview: AssetSwapPreviewResponse | None = None

@@ -6,6 +6,7 @@ from app.modules.assets.schema import (
     AssetCategoryCreate,
     AssetCategoryResponse,
     AssetCategoryUpdate,
+    AssetBrandModelAnalyticsResponse,
     AssetDashboardResponse,
     AssetDetailResponse,
     AssetFilters,
@@ -18,8 +19,12 @@ from app.modules.assets.schema import (
     AssetMaintenanceCreateRequest,
     AssetMaintenanceUpdateRequest,
     AssetMetaResponse,
+    AssetOsDistributionResponse,
+    AssetRevokeSwapRequest,
     AssetReportRequest,
     AssetReturnRequest,
+    AssetSwapExecutionResponse,
+    AssetSwapPreviewResponse,
     AssetUpsertRequest,
     AvailableAssetGroupResponse,
     BulkAssetCreateRequest,
@@ -29,6 +34,7 @@ from app.modules.assets.schema import (
     HelpdeskTicketCreateRequest,
     MaintenanceTicketResponse,
     MyTicketResponse,
+    WarrantyExpirationFeedResponse,
 )
 from app.modules.assets.service import (
     bulk_create_assets,
@@ -43,9 +49,13 @@ from app.modules.assets.service import (
     delete_category_field,
     export_asset_report,
     export_asset_report_pdf,
+    get_swap_preview,
     get_asset,
+    get_brand_model_analytics,
     get_asset_meta,
     get_dashboard,
+    get_os_distribution_analytics,
+    get_upcoming_warranty_feed,
     issue_assets,
     list_asset_ids,
     list_assets,
@@ -54,6 +64,7 @@ from app.modules.assets.service import (
     list_my_tickets,
     list_tickets,
     return_asset,
+    revoke_and_swap_asset,
     update_asset_id,
     update_category,
     update_category_field,
@@ -140,8 +151,43 @@ async def handle_update_maintenance_by_id(
     await update_maintenance_record_by_id(db, ctx, maintenance_id, payload)
 
 
+async def handle_get_swap_preview(
+    ctx: MemberContext,
+    db: AsyncSession,
+    maintenance_id: str,
+) -> AssetSwapPreviewResponse:
+    return await get_swap_preview(db, ctx, maintenance_id)
+
+
+async def handle_revoke_and_swap_asset(
+    ctx: MemberContext,
+    db: AsyncSession,
+    maintenance_id: str,
+    payload: AssetRevokeSwapRequest,
+) -> AssetSwapExecutionResponse:
+    return await revoke_and_swap_asset(db, ctx, maintenance_id, payload)
+
+
 async def handle_get_dashboard(ctx: MemberContext, db: AsyncSession) -> AssetDashboardResponse:
     return await get_dashboard(db, ctx)
+
+
+async def handle_get_brand_model_analytics(
+    ctx: MemberContext, db: AsyncSession
+) -> AssetBrandModelAnalyticsResponse:
+    return await get_brand_model_analytics(db, ctx)
+
+
+async def handle_get_os_distribution_analytics(
+    ctx: MemberContext, db: AsyncSession
+) -> AssetOsDistributionResponse:
+    return await get_os_distribution_analytics(db, ctx)
+
+
+async def handle_get_upcoming_warranty_feed(
+    ctx: MemberContext, db: AsyncSession
+) -> WarrantyExpirationFeedResponse:
+    return await get_upcoming_warranty_feed(db, ctx)
 
 
 async def handle_get_meta(ctx: MemberContext, db: AsyncSession) -> AssetMetaResponse:
