@@ -21,7 +21,7 @@ PLAN_LOCATION_OPTIONS = (
     },
     {
         "value": PlanLocationValue.WFH,
-        "label": "Work from home (WFH)",
+        "label": "WFH",
         "short_label": "WFH",
         "color": "#2563eb",
     },
