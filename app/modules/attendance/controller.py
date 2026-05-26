@@ -22,6 +22,11 @@ from app.modules.attendance.schema import (
     ClockOutRequest,
     DeleteDayEntryRequest,
     ManualDayEntryRequest,
+    WorkLogReportDetailResponse,
+    WorkLogReportFilters,
+    WorkLogReportListResponse,
+    WorkLogReportRow,
+    WorkLogReportSummary,
 )
 from app.modules.attendance import service
 from app.shared.deps.attendance_permissions import AttendanceAccessContext
@@ -97,6 +102,7 @@ async def handle_clock_out(
         scope=access.permission_scope,
         policy=policy,
         clock_out_time=body.clock_out,
+        work_log_text=body.work_log_text,
     )
     return [_to_response(r) for r in records]
 
@@ -413,3 +419,115 @@ async def handle_delete_bulk_work_logs_day(
     )
 
     return BulkDeleteDayResponse(success=True, date=day)
+
+
+def _ensure_org_scope(access: AttendanceAccessContext) -> None:
+    from fastapi import HTTPException
+
+    if access.permission_scope != "organization":
+        raise HTTPException(
+            status_code=403,
+            detail="Organization scope is required for work-log reporting",
+        )
+
+
+async def handle_list_work_log_reports(
+    access: AttendanceAccessContext,
+    db: AsyncSession,
+    filters: WorkLogReportFilters,
+) -> WorkLogReportListResponse:
+    _ensure_org_scope(access)
+    rows, total, summary = await service.list_work_log_reports(
+        db=db,
+        organization_id=access.organization.id,
+        date_from=filters.date_from,
+        date_to=filters.date_to,
+        department_id=filters.department_id,
+        team_id=filters.team_id,
+        employee_id=filters.employee_id,
+        employee_name=filters.employee_name,
+        page=filters.page,
+        page_size=filters.page_size,
+    )
+    items = [
+        WorkLogReportRow(
+            attendanceRecordId=row.attendance_record_id,
+            employeeId=row.employee_id,
+            employeeName=row.employee_name,
+            date=row.day,
+            clockIn=row.clock_in,
+            clockOut=row.clock_out,
+            totalHours=row.total_hours,
+            departmentName=row.department_name,
+            teamName=row.team_name,
+            projectName=row.project_name,
+            taskName=row.task_name,
+            dailyWorkLogPreview=service._work_log_preview(row.daily_work_log),
+            hasFullLog=bool(
+                row.daily_work_log
+                and service._work_log_preview(row.daily_work_log) != row.daily_work_log
+            ),
+        )
+        for row in rows
+    ]
+    return WorkLogReportListResponse(
+        items=items,
+        total=total,
+        page=filters.page,
+        page_size=filters.page_size,
+        summary=WorkLogReportSummary(
+            total_days=summary.total_days,
+            total_hours=summary.total_hours,
+            employee_count=summary.employee_count,
+        ),
+    )
+
+
+async def handle_get_work_log_report_detail(
+    access: AttendanceAccessContext,
+    db: AsyncSession,
+    attendance_record_id: str,
+) -> WorkLogReportDetailResponse:
+    from fastapi import HTTPException
+
+    _ensure_org_scope(access)
+    row = await service.get_work_log_report_detail(
+        db=db,
+        organization_id=access.organization.id,
+        attendance_record_id=attendance_record_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Work-log report entry not found")
+
+    return WorkLogReportDetailResponse(
+        attendanceRecordId=row.attendance_record_id,
+        employeeId=row.employee_id,
+        employeeName=row.employee_name,
+        date=row.day,
+        clockIn=row.clock_in,
+        clockOut=row.clock_out,
+        totalHours=row.total_hours,
+        departmentName=row.department_name,
+        teamName=row.team_name,
+        projectName=row.project_name,
+        taskName=row.task_name,
+        dailyWorkLog=row.daily_work_log,
+    )
+
+
+async def handle_export_work_log_reports(
+    access: AttendanceAccessContext,
+    db: AsyncSession,
+    filters: WorkLogReportFilters,
+) -> list[service.WorkLogReportRowData]:
+    _ensure_org_scope(access)
+    return await service.export_work_log_reports(
+        db=db,
+        organization_id=access.organization.id,
+        date_from=filters.date_from,
+        date_to=filters.date_to,
+        department_id=filters.department_id,
+        team_id=filters.team_id,
+        employee_id=filters.employee_id,
+        employee_name=filters.employee_name,
+    )

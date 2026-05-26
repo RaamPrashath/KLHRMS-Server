@@ -32,8 +32,11 @@ from app.modules.attendance.controller import (
     handle_delete_day_entry,
     handle_get_attendance_day,
     handle_get_bulk_work_logs_day,
+    handle_get_work_log_report_detail,
     handle_get_bulk_work_logs_range,
     handle_get_my_attendance,
+    handle_export_work_log_reports,
+    handle_list_work_log_reports,
     handle_list_attendance,
     handle_upsert_bulk_work_logs,
     handle_upsert_manual_day,
@@ -52,9 +55,14 @@ from app.modules.attendance.schema import (
     ClockOutRequest,
     DeleteDayEntryRequest,
     ManualDayEntryRequest,
+    WorkLogReportDetailResponse,
+    WorkLogReportFilters,
+    WorkLogReportListResponse,
 )
 from app.modules.attendance.export_schema import AttendanceExportRequest
 from app.modules.attendance.export_service import (
+    generate_work_log_report_csv,
+    generate_work_log_report_xlsx,
     generate_csv,
     generate_csv_pivot,
     generate_pdf,
@@ -401,8 +409,133 @@ async def delete_bulk_work_logs_day(
     return await handle_delete_bulk_work_logs_day(access, db, day)
 
 
+@router.get(
+    "/work-log-reports",
+    response_model=WorkLogReportListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List daily employee work-log reports",
+    description=(
+        "Return paginated daily work-log report rows for Admin/HR review. "
+        "Requires attendance.view permission with organization scope."
+    ),
+)
+async def list_work_log_reports(
+    access: Annotated[
+        AttendanceAccessContext,
+        Depends(require_attendance_permission("view")),
+    ],
+    db: AsyncSession = Depends(get_db),
+    date_from: dt.date | None = Query(default=None),
+    date_to: dt.date | None = Query(default=None),
+    department_id: str | None = Query(default=None),
+    team_id: str | None = Query(default=None),
+    employee_id: str | None = Query(default=None),
+    employee_name: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+) -> WorkLogReportListResponse:
+    filters = WorkLogReportFilters(
+        date_from=date_from,
+        date_to=date_to,
+        department_id=department_id,
+        team_id=team_id,
+        employee_id=employee_id,
+        employee_name=employee_name,
+        page=page,
+        page_size=page_size,
+    )
+    return await handle_list_work_log_reports(access, db, filters)
+
+
+@router.get(
+    "/work-log-reports/{attendance_record_id}",
+    response_model=WorkLogReportDetailResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get one work-log report detail",
+    description=(
+        "Return the full daily work-log narrative for a single attendance day. "
+        "Requires attendance.view permission with organization scope."
+    ),
+)
+async def get_work_log_report_detail(
+    attendance_record_id: str,
+    access: Annotated[
+        AttendanceAccessContext,
+        Depends(require_attendance_permission("view")),
+    ],
+    db: AsyncSession = Depends(get_db),
+) -> WorkLogReportDetailResponse:
+    return await handle_get_work_log_report_detail(access, db, attendance_record_id)
+
+
+@router.get(
+    "/work-log-reports/export",
+    status_code=status.HTTP_200_OK,
+    summary="Export daily work-log reports",
+    description=(
+        "Generate CSV or XLSX from the filtered daily work-log report dataset. "
+        "Requires attendance.view permission with organization scope."
+    ),
+)
+async def export_work_log_reports(
+    access: Annotated[
+        AttendanceAccessContext,
+        Depends(require_attendance_permission("view")),
+    ],
+    db: AsyncSession = Depends(get_db),
+    format: str = Query(..., pattern="^(csv|xlsx)$"),
+    date_from: dt.date | None = Query(default=None),
+    date_to: dt.date | None = Query(default=None),
+    department_id: str | None = Query(default=None),
+    team_id: str | None = Query(default=None),
+    employee_id: str | None = Query(default=None),
+    employee_name: str | None = Query(default=None),
+) -> StreamingResponse:
+    filters = WorkLogReportFilters(
+        date_from=date_from,
+        date_to=date_to,
+        department_id=department_id,
+        team_id=team_id,
+        employee_id=employee_id,
+        employee_name=employee_name,
+    )
+    rows = await handle_export_work_log_reports(access, db, filters)
+    export_rows = [
+        WorkLogReportDetailResponse(
+            attendanceRecordId=row.attendance_record_id,
+            employeeId=row.employee_id,
+            employeeName=row.employee_name,
+            date=row.day,
+            clockIn=row.clock_in,
+            clockOut=row.clock_out,
+            totalHours=row.total_hours,
+            departmentName=row.department_name,
+            teamName=row.team_name,
+            projectName=row.project_name,
+            taskName=row.task_name,
+            dailyWorkLog=row.daily_work_log,
+        )
+        for row in rows
+    ]
+    if format == "xlsx":
+        content = generate_work_log_report_xlsx(export_rows, "Employee Work Logs Report")
+    else:
+        content = generate_work_log_report_csv(export_rows)
+
+    import io
+
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=_MIME_TYPES[format],
+        headers={
+            "Content-Disposition": f'attachment; filename="work-log-report.{_FILE_EXTENSIONS[format]}"',
+            "Content-Length": str(len(content)),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
-# 12. Export attendance  POST /attendance/export
+# 15. Export attendance  POST /attendance/export
 # ---------------------------------------------------------------------------
 
 _MIME_TYPES: dict[str, str] = {

@@ -19,15 +19,21 @@ from datetime import date, datetime, timedelta, timezone
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, distinct, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.attendance_record import AttendanceRecord
+from app.models.attendance_work_log import AttendanceWorkLog
 from app.models.base import generate_uuid
+from app.models.department import Department
+from app.models.department_member import DepartmentMember
 from app.models.member import Member
 from app.models.project import Project
 from app.models.project_task import ProjectTask
+from app.models.team import Team
+from app.models.team_member import TeamMember
+from app.models.user import User
 from app.models.weekly_plan import WeeklyPlan
 from app.models.work_hour_policy import WorkHourPolicy
 
@@ -70,6 +76,29 @@ class DaySegment:
 class LocationValidationResult:
     actual_location: str
     distance_meters: float | None
+
+
+@dataclass
+class WorkLogReportSummaryData:
+    total_days: int
+    total_hours: float
+    employee_count: int
+
+
+@dataclass
+class WorkLogReportRowData:
+    attendance_record_id: str
+    employee_id: str
+    employee_name: str
+    day: date
+    clock_in: datetime | None
+    clock_out: datetime | None
+    total_hours: float | None
+    department_name: str | None
+    team_name: str | None
+    project_name: str | None
+    task_name: str | None
+    daily_work_log: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -714,6 +743,7 @@ async def clock_out(
     scope: str,
     policy: PolicyDefaults,
     clock_out_time: datetime | None = None,
+    work_log_text: str = "",
 ) -> list[AttendanceRecord]:
     """
     Finalize an open attendance session.
@@ -756,6 +786,7 @@ async def clock_out(
     active_project_id = active.projectId
     active_project_task_id = active.projectTaskId
     active_description = active.description
+    normalized_work_log_text = work_log_text.strip()
 
     for seg in segments:
         total = _compute_hours(seg.clock_in, seg.clock_out)
@@ -786,6 +817,16 @@ async def clock_out(
             project_task_id=active_project_task_id,
             description=active_description,
         )
+        if seg.day == segments[-1].day and normalized_work_log_text:
+            await _upsert_terminal_session_work_log_text(
+                db=db,
+                record=record,
+                segment=seg,
+                project_id=active_project_id,
+                project_task_id=active_project_task_id,
+                description=active_description,
+                work_log_text=normalized_work_log_text,
+            )
         written.append(record)
 
     await db.commit()
@@ -1321,6 +1362,84 @@ async def _insert_clock_session_work_log_if_missing(
     await db.flush()
 
 
+async def _upsert_terminal_session_work_log_text(
+    db: AsyncSession,
+    record: AttendanceRecord,
+    segment: DaySegment,
+    project_id: str | None,
+    project_task_id: str | None,
+    description: str | None,
+    work_log_text: str,
+) -> None:
+    """
+    Ensure the terminal day of a clock-out session has one session-level log row
+    carrying the mandatory daily narrative.
+
+    Rules:
+      - No logs        -> create a session-level row.
+      - One auto log   -> update it in place.
+      - Many logs      -> update a matching session-level row if present,
+                          otherwise create a separate session-level row.
+    """
+    matching_result = await db.execute(
+        select(AttendanceWorkLog).where(
+            AttendanceWorkLog.attendanceRecordId == record.id,
+            AttendanceWorkLog.startTime == segment.clock_in,
+            AttendanceWorkLog.endTime == segment.clock_out,
+        )
+    )
+    matching_logs = list(matching_result.scalars().all())
+
+    if matching_logs:
+        target = matching_logs[0]
+        target.projectId = project_id
+        target.projectTaskId = project_task_id
+        target.notes = work_log_text
+        if target.title is None and description:
+            target.title = description[:255]
+        await db.flush()
+        return
+
+    all_logs_result = await db.execute(
+        select(AttendanceWorkLog).where(
+            AttendanceWorkLog.attendanceRecordId == record.id,
+        )
+    )
+    all_logs = list(all_logs_result.scalars().all())
+
+    if len(all_logs) == 1:
+        target = all_logs[0]
+        is_session_like = (
+            target.startTime == segment.clock_in
+            and target.endTime == segment.clock_out
+        ) or target.title is None
+        if is_session_like:
+            target.projectId = project_id
+            target.projectTaskId = project_task_id
+            target.notes = work_log_text
+            if target.title is None and description:
+                target.title = description[:255]
+            await db.flush()
+            return
+
+    db.add(
+        AttendanceWorkLog(
+            id=generate_uuid(),
+            attendanceRecordId=record.id,
+            organizationId=record.organizationId,
+            employeeId=record.employeeId,
+            date=record.date,
+            startTime=segment.clock_in,
+            endTime=segment.clock_out,
+            projectId=project_id,
+            projectTaskId=project_task_id,
+            title=(description[:255] if description else None),
+            notes=work_log_text,
+        )
+    )
+    await db.flush()
+
+
 # ---------------------------------------------------------------------------
 # Bulk upsert
 # ---------------------------------------------------------------------------
@@ -1621,3 +1740,313 @@ async def delete_bulk_work_logs_day(
 
     await db.delete(record)
     await db.commit()
+
+
+def _work_log_preview(value: str | None, limit: int = 120) -> str | None:
+    if value is None:
+        return None
+    trimmed = " ".join(value.split())
+    if len(trimmed) <= limit:
+        return trimmed
+    return f"{trimmed[: limit - 1].rstrip()}…"
+
+
+def _build_work_log_report_selects(
+    organization_id: str,
+):
+    notes_subquery = (
+        select(AttendanceWorkLog.notes)
+        .where(
+            AttendanceWorkLog.attendanceRecordId == AttendanceRecord.id,
+            AttendanceWorkLog.organizationId == organization_id,
+            AttendanceWorkLog.notes.is_not(None),
+            AttendanceWorkLog.notes != "",
+        )
+        .order_by(AttendanceWorkLog.startTime.desc(), AttendanceWorkLog.createdAt.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    department_name_subquery = (
+        select(func.min(Department.name))
+        .select_from(DepartmentMember)
+        .join(Department, Department.id == DepartmentMember.departmentId)
+        .where(
+            DepartmentMember.memberId == AttendanceRecord.employeeId,
+            Department.organizationId == organization_id,
+        )
+        .scalar_subquery()
+    )
+    team_name_subquery = (
+        select(func.min(Team.name))
+        .select_from(TeamMember)
+        .join(Team, Team.id == TeamMember.teamId)
+        .where(
+            TeamMember.memberId == AttendanceRecord.employeeId,
+            Team.organizationId == organization_id,
+        )
+        .scalar_subquery()
+    )
+
+    return notes_subquery, department_name_subquery, team_name_subquery
+
+
+def _apply_work_log_report_filters(
+    query,
+    organization_id: str,
+    *,
+    date_from: date | None,
+    date_to: date | None,
+    department_id: str | None,
+    team_id: str | None,
+    employee_id: str | None,
+    employee_name: str | None,
+):
+    query = query.where(AttendanceRecord.organizationId == organization_id)
+    if date_from is not None:
+        query = query.where(AttendanceRecord.date >= date_from)
+    if date_to is not None:
+        query = query.where(AttendanceRecord.date <= date_to)
+    if employee_id is not None:
+        query = query.where(AttendanceRecord.employeeId == employee_id)
+    if employee_name:
+        term = f"%{employee_name.strip()}%"
+        query = query.where(User.name.ilike(term))
+    if department_id is not None:
+        query = query.where(
+            AttendanceRecord.employeeId.in_(
+                select(DepartmentMember.memberId).where(
+                    DepartmentMember.departmentId == department_id,
+                )
+            )
+        )
+    if team_id is not None:
+        query = query.where(
+            AttendanceRecord.employeeId.in_(
+                select(TeamMember.memberId).where(
+                    TeamMember.teamId == team_id,
+                )
+            )
+        )
+    return query
+
+
+async def list_work_log_reports(
+    db: AsyncSession,
+    organization_id: str,
+    *,
+    date_from: date | None,
+    date_to: date | None,
+    department_id: str | None,
+    team_id: str | None,
+    employee_id: str | None,
+    employee_name: str | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[WorkLogReportRowData], int, WorkLogReportSummaryData]:
+    notes_subquery, department_name_subquery, team_name_subquery = _build_work_log_report_selects(
+        organization_id
+    )
+
+    base_query = (
+        select(
+            AttendanceRecord.id,
+            AttendanceRecord.employeeId,
+            User.name,
+            AttendanceRecord.date,
+            AttendanceRecord.clockIn,
+            AttendanceRecord.clockOut,
+            AttendanceRecord.totalHours,
+            department_name_subquery.label("departmentName"),
+            team_name_subquery.label("teamName"),
+            Project.name.label("projectName"),
+            ProjectTask.name.label("taskName"),
+            notes_subquery.label("dailyWorkLog"),
+        )
+        .join(Member, Member.id == AttendanceRecord.employeeId)
+        .join(User, User.id == Member.userId)
+        .outerjoin(Project, Project.id == AttendanceRecord.projectId)
+        .outerjoin(ProjectTask, ProjectTask.id == AttendanceRecord.projectTaskId)
+    )
+    base_query = _apply_work_log_report_filters(
+        base_query,
+        organization_id,
+        date_from=date_from,
+        date_to=date_to,
+        department_id=department_id,
+        team_id=team_id,
+        employee_id=employee_id,
+        employee_name=employee_name,
+    )
+
+    count_query = (
+        select(
+            func.count(distinct(AttendanceRecord.id)),
+            func.coalesce(func.sum(AttendanceRecord.totalHours), 0.0),
+            func.count(distinct(AttendanceRecord.employeeId)),
+        )
+        .select_from(AttendanceRecord)
+        .join(Member, Member.id == AttendanceRecord.employeeId)
+        .join(User, User.id == Member.userId)
+    )
+    count_query = _apply_work_log_report_filters(
+        count_query,
+        organization_id,
+        date_from=date_from,
+        date_to=date_to,
+        department_id=department_id,
+        team_id=team_id,
+        employee_id=employee_id,
+        employee_name=employee_name,
+    )
+    total, total_hours, employee_count = (await db.execute(count_query)).one()
+
+    paged_query = (
+        base_query.order_by(AttendanceRecord.date.desc(), User.name.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    result = await db.execute(paged_query)
+
+    rows = [
+        WorkLogReportRowData(
+            attendance_record_id=row.id,
+            employee_id=row.employeeId,
+            employee_name=row.name or row.employeeId,
+            day=row.date,
+            clock_in=row.clockIn,
+            clock_out=row.clockOut,
+            total_hours=row.totalHours,
+            department_name=row.departmentName,
+            team_name=row.teamName,
+            project_name=row.projectName,
+            task_name=row.taskName,
+            daily_work_log=row.dailyWorkLog,
+        )
+        for row in result
+    ]
+
+    return (
+        rows,
+        int(total or 0),
+        WorkLogReportSummaryData(
+            total_days=int(total or 0),
+            total_hours=round(float(total_hours or 0.0), 4),
+            employee_count=int(employee_count or 0),
+        ),
+    )
+
+
+async def get_work_log_report_detail(
+    db: AsyncSession,
+    organization_id: str,
+    attendance_record_id: str,
+) -> WorkLogReportRowData | None:
+    notes_subquery, department_name_subquery, team_name_subquery = _build_work_log_report_selects(
+        organization_id
+    )
+    query = (
+        select(
+            AttendanceRecord.id,
+            AttendanceRecord.employeeId,
+            User.name,
+            AttendanceRecord.date,
+            AttendanceRecord.clockIn,
+            AttendanceRecord.clockOut,
+            AttendanceRecord.totalHours,
+            department_name_subquery.label("departmentName"),
+            team_name_subquery.label("teamName"),
+            Project.name.label("projectName"),
+            ProjectTask.name.label("taskName"),
+            notes_subquery.label("dailyWorkLog"),
+        )
+        .join(Member, Member.id == AttendanceRecord.employeeId)
+        .join(User, User.id == Member.userId)
+        .outerjoin(Project, Project.id == AttendanceRecord.projectId)
+        .outerjoin(ProjectTask, ProjectTask.id == AttendanceRecord.projectTaskId)
+        .where(
+            AttendanceRecord.organizationId == organization_id,
+            AttendanceRecord.id == attendance_record_id,
+        )
+    )
+    row = (await db.execute(query)).one_or_none()
+    if row is None:
+        return None
+    return WorkLogReportRowData(
+        attendance_record_id=row.id,
+        employee_id=row.employeeId,
+        employee_name=row.name or row.employeeId,
+        day=row.date,
+        clock_in=row.clockIn,
+        clock_out=row.clockOut,
+        total_hours=row.totalHours,
+        department_name=row.departmentName,
+        team_name=row.teamName,
+        project_name=row.projectName,
+        task_name=row.taskName,
+        daily_work_log=row.dailyWorkLog,
+    )
+
+
+async def export_work_log_reports(
+    db: AsyncSession,
+    organization_id: str,
+    *,
+    date_from: date | None,
+    date_to: date | None,
+    department_id: str | None,
+    team_id: str | None,
+    employee_id: str | None,
+    employee_name: str | None,
+) -> list[WorkLogReportRowData]:
+    notes_subquery, department_name_subquery, team_name_subquery = _build_work_log_report_selects(
+        organization_id
+    )
+    query = (
+        select(
+            AttendanceRecord.id,
+            AttendanceRecord.employeeId,
+            User.name,
+            AttendanceRecord.date,
+            AttendanceRecord.clockIn,
+            AttendanceRecord.clockOut,
+            AttendanceRecord.totalHours,
+            department_name_subquery.label("departmentName"),
+            team_name_subquery.label("teamName"),
+            Project.name.label("projectName"),
+            ProjectTask.name.label("taskName"),
+            notes_subquery.label("dailyWorkLog"),
+        )
+        .join(Member, Member.id == AttendanceRecord.employeeId)
+        .join(User, User.id == Member.userId)
+        .outerjoin(Project, Project.id == AttendanceRecord.projectId)
+        .outerjoin(ProjectTask, ProjectTask.id == AttendanceRecord.projectTaskId)
+    )
+    query = _apply_work_log_report_filters(
+        query,
+        organization_id,
+        date_from=date_from,
+        date_to=date_to,
+        department_id=department_id,
+        team_id=team_id,
+        employee_id=employee_id,
+        employee_name=employee_name,
+    ).order_by(AttendanceRecord.date.desc(), User.name.asc())
+
+    result = await db.execute(query)
+    return [
+        WorkLogReportRowData(
+            attendance_record_id=row.id,
+            employee_id=row.employeeId,
+            employee_name=row.name or row.employeeId,
+            day=row.date,
+            clock_in=row.clockIn,
+            clock_out=row.clockOut,
+            total_hours=row.totalHours,
+            department_name=row.departmentName,
+            team_name=row.teamName,
+            project_name=row.projectName,
+            task_name=row.taskName,
+            daily_work_log=row.dailyWorkLog,
+        )
+        for row in result
+    ]
