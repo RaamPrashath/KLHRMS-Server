@@ -273,11 +273,13 @@ class JobRequisition(Base):
 
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
+        default=func.now(),
         server_default=func.now(),
     )
 
     updatedAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
+        default=func.now(),
         server_default=func.now(),
         onupdate=func.now(),
     )
@@ -509,11 +511,13 @@ class Candidate(Base):
 
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
+        default=func.now(),
         server_default=func.now(),
     )
 
     updatedAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
+        default=func.now(),
         server_default=func.now(),
         onupdate=func.now(),
     )
@@ -590,7 +594,12 @@ class JobPosting(Base):
     requirements: Mapped[str | None] = mapped_column(Text)
 
     status: Mapped[JobPostingStatus] = mapped_column(
-        Enum(JobPostingStatus),
+        Enum(
+            JobPostingStatus,
+            native_enum=False,
+            validate_strings=True,
+            length=32,
+        ),
         nullable=False,
         default=JobPostingStatus.DRAFT,
         index=True,
@@ -602,11 +611,13 @@ class JobPosting(Base):
 
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
+        default=func.now(),
         server_default=func.now(),
     )
 
     updatedAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
+        default=func.now(),
         server_default=func.now(),
         onupdate=func.now(),
     )
