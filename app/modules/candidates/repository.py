@@ -86,6 +86,9 @@ class CandidatePipelineRepository:
                     CandidateApplication.candidate
                 ),
                 selectinload(PipelineStage.applications).selectinload(
+                    CandidateApplication.resumeAnalysis
+                ),
+                selectinload(PipelineStage.applications).selectinload(
                     CandidateApplication.stageHistory
                 ),
                 selectinload(PipelineStage.applications).selectinload(
@@ -133,6 +136,8 @@ class CandidatePipelineRepository:
                 selectinload(PipelineStage.evaluationWorkspace),
                 selectinload(PipelineStage.applications)
                 .joinedload(CandidateApplication.candidate),
+                selectinload(PipelineStage.applications)
+                .joinedload(CandidateApplication.resumeAnalysis),
                 joinedload(PipelineStage.jobPosting),
             )
             .where(
@@ -161,6 +166,7 @@ class CandidatePipelineRepository:
             .options(
                 selectinload(PipelineStage.applications).options(
                     selectinload(CandidateApplication.candidate),
+                    selectinload(CandidateApplication.resumeAnalysis),
                     joinedload(CandidateApplication.jobPosting),
                     selectinload(CandidateApplication.stageEvents)
                     .selectinload(StageEvent.participants)
@@ -196,6 +202,7 @@ class CandidatePipelineRepository:
             .options(
                 selectinload(PipelineStage.applications).options(
                     selectinload(CandidateApplication.candidate),
+                    selectinload(CandidateApplication.resumeAnalysis),
                     joinedload(CandidateApplication.jobPosting),
                     selectinload(CandidateApplication.stageHistory),
                     selectinload(CandidateApplication.stageEvents)
@@ -328,6 +335,7 @@ class CandidatePipelineRepository:
             select(CandidateApplication)
             .options(
                 selectinload(CandidateApplication.candidate),
+                selectinload(CandidateApplication.resumeAnalysis),
                 joinedload(CandidateApplication.jobPosting),
                 joinedload(CandidateApplication.pipelineStage),
                 selectinload(CandidateApplication.stageEvents)

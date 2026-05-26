@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.recruitment import RequisitionApprovalDecision
@@ -8,6 +9,7 @@ from app.modules.jobs.schema import (
     CreatePipelineStageRequest,
     ImportableJobPostingRead,
     ImportPipelineRequest,
+    JobRequisitionAiAnalysisRead,
     JobRequisitionCreateRequest,
     JobRequisitionDecisionRequest,
     JobRequisitionDetailRead,
@@ -46,6 +48,50 @@ async def handle_get_requisition(
         actor_member_id=ctx.member.id,
         view_scope=ctx.scope,  # type: ignore[attr-defined]
         requisition_id=requisition_id,
+    )
+
+
+async def handle_get_requisition_ai_analysis(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+) -> JobRequisitionAiAnalysisRead:
+    return await service.get_requisition_ai_analysis(
+        db=db,
+        organization_id=ctx.organization.id,
+        actor_member_id=ctx.member.id,
+        view_scope=ctx.scope,  # type: ignore[attr-defined]
+        requisition_id=requisition_id,
+    )
+
+
+async def handle_rebuild_requisition_ai_analysis(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+) -> JobRequisitionAiAnalysisRead:
+    return await service.rebuild_requisition_ai_analysis(
+        db=db,
+        organization_id=ctx.organization.id,
+        actor_member_id=ctx.member.id,
+        edit_scope=ctx.scope,  # type: ignore[attr-defined]
+        requisition_id=requisition_id,
+    )
+
+
+async def handle_re_evaluate_requisition(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+    background_tasks: BackgroundTasks,
+) -> JobRequisitionAiAnalysisRead:
+    return await service.re_evaluate_requisition(
+        db=db,
+        organization_id=ctx.organization.id,
+        actor_member_id=ctx.member.id,
+        edit_scope=ctx.scope,  # type: ignore[attr-defined]
+        requisition_id=requisition_id,
+        background_tasks=background_tasks,
     )
 
 
@@ -255,9 +301,11 @@ async def handle_apply_public_posting(
     db: AsyncSession,
     posting_id: str,
     body: PublicJobApplicationRequest,
+    background_tasks: BackgroundTasks,
 ) -> PublicJobApplicationRead:
     return await service.apply_to_public_posting(
         db=db,
         posting_id=posting_id,
         body=body,
+        background_tasks=background_tasks,
     )

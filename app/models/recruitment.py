@@ -16,6 +16,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import ENUM as PGEnum
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, generate_uuid
@@ -249,6 +250,7 @@ class JobRequisition(Base):
         nullable=True,
         default=list,
     )
+    knockoutRule: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # POSTING CONTENT (Tiptap HTML)
     roleSummary: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -318,10 +320,106 @@ class JobRequisition(Base):
         order_by="RequisitionActivityLog.createdAt.desc()",
     )
 
+    aiRules = relationship(
+        "JobRequisitionRules",
+        back_populates="requisition",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
     __table_args__ = (
         Index("ix_job_requisition_org_status", "organizationId", "status"),
         Index("ix_job_requisition_org_raised_by", "organizationId", "raisedById"),
         Index("ix_job_requisition_org_replacement", "organizationId", "replacementForId"),
+    )
+
+
+# =========================================================
+# JOB REQUISITION AI RULES
+# =========================================================
+
+
+class JobRequisitionRules(Base):
+    __tablename__ = "job_requisition_rules"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    requisitionId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("job_requisition.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    jobPostingId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("job_posting.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    rulesVersion: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="1.0",
+    )
+
+    knockoutRules: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+    )
+
+    scoringWeights: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+    )
+
+    sourceSnapshot: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    requisition = relationship(
+        "JobRequisition",
+        back_populates="aiRules",
+    )
+
+    jobPosting = relationship("JobPosting")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organizationId",
+            "requisitionId",
+            name="uq_job_requisition_rules_org_requisition",
+        ),
+        Index("ix_job_requisition_rules_org_requisition", "organizationId", "requisitionId"),
+        Index("ix_job_requisition_rules_org_posting", "organizationId", "jobPostingId"),
     )
 
 
@@ -1122,6 +1220,13 @@ class CandidateApplication(Base):
         cascade="all, delete-orphan",
     )
 
+    resumeAnalysis = relationship(
+        "CandidateResumeAnalysis",
+        back_populates="application",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
     __table_args__ = (
         UniqueConstraint(
             "candidateId",
@@ -1133,6 +1238,127 @@ class CandidateApplication(Base):
             "organizationId",
             "pipelineStageId",
         ),
+    )
+
+
+# =========================================================
+# CANDIDATE RESUME ANALYSIS
+# =========================================================
+
+
+class CandidateResumeAnalysis(Base):
+    __tablename__ = "candidate_resume_analysis"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    applicationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("candidate_application.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="PENDING",
+        index=True,
+    )
+
+    resumeUrl: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    resumeContentType: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    resumeFileType: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    resumeSizeBytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    firewallFlags: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+
+    removedSuspiciousText: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+
+    isFlaggedForCheating: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    extractedText: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    sanitizedText: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    parserWarnings: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+
+    extractedFacts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    compositeScore: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    rawScore: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    maxScore: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    evaluationStatus: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    failedKnockouts: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+
+    scoreBreakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    extractionConfidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    analysisVersion: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="0.3",
+    )
+
+    attemptCount: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    lastError: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    analyzedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization = relationship("Organization")
+
+    application = relationship(
+        "CandidateApplication",
+        back_populates="resumeAnalysis",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organizationId",
+            "applicationId",
+            name="uq_candidate_resume_analysis_org_application",
+        ),
+        Index("ix_candidate_resume_analysis_org_status", "organizationId", "status"),
+        Index("ix_candidate_resume_analysis_org_application", "organizationId", "applicationId"),
     )
 
 
