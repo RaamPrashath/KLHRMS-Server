@@ -1,14 +1,16 @@
+from datetime import datetime
+
 from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     String,
     UniqueConstraint,
-    Index,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime
+
 from app.models.base import Base, generate_uuid
 
 
@@ -88,12 +90,6 @@ class Member(Base):
     createdOfferLetters = relationship(
         "OfferLetter",
         foreign_keys="OfferLetter.createdByMemberId",
-        back_populates="createdBy",
-    )
-
-    createdEvaluationWorkspaces = relationship(
-        "StageEvaluationWorkspace",
-        foreign_keys="StageEvaluationWorkspace.createdByMemberId",
         back_populates="createdBy",
     )
 

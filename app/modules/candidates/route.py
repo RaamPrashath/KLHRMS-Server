@@ -6,22 +6,18 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.candidates.controller import (
-    handle_assign_stage_interviews,
     handle_accept_interview,
+    handle_assign_stage_interviews,
     handle_complete_interview_meeting,
     handle_complete_stage,
     handle_create_application_note,
     handle_create_interview_meeting,
-    handle_start_interview_meeting,
-    handle_update_interview_meeting,
     handle_create_reassignment_request,
     handle_create_stage,
     handle_delete_stage,
     handle_distribute_stage_interviews,
     handle_extend_stage_due_date,
-    handle_generate_evaluation_workspace,
     handle_get_application_detail,
-    handle_get_evaluation_workspace,
     handle_get_pipeline_board,
     handle_get_pipeline_board_by_job_slug,
     handle_get_stage_workspace,
@@ -29,33 +25,33 @@ from app.modules.candidates.controller import (
     handle_list_interviewers,
     handle_list_job_postings,
     handle_list_my_interviews,
-    handle_move_interview_assignment,
-    handle_reopen_stage,
     handle_move_application_stage,
+    handle_move_interview_assignment,
     handle_preview_stage_interview_warnings,
     handle_reject_interview,
+    handle_reopen_stage,
     handle_reshuffle_interview_assignment,
+    handle_start_interview_meeting,
     handle_update_application_detail,
     handle_update_application_note,
+    handle_update_interview_meeting,
     handle_update_stage,
 )
 from app.modules.candidates.schema import (
-    ApplicationInterviewMeetingRead,
     CandidateApplicationDetailRead,
     CandidateApplicationNoteCreateRequest,
     CandidateApplicationNoteUpdateRequest,
     CandidateApplicationUpdateRequest,
     InterviewAcceptRequest,
     InterviewAcceptResponse,
+    InterviewerSearchResponse,
+    InterviewMeetingCompleteRequest,
     InterviewMeetingCreateRequest,
     InterviewMeetingRead,
     InterviewMeetingUpdateRequest,
-    InterviewMeetingCompleteRequest,
-    InterviewMeetingStartRequest,
     InterviewMoveRequest,
     InterviewMoveResponse,
     InterviewRejectResponse,
-    InterviewerSearchResponse,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
     PipelineApplicationRead,
@@ -67,7 +63,6 @@ from app.modules.candidates.schema import (
     ReassignmentRequestCreate,
     ReshuffleRequest,
     ReshuffleResponse,
-    StageEvaluationWorkspaceRead,
     StageInterviewAssignmentRequest,
     StageInterviewAssignmentResponse,
     StageInterviewWarningRequest,
@@ -309,24 +304,6 @@ async def reopen_pipeline_stage(
     db: AsyncSession = Depends(get_db),
 ) -> PipelineStageRead:
     return await handle_reopen_stage(ctx, db, stage_id)
-
-
-@router.get("/pipeline/stages/{stage_id}/evaluation-workspace", response_model=StageEvaluationWorkspaceRead)
-async def get_evaluation_workspace(
-    stage_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
-    db: AsyncSession = Depends(get_db),
-) -> StageEvaluationWorkspaceRead:
-    return await handle_get_evaluation_workspace(ctx, db, stage_id)
-
-
-@router.post("/pipeline/stages/{stage_id}/evaluation-workspace", response_model=StageEvaluationWorkspaceRead)
-async def generate_evaluation_workspace(
-    stage_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
-    db: AsyncSession = Depends(get_db),
-) -> StageEvaluationWorkspaceRead:
-    return await handle_generate_evaluation_workspace(ctx, db, stage_id)
 
 
 @router.delete("/pipeline/stages/{stage_id}", status_code=204)

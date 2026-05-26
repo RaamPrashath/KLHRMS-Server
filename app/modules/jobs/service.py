@@ -21,7 +21,6 @@ from app.models.recruitment import (
     PipelineStage,
     RequisitionApproval,
     RequisitionApprovalDecision,
-    StageEvaluationCategory,
     StageType,
 )
 from app.models.team_member import TeamMember
@@ -339,24 +338,8 @@ def _serialize_pipeline_stage(stage: PipelineStage) -> PipelineStageRead:
         stageType=stage.stageType.value,
         meetingEnabled=stage.meetingEnabled,
         offerLetterEnabled=stage.offerLetterEnabled,
-        evaluationEnabled=stage.evaluationEnabled,
-        sheetEnabled=stage.sheetEnabled,
-        evaluationType=stage.evaluationType,
-        evaluationIncludeTotal=stage.evaluationIncludeTotal,
-        evaluationIncludeAnalysis=stage.evaluationIncludeAnalysis,
         dueDate=_to_utc_datetime(stage.dueDate),
         extendToNextWorkingDay=stage.extendToNextWorkingDay,
-        evaluationCategories=[
-            {
-                "id": category.id,
-                "stageId": category.stageId,
-                "name": category.name,
-                "type": category.valueType,
-                "maxScore": category.maxScore,
-                "order": category.order,
-            }
-            for category in sorted(stage.evaluationCategories or [], key=lambda item: item.order)
-        ],
     )
 
 
@@ -991,29 +974,10 @@ async def create_pipeline_stage(
         stageType=stage_type,
         meetingEnabled=stage_type == StageType.INTERVIEW,
         offerLetterEnabled=stage_type == StageType.OFFER,
-        evaluationEnabled=body.evaluationEnabled,
-        sheetEnabled=body.sheetEnabled if body.evaluationEnabled else False,
-        evaluationType=body.evaluationType if body.evaluationEnabled else None,
-        evaluationIncludeTotal=body.evaluationIncludeTotal if body.evaluationEnabled else False,
-        evaluationIncludeAnalysis=body.evaluationIncludeAnalysis if body.evaluationEnabled else False,
         dueDate=body.dueDate,
         extendToNextWorkingDay=body.extendToNextWorkingDay,
     )
     await repository.create_pipeline_stage(stage)
-    if body.evaluationEnabled and body.evaluationCategories:
-        await repository.create_stage_evaluation_categories(
-            [
-                StageEvaluationCategory(
-                    organizationId=organization_id,
-                    stageId=stage.id,
-                    name=category.name,
-                    valueType=category.type,
-                    maxScore=category.maxScore,
-                    order=category.order or index,
-                )
-                for index, category in enumerate(body.evaluationCategories, start=1)
-            ]
-        )
     await db.commit()
 
     refreshed = await repository.list_pipeline_stages(organization_id, posting.id)
@@ -1097,7 +1061,6 @@ async def import_pipeline(
 
     applied_stage, used_slugs = await _replace_setup_stages(repository, organization_id, target_posting.id)
     start_order = applied_stage.order if applied_stage is not None else 0.0
-    created_stages: list[tuple[PipelineStage, PipelineStage]] = []
     for index, source_stage in enumerate(importable_stages, start=1):
         copied_stage = PipelineStage(
             organizationId=organization_id,
@@ -1111,32 +1074,11 @@ async def import_pipeline(
             stageType=source_stage.stageType,
             meetingEnabled=source_stage.meetingEnabled,
             offerLetterEnabled=source_stage.offerLetterEnabled,
-            evaluationEnabled=source_stage.evaluationEnabled,
-            sheetEnabled=source_stage.sheetEnabled,
-            evaluationType=source_stage.evaluationType,
-            evaluationIncludeTotal=source_stage.evaluationIncludeTotal,
-            evaluationIncludeAnalysis=source_stage.evaluationIncludeAnalysis,
             dueDate=source_stage.dueDate,
             extendToNextWorkingDay=source_stage.extendToNextWorkingDay,
         )
         await repository.create_pipeline_stage(copied_stage)
-        created_stages.append((source_stage, copied_stage))
 
-    categories: list[StageEvaluationCategory] = []
-    for source_stage, copied_stage in created_stages:
-        for category in sorted(source_stage.evaluationCategories or [], key=lambda item: item.order):
-            categories.append(
-                StageEvaluationCategory(
-                    organizationId=organization_id,
-                    stageId=copied_stage.id,
-                    name=category.name,
-                    valueType=category.valueType,
-                    maxScore=category.maxScore,
-                    order=category.order,
-                )
-            )
-    if categories:
-        await repository.create_stage_evaluation_categories(categories)
     await db.commit()
 
     refreshed = await repository.list_pipeline_stages(organization_id, target_posting.id)
@@ -1626,7 +1568,6 @@ async def apply_to_public_posting(
         jobPostingId=posting.id,
         pipelineStageId=default_stage.id,
         source=ApplicationSource.COMPANY_WEBSITE,
-        score=None,
         notes=body.coverLetter,
     )
     await repository.add_application(application)
