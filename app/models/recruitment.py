@@ -1395,6 +1395,12 @@ class StageEvent(Base):
 
     emailSentAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
+    candidateToken: Mapped[str | None] = mapped_column(
+        String,
+        unique=True,
+        nullable=True,
+    )
+
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -1444,6 +1450,12 @@ class StageEvent(Base):
 
     feedbacks = relationship(
         "InterviewFeedback",
+        back_populates="event",
+        cascade="all, delete-orphan",
+    )
+
+    proposedSlots = relationship(
+        "StageEventProposedSlot",
         back_populates="event",
         cascade="all, delete-orphan",
     )
@@ -1520,6 +1532,72 @@ class StageEventParticipant(Base):
             "memberId",
             name="uq_stage_event_participant",
         ),
+    )
+
+
+# =========================================================
+# STAGE EVENT PROPOSED SLOT
+# =========================================================
+
+
+class StageEventProposedSlot(Base):
+    __tablename__ = "stage_event_proposed_slot"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    eventId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stage_event.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    participantId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stage_event_participant.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    startTime: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    endTime: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    isSelectedByCandidate: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    # RELATIONSHIPS
+
+    event = relationship(
+        "StageEvent",
+        back_populates="proposedSlots",
+    )
+
+    participant = relationship(
+        "StageEventParticipant",
+    )
+
+    __table_args__ = (
+        Index("seps_eventId_idx", "eventId"),
+        Index("seps_participantId_idx", "participantId"),
     )
 
 

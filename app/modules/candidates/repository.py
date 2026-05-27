@@ -496,8 +496,9 @@ class CandidatePipelineRepository:
             select(StageEvent)
             .options(
                 joinedload(StageEvent.application).selectinload(CandidateApplication.candidate),
+                joinedload(StageEvent.application).joinedload(CandidateApplication.jobPosting),
                 joinedload(StageEvent.stage),
-                selectinload(StageEvent.participants),
+                selectinload(StageEvent.participants).joinedload(StageEventParticipant.member).joinedload(Member.user),
                 selectinload(StageEvent.feedbacks),
             )
             .where(
@@ -618,10 +619,30 @@ class CandidatePipelineRepository:
                 joinedload(StageEvent.application).joinedload(CandidateApplication.jobPosting),
                 joinedload(StageEvent.stage),
                 selectinload(StageEvent.participants).joinedload(StageEventParticipant.member).joinedload(Member.user),
+                selectinload(StageEvent.proposedSlots),
             )
             .where(
                 StageEvent.organizationId == organization_id,
                 StageEvent.id == event_id,
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
+    async def get_stage_event_by_candidate_token(
+        self,
+        token: str,
+    ) -> StageEvent | None:
+        result = await self.db.execute(
+            select(StageEvent)
+            .options(
+                joinedload(StageEvent.application).selectinload(CandidateApplication.candidate),
+                joinedload(StageEvent.application).joinedload(CandidateApplication.jobPosting),
+                joinedload(StageEvent.stage),
+                selectinload(StageEvent.participants).joinedload(StageEventParticipant.member).joinedload(Member.user),
+                selectinload(StageEvent.proposedSlots),
+            )
+            .where(
+                StageEvent.candidateToken == token,
             )
         )
         return result.unique().scalar_one_or_none()
@@ -641,6 +662,7 @@ class CandidatePipelineRepository:
                 .joinedload(StageEvent.application)
                 .joinedload(CandidateApplication.jobPosting),
                 joinedload(StageEventParticipant.event).joinedload(StageEvent.stage),
+                joinedload(StageEventParticipant.event).selectinload(StageEvent.proposedSlots),
                 joinedload(StageEventParticipant.member).joinedload(Member.user),
             )
             .where(

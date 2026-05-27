@@ -205,9 +205,39 @@ class ReshuffleResponse(BaseModel):
     warnings: list[StageInterviewWarningRead]
 
 
+class ProposedSlotInput(BaseModel):
+    startTime: datetime
+    endTime: datetime
+
+
 class InterviewAcceptRequest(BaseModel):
-    scheduledStartAt: datetime | None = None
+    proposedSlots: list[ProposedSlotInput] = Field(min_length=1)
     durationMinutes: int = Field(default=30, ge=15, le=240)
+
+
+class InterviewAcceptResponse(BaseModel):
+    eventId: str
+    status: str
+    meeting: InterviewMeetingRead | None = None
+    candidateToken: str | None = None
+
+
+class PublicProposedSlotRead(BaseModel):
+    id: str
+    startTime: datetime
+    endTime: datetime
+
+
+class PublicSlotListResponse(BaseModel):
+    candidateName: str
+    jobTitle: str
+    interviewerName: str
+    candidateToken: str
+    slots: list[PublicProposedSlotRead]
+
+
+class PublicSlotSelectResponse(BaseModel):
+    message: str
 
 
 class InterviewRejectResponse(BaseModel):
@@ -233,6 +263,7 @@ class MyInterviewRead(BaseModel):
     isBackup: bool
     meetingUrl: str | None = None
     stageDueDate: datetime | None = None
+    proposedSlots: list[PublicProposedSlotRead] = Field(default_factory=list)
 
 
 class MyInterviewListResponse(BaseModel):
@@ -326,12 +357,6 @@ class InterviewMeetingRead(BaseModel):
     createdAt: datetime
 
 
-class InterviewAcceptResponse(BaseModel):
-    eventId: str
-    status: str
-    meeting: InterviewMeetingRead | None = None
-
-
 class CandidateApplicationNoteRead(BaseModel):
     id: str
     authorMemberId: str
@@ -409,3 +434,19 @@ class CandidateApplicationDetailRead(BaseModel):
 class CandidateApplicationUpdateRequest(BaseModel):
     internalNotes: str | None = Field(default=None, max_length=5000)
     resumeUrl: str | None = Field(default=None, max_length=4096)
+
+
+class FeedbackInfoResponse(BaseModel):
+    candidateName: str
+    jobTitle: str
+    interviewerName: str | None
+    stageName: str
+    interviewDate: datetime
+
+
+class FeedbackSubmitRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
+
+
+class FeedbackSubmitResponse(BaseModel):
+    message: str

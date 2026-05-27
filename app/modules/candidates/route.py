@@ -73,7 +73,7 @@ from app.modules.candidates.schema import (
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
-from app.shared.deps.permissions import require_permission
+from app.shared.deps.permissions import require_any_permission, require_permission
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
@@ -181,7 +181,7 @@ async def move_application_stage_legacy(
 @router.get("/applications/{application_id}", response_model=CandidateApplicationDetailRead)
 async def get_application_detail(
     application_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
+    ctx: Annotated[MemberContext, Depends(require_any_permission(("candidates", "view"), ("interviews", "view"), ("jobs", "view")))],
     db: AsyncSession = Depends(get_db),
 ) -> CandidateApplicationDetailRead:
     return await handle_get_application_detail(ctx, db, application_id)

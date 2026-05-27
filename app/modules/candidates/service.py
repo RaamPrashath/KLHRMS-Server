@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException
@@ -20,6 +21,7 @@ from app.models.recruitment import (
     PipelineStage,
     StageEvent,
     StageEventParticipant,
+    StageEventProposedSlot,
     StageType,
 )
 from app.modules.candidates.repository import CandidatePipelineRepository
@@ -32,6 +34,9 @@ from app.modules.candidates.schema import (
     CandidateApplicationNoteUpdateRequest,
     CandidateApplicationUpdateRequest,
     CandidateSummaryRead,
+    FeedbackInfoResponse,
+    FeedbackSubmitRequest,
+    FeedbackSubmitResponse,
     InterviewAcceptRequest,
     InterviewAcceptResponse,
     InterviewerSearchResponse,
@@ -54,6 +59,7 @@ from app.modules.candidates.schema import (
     PipelineStageHistoryRead,
     PipelineStageRead,
     PipelineStageUpdateRequest,
+    PublicProposedSlotRead,
     ReassignmentRequestCreate,
     ReshuffleRequest,
     ReshuffleResponse,
@@ -432,7 +438,13 @@ def _serialize_detail(application: CandidateApplication, actor_member_id: str) -
 def _serialize_interviewer(member: Member, department: str | None = None) -> StageWorkspaceInterviewerRead:
     user = member.user
     email = getattr(user, "email", None) or ""
-    name = getattr(user, "name", None) or email
+    if name := getattr(user, "name", None):
+        pass
+    elif email:
+        local_part = email.split("@")[0]
+        name = local_part.replace(".", " ").replace("_", " ").replace("-", " ").title().strip()
+    else:
+        name = "Interviewer"
     return StageWorkspaceInterviewerRead(
         memberId=member.id,
         name=name,
@@ -1624,16 +1636,26 @@ async def accept_interview(
         raise HTTPException(status_code=400, detail="Rejected assignments cannot be accepted")
 
     now = datetime.now(UTC)
-    meeting: InterviewMeetingRead | None = None
-    participant.approvedAt = now
+    is_reschedule = (
+        event.status in {EventStatus.SCHEDULED, EventStatus.ONGOING, EventStatus.COMPLETED}
+        or participant.approvalStatus == "SCHEDULED"
+    )
 
-    if body.scheduledStartAt is not None:
-        starts_at = body.scheduledStartAt
+    normalized_slots: list[tuple[datetime, datetime]] = []
+    for slot in body.proposedSlots:
+        starts_at = slot.startTime
+        ends_at = slot.endTime
         if starts_at.tzinfo is None:
             starts_at = starts_at.replace(tzinfo=UTC)
+        if ends_at.tzinfo is None:
+            ends_at = ends_at.replace(tzinfo=UTC)
         starts_at = starts_at.astimezone(UTC)
+        ends_at = ends_at.astimezone(UTC)
+
         if starts_at < now:
             raise HTTPException(status_code=400, detail="Interview cannot be scheduled in the past")
+        if ends_at <= starts_at:
+            raise HTTPException(status_code=400, detail="End time must be after start time")
         if event.stage is not None and event.stage.dueDate is not None:
             due_date = event.stage.dueDate
             if due_date.tzinfo is None:
@@ -1641,79 +1663,66 @@ async def accept_interview(
             if starts_at > due_date.astimezone(UTC):
                 raise HTTPException(status_code=400, detail="Interview cannot be scheduled after the stage due date")
 
-        warnings = await _build_assignment_warnings(
-            repository,
-            organization_id,
-            [
-                StageInterviewAssignmentInput(
-                    applicationId=event.applicationId,
-                    interviewerMemberId=member_id,
-                    scheduledStartAt=starts_at,
-                    durationMinutes=body.durationMinutes,
-                )
-            ],
-        )
-        if any(
-            "approved leave" in message.lower()
-            for warning in warnings
-            for message in warning.messages
-        ):
-            raise HTTPException(status_code=400, detail="Interviewer is on approved leave at the selected time")
+        normalized_slots.append((starts_at, ends_at))
 
-        participant.approvalStatus = "SCHEDULED"
-        participant.scheduledTime = starts_at
-        db.add(participant)
-        meeting = await create_interview_meeting(
-            db,
-            organization_id,
-            member_id,
-            actor_user_id,
-            event.applicationId,
-            InterviewMeetingCreateRequest(
-                mode="SCHEDULE",
-                scheduledStartAt=starts_at,
-                durationMinutes=body.durationMinutes,
-            ),
-        )
-        if event.status == EventStatus.COMPLETED and meeting.id != event.id:
-            db.add(
-                StageEventParticipant(
-                    eventId=meeting.id,
-                    memberId=member_id,
-                    role="INTERVIEWER",
-                    approvalStatus="SCHEDULED",
-                    approvedAt=now,
-                    scheduledTime=starts_at,
-                )
-            )
-            await db.commit()
-    else:
-        participant.approvalStatus = "ACCEPTED"
-        db.add(participant)
-        await db.commit()
+    participant.approvedAt = now
+    participant.approvalStatus = "ACCEPTED"
+    participant.scheduledTime = None
+    db.add(participant)
 
-    # Send reassignment email to candidate if the interviewer accepted with a time
-    if participant.approvalStatus == "SCHEDULED" and event.scheduledStartAt is not None:
-        candidate = event.application.candidate
-        candidate_email = candidate.email
-        candidate_name = _candidate_display_name(event.application)
-        interviewer_name = None
-        if participant.member is not None and participant.member.user is not None:
-            interviewer_name = participant.member.user.name or participant.member.user.email
-        if candidate_email and interviewer_name:
-            email_service = ResendEmailService()
-            await email_service.send_stage_interview_assignment_to_candidate(
-                to_email=candidate_email,
-                candidate_name=candidate_name,
-                interviewer_name=interviewer_name,
-                organization_name=organization_name,
-                starts_at_text=_meeting_time_text(event.scheduledStartAt),
+    event.status = EventStatus.SCHEDULED
+    event.scheduledStartAt = None
+    event.scheduledEndAt = None
+    event.meetingUrl = None
+    event.googleCalendarEventId = None
+    event.googleCalendarEventUrl = None
+    event.completedByMemberId = None
+    event.proposedSlots.clear()
+
+    for starts_at, ends_at in normalized_slots:
+        event.proposedSlots.append(
+            StageEventProposedSlot(
+                eventId=event_id,
+                participantId=participant.id,
+                startTime=starts_at,
+                endTime=ends_at,
             )
+        )
+
+    # Generate candidate token for magic link
+    candidate_token = str(uuid.uuid4())
+    event.candidateToken = candidate_token
+    db.add(event)
+
+    await db.commit()
+
+    # Send slot invitation email to candidate
+    candidate = event.application.candidate
+    candidate_email = candidate.email
+    candidate_name = _candidate_display_name(event.application)
+    interviewer_name = None
+    if participant.member is not None and participant.member.user is not None:
+        interviewer_name = participant.member.user.name or participant.member.user.email
+
+    job_title = event.application.jobPosting.title if event.application.jobPosting else ""
+
+    if candidate_email and interviewer_name:
+        email_service = ResendEmailService()
+        await email_service.send_interview_slot_invitation(
+            to_email=candidate_email,
+            candidate_name=candidate_name,
+            interviewer_name=interviewer_name,
+            job_title=job_title,
+            organization_name=organization_name,
+            candidate_token=candidate_token,
+            is_reschedule=is_reschedule,
+        )
 
     return InterviewAcceptResponse(
         eventId=event_id,
         status=participant.approvalStatus,
-        meeting=meeting,
+        meeting=None,
+        candidateToken=candidate_token,
     )
 
 
@@ -1879,6 +1888,17 @@ async def list_my_interviews(
             display_status = "SCHEDULED" if computed_status == "PENDING" else computed_status
         else:
             display_status = _computed_interview_status(event)
+        proposed_slots = [
+            PublicProposedSlotRead(
+                id=slot.id,
+                startTime=slot.startTime,
+                endTime=slot.endTime,
+            )
+            for slot in sorted(
+                event.proposedSlots or [],
+                key=lambda item: item.startTime,
+            )
+        ]
         items.append(
             MyInterviewRead(
                 eventId=event.id,
@@ -1896,6 +1916,7 @@ async def list_my_interviews(
                 isBackup=False,
                 meetingUrl=event.meetingUrl,
                 stageDueDate=stage.dueDate if stage else None,
+                proposedSlots=proposed_slots,
             )
         )
     return MyInterviewListResponse(items=items)
@@ -2216,15 +2237,35 @@ async def start_interview_meeting(
     _ensure_self_interview_access(event, actor_member_id, access_scope)
     if event.status != EventStatus.SCHEDULED:
         raise HTTPException(status_code=400, detail="Only scheduled interviews can be started")
-
-    event.status = EventStatus.ONGOING
-    await repository.add_stage_event(event)
-    await db.commit()
+    if event.scheduledStartAt is None or event.scheduledEndAt is None:
+        raise HTTPException(status_code=400, detail="Interview meeting is missing schedule metadata")
 
     application = event.application
     stage = event.stage
     candidate_name = _candidate_display_name(application) if application else "Candidate"
     stage_or_job_title = stage.name if stage else "Interview"
+
+    if not event.meetingUrl:
+        title = event.title or f"{stage_or_job_title} interview - {candidate_name}"
+        description_parts = [
+            f"Interview for {application.jobPosting.title if application and application.jobPosting else stage_or_job_title}",
+            f"Candidate: {candidate_name}",
+            f"Stage: {stage_or_job_title}",
+        ]
+        meeting = await GoogleCalendarService(db).create_meet_event(
+            user_id=actor_user_id,
+            summary=title,
+            description="\n".join(description_parts),
+            starts_at=event.scheduledStartAt,
+            ends_at=event.scheduledEndAt,
+        )
+        event.meetingUrl = meeting.meeting_url
+        event.googleCalendarEventId = meeting.event_id
+        event.googleCalendarEventUrl = meeting.html_link
+
+    event.status = EventStatus.ONGOING
+    await repository.add_stage_event(event)
+    await db.commit()
 
     if application and event.meetingUrl and application.candidate:
         await ResendEmailService().send_interview_meeting_ready(
@@ -2288,8 +2329,34 @@ async def complete_interview_meeting(
     event.completedByMemberId = actor_member_id
     now = datetime.now(UTC)
     event.scheduledEndAt = now
+    if not event.candidateToken:
+        event.candidateToken = str(uuid.uuid4())
     db.add(event)
     await db.flush()
+
+    # Send feedback request email to candidate
+    try:
+        candidate_email = event.application.candidate.email
+        candidate_name_val = _candidate_name(event.application)
+        job_title = event.application.jobPosting.title if event.application.jobPosting else ""
+        stage_name = event.stage.name if event.stage else ""
+        interviewer_name: str | None = None
+        for participant in event.participants or []:
+            if participant.member and participant.member.user:
+                interviewer_name = participant.member.user.name or participant.member.user.email
+                break
+
+        email_service = ResendEmailService()
+        await email_service.send_feedback_request(
+            to_email=candidate_email,
+            candidate_name=candidate_name_val,
+            job_title=job_title,
+            interviewer_name=interviewer_name,
+            stage_name=stage_name,
+            feedback_token=event.candidateToken,
+        )
+    except Exception:
+        pass  # Non-blocking: feedback email failure should not break the completion
 
     await db.commit()
     return _serialize_interview_meeting(event)
@@ -2297,5 +2364,202 @@ async def complete_interview_meeting(
 
 def _candidate_name(application: CandidateApplication) -> str:
     return f"{application.candidate.firstName} {application.candidate.lastName}".strip()
+
+
+async def get_candidate_slots_by_token(
+    db: AsyncSession,
+    token: str,
+) -> dict:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_by_candidate_token(token)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Interview not found or token expired")
+
+    candidate_name = _candidate_display_name(event.application)
+    job_title = event.application.jobPosting.title if event.application.jobPosting else ""
+
+    # Get the participant who proposed slots
+    participant = next(
+        (p for p in (event.participants or []) if p.role == "INTERVIEWER" or p.role is None),
+        None,
+    )
+    interviewer_name = "Interviewer"
+    if participant is not None and participant.member is not None and participant.member.user is not None:
+        interviewer_name = participant.member.user.name or participant.member.user.email
+
+    slots = []
+    for slot in (event.proposedSlots or []):
+        if not slot.isSelectedByCandidate:
+            slots.append({
+                "id": slot.id,
+                "startTime": slot.startTime,
+                "endTime": slot.endTime,
+            })
+
+    return {
+        "candidateName": candidate_name,
+        "jobTitle": job_title,
+        "interviewerName": interviewer_name,
+        "candidateToken": token,
+        "slots": slots,
+    }
+
+
+async def select_candidate_slot(
+    db: AsyncSession,
+    token: str,
+    slot_id: str,
+) -> dict:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_by_candidate_token(token)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Interview not found or token expired")
+
+    slot = next(
+        (s for s in (event.proposedSlots or []) if s.id == slot_id),
+        None,
+    )
+    if slot is None:
+        raise HTTPException(status_code=404, detail="Slot not found")
+    if slot.isSelectedByCandidate:
+        raise HTTPException(status_code=400, detail="This slot has already been selected")
+
+    slot.isSelectedByCandidate = True
+    db.add(slot)
+
+    duration_minutes = int((slot.endTime - slot.startTime).total_seconds() / 60)
+    event.status = EventStatus.SCHEDULED
+    event.scheduledStartAt = slot.startTime
+    event.scheduledEndAt = slot.endTime
+    db.add(event)
+
+    participant = next(
+        (p for p in (event.participants or []) if p.id == slot.participantId),
+        None,
+    )
+    if participant is not None:
+        participant.approvalStatus = "SCHEDULED"
+        participant.scheduledTime = slot.startTime
+        db.add(participant)
+
+    await db.commit()
+
+    # Create Google Meet meeting
+    meeting = None
+    if participant is not None:
+        actor_user_id = None
+        if participant.member is not None and participant.member.user is not None:
+            actor_user_id = participant.member.user.id
+        try:
+            meeting = await create_interview_meeting(
+                db,
+                event.organizationId,
+                participant.memberId,
+                actor_user_id or participant.memberId,
+                event.applicationId,
+                InterviewMeetingCreateRequest(
+                    mode="SCHEDULE",
+                    scheduledStartAt=slot.startTime,
+                    durationMinutes=duration_minutes,
+                ),
+            )
+        except Exception:
+            meeting = None
+
+    # Send confirmation emails
+    candidate = event.application.candidate
+    candidate_email = candidate.email
+    candidate_name = _candidate_display_name(event.application)
+    job_title = event.application.jobPosting.title if event.application.jobPosting else ""
+
+    interviewer_name = "Interviewer"
+    interviewer_email = None
+    if participant is not None and participant.member is not None and participant.member.user is not None:
+        interviewer_name = participant.member.user.name or participant.member.user.email
+        interviewer_email = participant.member.user.email
+
+    starts_at_text = _meeting_time_text(slot.startTime)
+
+    email_service = ResendEmailService()
+
+    if candidate_email:
+        await email_service.send_interview_slot_confirmation_to_candidate(
+            to_email=candidate_email,
+            candidate_name=candidate_name,
+            interviewer_name=interviewer_name,
+            job_title=job_title,
+            starts_at_text=starts_at_text,
+            meeting_url=meeting.meetingUrl if meeting else None,
+        )
+
+    if interviewer_email:
+        await email_service.send_interview_slot_confirmation_to_interviewer(
+            to_email=interviewer_email,
+            interviewer_name=interviewer_name,
+            candidate_name=candidate_name,
+            job_title=job_title,
+            starts_at_text=starts_at_text,
+            meeting_url=meeting.meetingUrl if meeting else None,
+        )
+
+    return {"message": "Slot selected successfully"}
+
+
+async def get_feedback_info_by_token(
+    db: AsyncSession,
+    token: str,
+) -> FeedbackInfoResponse:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_by_candidate_token(token)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Feedback link expired or invalid")
+
+    candidate_name = _candidate_display_name(event.application)
+    job_title = event.application.jobPosting.title if event.application.jobPosting else ""
+    stage_name = event.stage.name if event.stage else ""
+
+    interviewer_name: str | None = None
+    participant = next(
+        (p for p in (event.participants or []) if p.role == "INTERVIEWER" or p.role is None),
+        None,
+    )
+    if participant is not None and participant.member is not None and participant.member.user is not None:
+        interviewer_name = participant.member.user.name or participant.member.user.email
+
+    return FeedbackInfoResponse(
+        candidateName=candidate_name,
+        jobTitle=job_title,
+        interviewerName=interviewer_name,
+        stageName=stage_name,
+        interviewDate=event.scheduledStartAt or event.createdAt,
+    )
+
+
+async def submit_candidate_feedback(
+    db: AsyncSession,
+    token: str,
+    body: FeedbackSubmitRequest,
+) -> FeedbackSubmitResponse:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_by_candidate_token(token)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Feedback link expired or invalid")
+
+    note_body = body.body.strip()
+    prefixed_body = f"[Candidate Feedback]\n{note_body}"
+
+    db.add(
+        CandidateApplicationNote(
+            organizationId=event.organizationId,
+            applicationId=event.applicationId,
+            authorMemberId=event.completedByMemberId or event.createdByMemberId,
+            body=prefixed_body,
+        )
+    )
+
+    await db.commit()
+
+    return FeedbackSubmitResponse(message="Feedback submitted successfully")
+
 
 
