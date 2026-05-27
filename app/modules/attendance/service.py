@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+import re
 import uuid
 
 from fastapi import HTTPException
@@ -90,6 +91,7 @@ class WorkLogReportRowData:
     attendance_record_id: str
     employee_id: str
     employee_name: str
+    employee_email: str | None
     day: date
     clock_in: datetime | None
     clock_out: datetime | None
@@ -99,6 +101,28 @@ class WorkLogReportRowData:
     project_name: str | None
     task_name: str | None
     daily_work_log: str | None
+
+
+def _display_employee_name(
+    raw_name: str | None,
+    email: str | None,
+    fallback_id: str,
+) -> str:
+    normalized_name = (raw_name or "").strip()
+    normalized_email = (email or "").strip()
+
+    if normalized_name and normalized_name.lower() != normalized_email.lower():
+        return normalized_name
+
+    if normalized_email:
+        local_part = normalized_email.split("@", 1)[0].strip()
+        if local_part:
+            prettified = re.sub(r"[._-]+", " ", local_part).strip()
+            if prettified:
+                return " ".join(part.capitalize() for part in prettified.split())
+        return normalized_email
+
+    return fallback_id
 
 
 # ---------------------------------------------------------------------------
@@ -967,7 +991,7 @@ async def get_my_attendance(
     from app.models.user import User
 
     query = (
-        select(AttendanceRecord, User.name)
+        select(AttendanceRecord, User.name, User.email)
         .join(Member, Member.id == AttendanceRecord.employeeId)
         .join(User, User.id == Member.userId)
         .where(
@@ -992,7 +1016,10 @@ async def get_my_attendance(
         .limit(page_size)
     )
     rows = rows_result.all()
-    return [(record, name) for record, name in rows], total
+    return [
+        (record, _display_employee_name(name, email, record.employeeId))
+        for record, name, email in rows
+    ], total
 
 
 async def list_attendance(
@@ -1020,7 +1047,7 @@ async def list_attendance(
     from app.models.user import User
 
     query = (
-        select(AttendanceRecord, User.name)
+        select(AttendanceRecord, User.name, User.email)
         .join(Member, Member.id == AttendanceRecord.employeeId)
         .join(User, User.id == Member.userId)
         .where(
@@ -1054,7 +1081,10 @@ async def list_attendance(
         .limit(page_size)
     )
     rows = rows_result.all()
-    return [(record, name) for record, name in rows], total
+    return [
+        (record, _display_employee_name(name, email, record.employeeId))
+        for record, name, email in rows
+    ], total
 
 
 async def get_attendance_day(
@@ -1852,6 +1882,7 @@ async def list_work_log_reports(
             AttendanceRecord.id,
             AttendanceRecord.employeeId,
             User.name,
+            User.email,
             AttendanceRecord.date,
             AttendanceRecord.clockIn,
             AttendanceRecord.clockOut,
@@ -1911,7 +1942,8 @@ async def list_work_log_reports(
         WorkLogReportRowData(
             attendance_record_id=row.id,
             employee_id=row.employeeId,
-            employee_name=row.name or row.employeeId,
+            employee_name=_display_employee_name(row.name, row.email, row.employeeId),
+            employee_email=row.email,
             day=row.date,
             clock_in=row.clockIn,
             clock_out=row.clockOut,
@@ -1949,6 +1981,7 @@ async def get_work_log_report_detail(
             AttendanceRecord.id,
             AttendanceRecord.employeeId,
             User.name,
+            User.email,
             AttendanceRecord.date,
             AttendanceRecord.clockIn,
             AttendanceRecord.clockOut,
@@ -1974,7 +2007,8 @@ async def get_work_log_report_detail(
     return WorkLogReportRowData(
         attendance_record_id=row.id,
         employee_id=row.employeeId,
-        employee_name=row.name or row.employeeId,
+        employee_name=_display_employee_name(row.name, row.email, row.employeeId),
+        employee_email=row.email,
         day=row.date,
         clock_in=row.clockIn,
         clock_out=row.clockOut,
@@ -2006,6 +2040,7 @@ async def export_work_log_reports(
             AttendanceRecord.id,
             AttendanceRecord.employeeId,
             User.name,
+            User.email,
             AttendanceRecord.date,
             AttendanceRecord.clockIn,
             AttendanceRecord.clockOut,
@@ -2037,7 +2072,8 @@ async def export_work_log_reports(
         WorkLogReportRowData(
             attendance_record_id=row.id,
             employee_id=row.employeeId,
-            employee_name=row.name or row.employeeId,
+            employee_name=_display_employee_name(row.name, row.email, row.employeeId),
+            employee_email=row.email,
             day=row.date,
             clock_in=row.clockIn,
             clock_out=row.clockOut,

@@ -503,6 +503,7 @@ async def handle_get_work_log_report_detail(
         attendanceRecordId=row.attendance_record_id,
         employeeId=row.employee_id,
         employeeName=row.employee_name,
+        employeeEmail=row.employee_email,
         date=row.day,
         clockIn=row.clock_in,
         clockOut=row.clock_out,

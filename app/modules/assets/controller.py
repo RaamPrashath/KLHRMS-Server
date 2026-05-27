@@ -9,6 +9,7 @@ from app.modules.assets.schema import (
     AssetBrandModelAnalyticsResponse,
     AssetDashboardResponse,
     AssetDetailResponse,
+    EmployeeAssetViewResponse,
     AssetFilters,
     AssetIdCreate,
     AssetIdResponse,
@@ -16,6 +17,7 @@ from app.modules.assets.schema import (
     AssetIssueRequest,
     AssetIssueResponse,
     AssetListResponse,
+    ReturnedAssetSummary,
     AssetMaintenanceCreateRequest,
     AssetMaintenanceUpdateRequest,
     AssetMetaResponse,
@@ -23,6 +25,7 @@ from app.modules.assets.schema import (
     AssetRevokeSwapRequest,
     AssetReportRequest,
     AssetReturnRequest,
+    AssetReturnRequestedResponse,
     AssetSwapExecutionResponse,
     AssetSwapPreviewResponse,
     AssetUpsertRequest,
@@ -51,10 +54,12 @@ from app.modules.assets.service import (
     export_asset_report_pdf,
     get_swap_preview,
     get_asset,
+    get_employee_asset_view,
     get_brand_model_analytics,
     get_asset_meta,
     get_dashboard,
     get_os_distribution_analytics,
+    get_returned_assets,
     get_upcoming_warranty_feed,
     issue_assets,
     list_asset_ids,
@@ -63,7 +68,9 @@ from app.modules.assets.service import (
     list_categories,
     list_my_tickets,
     list_tickets,
+    request_asset_return,
     return_asset,
+    withdraw_helpdesk_ticket,
     revoke_and_swap_asset,
     update_asset_id,
     update_category,
@@ -85,6 +92,13 @@ async def handle_get_asset(
     ctx: MemberContext, db: AsyncSession, asset_id: str
 ) -> AssetDetailResponse:
     return await get_asset(db, ctx, asset_id)
+
+
+async def handle_get_employee_asset_view(
+    ctx: MemberContext,
+    db: AsyncSession,
+) -> EmployeeAssetViewResponse:
+    return await get_employee_asset_view(db, ctx)
 
 
 async def handle_create_asset(
@@ -115,6 +129,15 @@ async def handle_return_asset(
     return await return_asset(db, ctx, asset_id, payload)
 
 
+async def handle_request_asset_return(
+    ctx: MemberContext,
+    db: AsyncSession,
+    asset_id: str,
+) -> AssetReturnRequestedResponse:
+    result = await request_asset_return(db, ctx, asset_id)
+    return AssetReturnRequestedResponse(**result)
+
+
 async def handle_create_maintenance(
     ctx: MemberContext,
     db: AsyncSession,
@@ -140,6 +163,14 @@ async def handle_create_helpdesk_ticket(
     payload: HelpdeskTicketCreateRequest,
 ) -> MyTicketResponse:
     return await create_helpdesk_ticket(db, ctx, payload)
+
+
+async def handle_withdraw_helpdesk_ticket(
+    ctx: MemberContext,
+    db: AsyncSession,
+    ticket_id: str,
+) -> MyTicketResponse:
+    return await withdraw_helpdesk_ticket(db, ctx, ticket_id)
 
 
 async def handle_update_maintenance_by_id(
@@ -188,6 +219,12 @@ async def handle_get_upcoming_warranty_feed(
     ctx: MemberContext, db: AsyncSession
 ) -> WarrantyExpirationFeedResponse:
     return await get_upcoming_warranty_feed(db, ctx)
+
+
+async def handle_get_returned_assets(
+    ctx: MemberContext, db: AsyncSession
+) -> list[ReturnedAssetSummary]:
+    return await get_returned_assets(db, ctx)
 
 
 async def handle_get_meta(ctx: MemberContext, db: AsyncSession) -> AssetMetaResponse:

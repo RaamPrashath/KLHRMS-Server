@@ -470,6 +470,53 @@ class AssetProvideRecordSummary(BaseModel):
     receivedByMemberId: str | None
     receivedByName: str | None
     returnNotes: str | None
+    replacementAssignmentId: str | None = None
+    handoverRequestedAt: datetime | None = None
+    handoverCompletedAt: datetime | None = None
+    handoverConditionNotes: str | None = None
+
+
+class EmployeeAssetViewItem(BaseModel):
+    assignmentId: str
+    assetId: str
+    assetUnitId: str | None
+    assetCode: str
+    name: str
+    category: str
+    categoryDefinitionId: str | None
+    serialNumber: str | None
+    model: str | None
+    purchaseDate: date | None
+    purchasePrice: float | None
+    warrantyExpiryDate: date | None
+    condition: str
+    status: str
+    location: str | None
+    notes: str | None
+    quantity: int
+    createdAt: datetime
+    updatedAt: datetime
+    currentHolderMemberId: str | None
+    currentHolderName: str | None
+    currentHolderEmail: str | None
+    openMaintenanceCount: int
+    unitSummary: AssetUnitSummary | None = None
+    customFields: list[CustomFieldValueResponse] = []
+    providedDate: datetime
+    returnDate: datetime | None
+    returnedCondition: str | None
+    returnNotes: str | None
+    handoverRequestedAt: datetime | None = None
+    handoverCompletedAt: datetime | None = None
+    handoverConditionNotes: str | None = None
+    replacementAssignmentId: str | None = None
+    employeeState: str
+    employeeStatusLabel: str
+
+
+class EmployeeAssetViewResponse(BaseModel):
+    current: list[EmployeeAssetViewItem]
+    previous: list[EmployeeAssetViewItem]
 
 
 # ── New Bulk Create / Issue Schemas ──────────────────────────────────────────
@@ -648,6 +695,35 @@ class TicketAlertItem(BaseModel):
     status: str
     issueDescription: str
     createdAt: str
+
+
+class ReturnedAssetSummary(BaseModel):
+    id: str
+    assetId: str
+    assetName: str
+    assetCode: str
+    serialNumber: str | None = None
+    category: str
+    condition: str | None = None
+    employeeMemberId: str
+    employeeName: str | None = None
+    employeeEmail: str | None = None
+    providedDate: str
+    returnDate: str
+    returnedCondition: str | None = None
+    returnNotes: str | None = None
+    isTemporaryReplacement: bool = False
+    replacementAssetName: str | None = None
+    hasTicket: bool = False
+    ticketId: str | None = None
+    maintenanceType: str | None = None
+    maintenanceStatus: str | None = None
+    issueDescription: str | None = None
+
+
+class AssetReturnRequestedResponse(BaseModel):
+    success: bool
+    message: str
 
 
 class AssetDashboardResponse(BaseModel):
@@ -831,4 +907,6 @@ class MaintenanceTicketResponse(BaseModel):
     createdAt: str
     loggedByMemberId: str | None = None
     loggedByName: str | None = None
+    assetLifecycleStatus: str | None = None
+    assetLifecycleStatusLabel: str | None = None
     swapPreview: AssetSwapPreviewResponse | None = None

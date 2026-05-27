@@ -6,7 +6,9 @@ from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.department import Department
 from app.models.department_member import DepartmentMember
+from app.models.member import Member
 from app.models.recruitment import (
     ApplicationSource,
     ApplicationStageHistory,
@@ -24,6 +26,7 @@ from app.models.recruitment import (
     StageEvaluationCategory,
     StageType,
 )
+from app.models.user import User
 from app.models.team_member import TeamMember
 from app.modules.ai_scoring.service import (
     analyze_resume_for_application_task,
@@ -34,6 +37,7 @@ from app.modules.jobs.schema import (
     CreatePipelineStageRequest,
     ImportableJobPostingRead,
     ImportPipelineRequest,
+    JobFormMetaRead,
     JobRequisitionAiAnalysisRead,
     JobRequisitionApprovalRead,
     JobRequisitionApprovalSummaryRead,
@@ -43,6 +47,7 @@ from app.modules.jobs.schema import (
     JobRequisitionListItemRead,
     JobRequisitionRulesRead,
     JobRequisitionUpdateRequest,
+    JobLookupOptionRead,
     PipelineBoardRead,
     PipelineStageRead,
     PublicJobApplicationRead,
@@ -91,6 +96,25 @@ _NO_KNOCKOUT_VALUES = {
 }
 
 
+def _display_member_label(name: str | None, email: str | None, member_id: str) -> str:
+    normalized_name = (name or "").strip()
+    normalized_email = (email or "").strip()
+    if normalized_name and normalized_name != normalized_email:
+        return normalized_name
+    if normalized_email:
+        local_part = (
+            normalized_email.split("@", 1)[0]
+            .replace(".", " ")
+            .replace("_", " ")
+            .replace("-", " ")
+            .strip()
+        )
+        if local_part:
+            return " ".join(part.capitalize() for part in local_part.split())
+        return normalized_email
+    return member_id
+
+
 async def _get_member_department_ids(db: AsyncSession, member_id: str) -> list[str]:
     result = await db.execute(
         select(DepartmentMember.departmentId).where(DepartmentMember.memberId == member_id)
@@ -111,6 +135,40 @@ async def _get_team_member_ids(db: AsyncSession, member_id: str) -> list[str]:
         select(TeamMember.memberId).where(TeamMember.teamId.in_(team_ids))
     )
     return list({row[0] for row in result.all()})
+
+
+async def get_job_form_meta(
+    db: AsyncSession,
+    organization_id: str,
+) -> JobFormMetaRead:
+    members_result = await db.execute(
+        select(Member.id, User.name, User.email)
+        .join(User, User.id == Member.userId)
+        .where(Member.organizationId == organization_id)
+        .order_by(User.name.asc().nullslast(), User.email.asc())
+    )
+    departments_result = await db.execute(
+        select(Department.id, Department.name)
+        .where(
+            Department.organizationId == organization_id,
+            Department.status == "ACTIVE",
+        )
+        .order_by(Department.name.asc())
+    )
+    return JobFormMetaRead(
+        members=[
+            JobLookupOptionRead(
+                id=member_id,
+                label=_display_member_label(name, email, member_id),
+                email=email,
+            )
+            for member_id, name, email in members_result.all()
+        ],
+        departments=[
+            JobLookupOptionRead(id=department_id, label=name)
+            for department_id, name in departments_result.all()
+        ],
+    )
 
 
 async def _check_single_requisition_access(

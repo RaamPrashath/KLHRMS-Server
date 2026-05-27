@@ -12,7 +12,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from sqlalchemy import Select, extract, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.models.asset import Asset
 from app.models.asset_assignment import AssetAssignment
@@ -46,6 +46,8 @@ from app.modules.assets.schema import (
     AssetBrandModelAnalyticsRow,
     AssetDashboardResponse,
     AssetDetailResponse,
+    EmployeeAssetViewItem,
+    EmployeeAssetViewResponse,
     AssetFilters,
     AssetIdCreate,
     AssetIdResponse,
@@ -82,6 +84,7 @@ from app.modules.assets.schema import (
     MonthlyTrend,
     MyTicketResponse,
     RecentActivityItem,
+    ReturnedAssetSummary,
     SwapAvailabilityOption,
     TicketAlertItem,
     WarrantyExpirationFeedItem,
@@ -746,6 +749,102 @@ def _provide_record_summary(record: AssetAssignment) -> AssetProvideRecordSummar
         receivedByMemberId=record.receivedByMemberId,
         receivedByName=receiver.name if receiver else None,
         returnNotes=record.returnNotes,
+        replacementAssignmentId=record.replacementAssignmentId,
+        handoverRequestedAt=record.handoverRequestedAt,
+        handoverCompletedAt=record.handoverCompletedAt,
+        handoverConditionNotes=record.handoverConditionNotes,
+    )
+
+
+def _assignment_status_for_employee(asset: Asset, assignment: AssetAssignment) -> str:
+    if assignment.assetUnitId:
+        unit = next((item for item in (asset.units or []) if item.id == assignment.assetUnitId), None)
+        if unit is not None:
+            return _normalize_asset_status(unit.status) or unit.status
+    return _normalize_asset_status(asset.status) or asset.status
+
+
+def _employee_asset_state(asset: Asset, assignment: AssetAssignment) -> tuple[str, str]:
+    assignment_status = _assignment_status_for_employee(asset, assignment)
+    if assignment.returnDate is None and (
+        assignment.replacementAssignmentId or assignment_status == "PENDING_RETURN"
+    ):
+        return ("RETURN_PENDING", "Return Pending")
+    if assignment.returnDate is None:
+        return ("CURRENT_ASSIGNED", "Assigned")
+    if assignment.returnDate is not None and assignment_status == "IN_MAINTENANCE":
+        return ("RETURNED_IN_REPAIR", "Returned / In Repair")
+    return ("RETURNED", "Returned")
+
+
+def _maintenance_asset_lifecycle(asset: Asset | None) -> tuple[str | None, str | None]:
+    if asset is None:
+        return (None, None)
+
+    active_assignment = next((record for record in (asset.provisions or []) if record.returnDate is None), None)
+    historical_return_exists = any(record.returnDate is not None for record in (asset.provisions or []))
+    normalized_status = _normalize_asset_status(asset.status) or asset.status
+
+    if active_assignment is not None and active_assignment.replacementAssignmentId:
+        return ("PENDING_RETURN", "Return Pending")
+    if historical_return_exists and normalized_status == "IN_MAINTENANCE":
+        return ("RETURNED_IN_REPAIR", "Returned / In Repair")
+    if historical_return_exists and normalized_status == "AVAILABLE":
+        return ("RETURNED_READY", "Returned / Ready")
+    if active_assignment is not None:
+        return ("ASSIGNED", "Assigned")
+    if normalized_status is None:
+        return (None, None)
+    return (normalized_status, _to_title(normalized_status))
+
+
+def _is_return_request_ticket(log: AssetMaintenanceLog) -> bool:
+    return _normalized_token(log.subject).lower() == "asset return request"
+
+
+def _employee_asset_view_item(
+    asset: Asset,
+    assignment: AssetAssignment,
+    active_provision: AssetAssignment | None,
+) -> EmployeeAssetViewItem:
+    asset_summary = _asset_summary(asset, active_provision)
+    employee_state, employee_status_label = _employee_asset_state(asset, assignment)
+    return EmployeeAssetViewItem(
+        assignmentId=assignment.id,
+        assetId=asset.id,
+        assetUnitId=assignment.assetUnitId,
+        assetCode=asset_summary.assetCode,
+        name=asset_summary.name,
+        category=asset_summary.category,
+        categoryDefinitionId=asset_summary.categoryDefinitionId,
+        serialNumber=asset_summary.serialNumber,
+        model=asset_summary.model,
+        purchaseDate=asset_summary.purchaseDate,
+        purchasePrice=asset_summary.purchasePrice,
+        warrantyExpiryDate=asset_summary.warrantyExpiryDate,
+        condition=asset_summary.condition,
+        status=asset_summary.status,
+        location=asset_summary.location,
+        notes=asset_summary.notes,
+        quantity=asset_summary.quantity,
+        createdAt=asset_summary.createdAt,
+        updatedAt=asset_summary.updatedAt,
+        currentHolderMemberId=asset_summary.currentHolderMemberId,
+        currentHolderName=asset_summary.currentHolderName,
+        currentHolderEmail=asset_summary.currentHolderEmail,
+        openMaintenanceCount=asset_summary.openMaintenanceCount,
+        unitSummary=asset_summary.unitSummary,
+        customFields=asset_summary.customFields,
+        providedDate=assignment.providedDate,
+        returnDate=assignment.returnDate,
+        returnedCondition=assignment.returnedCondition,
+        returnNotes=assignment.returnNotes,
+        handoverRequestedAt=assignment.handoverRequestedAt,
+        handoverCompletedAt=assignment.handoverCompletedAt,
+        handoverConditionNotes=assignment.handoverConditionNotes,
+        replacementAssignmentId=assignment.replacementAssignmentId,
+        employeeState=employee_state,
+        employeeStatusLabel=employee_status_label,
     )
 
 
@@ -809,6 +908,7 @@ def _my_ticket_response(log: AssetMaintenanceLog) -> MyTicketResponse:
 
 
 def _maintenance_ticket_response(log: AssetMaintenanceLog) -> MaintenanceTicketResponse:
+    asset_lifecycle_status, asset_lifecycle_status_label = _maintenance_asset_lifecycle(log.asset)
     return MaintenanceTicketResponse(
         id=log.id,
         ticketId=log.ticketId,
@@ -836,6 +936,8 @@ def _maintenance_ticket_response(log: AssetMaintenanceLog) -> MaintenanceTicketR
         loggedByName=log.loggedByMember.user.name
         if log.loggedByMember and log.loggedByMember.user
         else None,
+        assetLifecycleStatus=asset_lifecycle_status,
+        assetLifecycleStatusLabel=asset_lifecycle_status_label,
     )
 
 
@@ -1218,7 +1320,6 @@ async def list_assets(
             active_provision_subquery, active_provision_subquery.c.assetId == Asset.id
         ).where(
             active_provision_subquery.c.memberId == ctx.member.id,
-            Asset.status.in_(("ASSIGNED", "PROVIDED")),
         )
         joined_active_provision = True
 
@@ -1285,6 +1386,53 @@ async def list_assets(
     )
 
 
+async def get_employee_asset_view(
+    db: AsyncSession,
+    ctx: MemberContext,
+) -> EmployeeAssetViewResponse:
+    result = await db.execute(
+        select(AssetAssignment)
+        .join(Asset, Asset.id == AssetAssignment.assetId)
+        .where(
+            Asset.organizationId == ctx.organization.id,
+            Asset.deletedAt.is_(None),
+            AssetAssignment.memberId == ctx.member.id,
+        )
+        .options(
+            joinedload(AssetAssignment.member).joinedload(Member.user),
+            joinedload(AssetAssignment.providedByMember).joinedload(Member.user),
+            joinedload(AssetAssignment.receivedByMember).joinedload(Member.user),
+            joinedload(AssetAssignment.asset).joinedload(Asset.units),
+            joinedload(AssetAssignment.asset).joinedload(Asset.maintenanceLogs),
+            joinedload(AssetAssignment.asset)
+            .joinedload(Asset.customFieldValues)
+            .joinedload(AssetCustomFieldValue.fieldDefinition),
+            joinedload(AssetAssignment.asset)
+            .joinedload(Asset.provisions)
+            .joinedload(AssetAssignment.member)
+            .joinedload(Member.user),
+        )
+        .order_by(AssetAssignment.providedDate.desc(), AssetAssignment.createdAt.desc())
+    )
+    assignments = result.unique().scalars().all()
+
+    current: list[EmployeeAssetViewItem] = []
+    previous: list[EmployeeAssetViewItem] = []
+
+    for assignment in assignments:
+        asset = assignment.asset
+        if asset is None:
+            continue
+        active_provision = next((record for record in asset.provisions if record.returnDate is None), None)
+        item = _employee_asset_view_item(asset, assignment, active_provision)
+        if item.employeeState == "CURRENT_ASSIGNED":
+            current.append(item)
+        else:
+            previous.append(item)
+
+    return EmployeeAssetViewResponse(current=current, previous=previous)
+
+
 async def get_asset(db: AsyncSession, ctx: MemberContext, asset_id: str) -> AssetDetailResponse:
     asset = await _get_asset_or_404(db, ctx.organization.id, asset_id)
 
@@ -1302,11 +1450,7 @@ async def get_asset(db: AsyncSession, ctx: MemberContext, asset_id: str) -> Asse
     active_provision = next((record for record in provisions if record.returnDate is None), None)
 
     scope = getattr(ctx, "scope", "organization")
-    if scope == "self" and (
-        active_provision is None
-        or active_provision.memberId != ctx.member.id
-        or not _is_assigned_status(asset.status)
-    ):
+    if scope == "self" and not any(record.memberId == ctx.member.id for record in provisions):
         raise HTTPException(status_code=404, detail="Asset not found")
 
     logs_result = await db.execute(
@@ -1686,7 +1830,7 @@ async def issue_assets(
             Asset.deletedAt.is_(None),
             Asset.status == "AVAILABLE",
         )
-        .options(joinedload(Asset.units))
+        .options(selectinload(Asset.units))
         .order_by(Asset.name.asc(), Asset.assetCode.asc())
         .with_for_update(skip_locked=True)
     )
@@ -1785,6 +1929,10 @@ async def return_asset(
     provision.returnedCondition = payload.returnedCondition
     provision.receivedByMemberId = receiver_id
     provision.returnNotes = payload.returnNotes.strip() if payload.returnNotes else None
+    if provision.handoverRequestedAt and provision.handoverCompletedAt is None:
+        provision.handoverCompletedAt = provision.returnDate
+    if payload.returnNotes:
+        provision.handoverConditionNotes = payload.returnNotes.strip()
 
     asset.condition = payload.returnedCondition
     unit_id = payload.assetUnitId or provision.assetUnitId
@@ -1806,6 +1954,122 @@ async def return_asset(
 
     await db.commit()
     return await get_asset(db, ctx, asset.id)
+
+
+async def request_asset_return(
+    db: AsyncSession,
+    ctx: MemberContext,
+    asset_id: str,
+) -> dict:
+    asset = await _get_asset_or_404(db, ctx.organization.id, asset_id)
+
+    provision = next(
+        (record for record in asset.provisions if record.returnDate is None), None
+    )
+    if provision is None:
+        raise HTTPException(
+            status_code=422,
+            detail="This asset is not currently assigned to anyone",
+        )
+
+    if provision.handoverRequestedAt is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="Return has already been requested for this asset",
+        )
+
+    provision.handoverRequestedAt = datetime.now(UTC)
+
+    employee = await _get_member_or_404(db, ctx.organization.id, provision.memberId)
+
+    notification = AssetNotification(
+        organizationId=ctx.organization.id,
+        assetId=asset.id,
+        assetUnitId=provision.assetUnitId,
+        memberId=provision.memberId,
+        type="RETURN_REQUESTED",
+        title="Asset return requested",
+        message=(
+            f"Your {asset.name} ({asset.assetCode}) return has been requested "
+            f"by admin. Please hand over the device at your earliest convenience."
+        ),
+    )
+    db.add(notification)
+
+    await db.commit()
+    return {"success": True, "message": f"Return requested for {asset.name}"}
+
+
+async def get_returned_assets(
+    db: AsyncSession,
+    ctx: MemberContext,
+) -> list[ReturnedAssetSummary]:
+    result = await db.execute(
+        select(AssetAssignment)
+        .join(Asset, Asset.id == AssetAssignment.assetId)
+        .where(
+            Asset.organizationId == ctx.organization.id,
+            Asset.deletedAt.is_(None),
+            AssetAssignment.returnDate.is_not(None),
+        )
+        .options(
+            joinedload(AssetAssignment.asset),
+            joinedload(AssetAssignment.member).joinedload(Member.user),
+        )
+        .order_by(AssetAssignment.returnDate.desc())
+    )
+    assignments = result.unique().scalars().all()
+
+    items: list[ReturnedAssetSummary] = []
+    for assignment in assignments:
+        asset = assignment.asset
+        member = assignment.member
+
+        employee_name = member.user.name if member and member.user else None
+        employee_email = member.user.email if member and member.user else None
+
+        is_temp = assignment.replacementAssignmentId is not None
+
+        ticket_info = None
+        if asset:
+            ticket_result = await db.execute(
+                select(AssetMaintenanceLog)
+                .where(
+                    AssetMaintenanceLog.assetId == asset.id,
+                    AssetMaintenanceLog.organizationId == ctx.organization.id,
+                )
+                .order_by(AssetMaintenanceLog.createdAt.desc())
+                .limit(1)
+            )
+            ticket_info = ticket_result.unique().scalars().first()
+
+        items.append(
+            ReturnedAssetSummary(
+                id=assignment.id,
+                assetId=asset.id if asset else "",
+                assetName=asset.name if asset else "",
+                assetCode=asset.assetCode if asset else "",
+                serialNumber=asset.serialNumber if asset else None,
+                category=asset.category if asset else "",
+                condition=asset.condition if asset else None,
+                employeeMemberId=assignment.memberId,
+                employeeName=employee_name,
+                employeeEmail=employee_email,
+                providedDate=assignment.providedDate.isoformat(),
+                returnDate=assignment.returnDate.isoformat(),
+                returnedCondition=assignment.returnedCondition,
+                returnNotes=assignment.returnNotes,
+                isTemporaryReplacement=is_temp,
+                replacementAssetName=None,
+                hasTicket=ticket_info is not None,
+                ticketId=ticket_info.ticketId if ticket_info else None,
+                maintenanceType=ticket_info.maintenanceType if ticket_info else None,
+                maintenanceStatus=ticket_info.status if ticket_info else None,
+                issueDescription=ticket_info.issueDescription if ticket_info else None,
+            )
+        )
+
+    return items
 
 
 # ── Maintenance ────────────────────────────────────────────────────────────────
@@ -1862,12 +2126,10 @@ async def create_helpdesk_ticket(
     asset: Asset | None = None
     if payload.assetId is not None:
         asset = await _get_asset_or_404(db, ctx.organization.id, payload.assetId)
-
-    if payload.assetUnitId and asset is not None:
-        unit = next((u for u in (asset.units or []) if u.id == payload.assetUnitId), None)
-        if unit is None:
-            raise HTTPException(status_code=404, detail="Asset unit not found")
-        unit.status = "IN_MAINTENANCE"
+        if payload.assetUnitId:
+            unit = next((u for u in (asset.units or []) if u.id == payload.assetUnitId), None)
+            if unit is None:
+                raise HTTPException(status_code=404, detail="Asset unit not found")
 
     ticket = AssetMaintenanceLog(
         ticketId=await _generate_ticket_id(db),
@@ -1893,9 +2155,6 @@ async def create_helpdesk_ticket(
     )
     db.add(ticket)
 
-    if asset is not None:
-        asset.status = "IN_MAINTENANCE"
-
     await db.commit()
 
     result = await db.execute(
@@ -1905,6 +2164,70 @@ async def create_helpdesk_ticket(
     )
     created = result.unique().scalar_one()
     return _my_ticket_response(created)
+
+
+async def withdraw_helpdesk_ticket(
+    db: AsyncSession,
+    ctx: MemberContext,
+    ticket_id: str,
+) -> MyTicketResponse:
+    result = await db.execute(
+        select(AssetMaintenanceLog)
+        .where(
+            AssetMaintenanceLog.id == ticket_id,
+            AssetMaintenanceLog.organizationId == ctx.organization.id,
+            AssetMaintenanceLog.loggedByMemberId == ctx.member.id,
+        )
+        .options(
+            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.units),
+            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.provisions),
+        )
+    )
+    log = result.unique().scalar_one_or_none()
+    if log is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if log.status == "CANCELLED":
+        raise HTTPException(status_code=409, detail="Ticket is already withdrawn")
+    if log.status == "COMPLETED":
+        raise HTTPException(status_code=409, detail="Completed tickets cannot be withdrawn")
+
+    log.status = "CANCELLED"
+
+    if log.asset is not None:
+        active_ticket_result = await db.execute(
+            select(AssetMaintenanceLog.id)
+            .where(
+                AssetMaintenanceLog.organizationId == ctx.organization.id,
+                AssetMaintenanceLog.id != log.id,
+                AssetMaintenanceLog.status.in_(("OPEN", "IN_PROGRESS")),
+                (
+                    AssetMaintenanceLog.assetUnitId == log.assetUnitId
+                    if log.assetUnitId
+                    else AssetMaintenanceLog.assetId == log.assetId
+                ),
+            )
+            .limit(1)
+        )
+        has_other_active_ticket = active_ticket_result.scalar_one_or_none() is not None
+
+        if not has_other_active_ticket:
+            asset = log.asset
+            active_assignment = next(
+                (record for record in asset.provisions if record.returnDate is None),
+                None,
+            )
+            resumed_status = "ASSIGNED" if active_assignment is not None else "AVAILABLE"
+
+            if log.assetUnitId:
+                unit = next((u for u in (asset.units or []) if u.id == log.assetUnitId), None)
+                if unit is not None:
+                    unit.status = resumed_status
+                asset.status = _derive_asset_status(asset.units) if asset.units else resumed_status
+            else:
+                asset.status = resumed_status
+
+    await db.commit()
+    return _my_ticket_response(log)
 
 
 async def update_maintenance_record(
@@ -1932,6 +2255,38 @@ async def update_maintenance_record(
     elif payload.status == "COMPLETED":
         if payload.conditionAfterMaintenance:
             asset.condition = payload.conditionAfterMaintenance
+        if _is_return_request_ticket(log):
+            active_assignment = next(
+                (record for record in asset.provisions if record.returnDate is None),
+                None,
+            )
+            if active_assignment is not None:
+                resolved_return_date = (
+                    datetime.combine(payload.completedDate, datetime.min.time(), tzinfo=UTC)
+                    if payload.completedDate
+                    else datetime.now(UTC)
+                )
+                active_assignment.returnDate = resolved_return_date
+                active_assignment.returnedCondition = (
+                    payload.conditionAfterMaintenance or active_assignment.conditionWhileProviding
+                )
+                active_assignment.receivedByMemberId = ctx.member.id
+                active_assignment.returnNotes = payload.notes.strip() if payload.notes else "Returned via maintenance workflow"
+                if active_assignment.handoverRequestedAt and active_assignment.handoverCompletedAt is None:
+                    active_assignment.handoverCompletedAt = resolved_return_date
+
+                resolved_unit_id = log.assetUnitId or active_assignment.assetUnitId
+                if resolved_unit_id:
+                    unit = next((u for u in (asset.units or []) if u.id == resolved_unit_id), None)
+                    if unit:
+                        unit.status = payload.nextAssetStatus or "AVAILABLE"
+                        unit.condition = payload.conditionAfterMaintenance or unit.condition
+                        unit.currentHolderMemberId = None
+                    asset.status = _derive_asset_status(asset.units) if asset.units else (payload.nextAssetStatus or "AVAILABLE")
+                else:
+                    asset.status = payload.nextAssetStatus or "AVAILABLE"
+            await db.commit()
+            return await get_asset(db, ctx, asset.id)
         if payload.nextAssetStatus:
             if log.assetUnitId:
                 unit = next((u for u in (asset.units or []) if u.id == log.assetUnitId), None)
@@ -2819,7 +3174,13 @@ async def list_tickets(db: AsyncSession, ctx: MemberContext) -> list[Maintenance
             or_(Asset.id.is_(None), Asset.deletedAt.is_(None)),
         )
         .options(
-            joinedload(AssetMaintenanceLog.asset),
+            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.provisions).joinedload(
+                AssetAssignment.member
+            ).joinedload(Member.user),
+            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.units),
+            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.customFieldValues).joinedload(
+                AssetCustomFieldValue.fieldDefinition
+            ),
             joinedload(AssetMaintenanceLog.loggedByMember).joinedload(Member.user),
         )
         .order_by(AssetMaintenanceLog.createdAt.desc())
@@ -2940,33 +3301,44 @@ async def revoke_and_swap_asset(
     if log.assetUnitId:
         source_unit = next((unit for unit in asset.units if unit.id == log.assetUnitId), None)
 
-    active_assignment.returnDate = datetime.now(UTC)
-    active_assignment.returnedCondition = log.conditionBeforeMaintenance or asset.condition
-    active_assignment.receivedByMemberId = ctx.member.id
-    active_assignment.returnNotes = (
-        payload.notes.strip() if payload.notes else "Revoked automatically during asset swap"
-    )
-
-    if source_unit is not None:
-        source_unit.status = payload.revokeStatus
-        source_unit.currentHolderMemberId = None
-        source_unit.condition = log.conditionBeforeMaintenance or source_unit.condition
-        asset.status = _derive_asset_status(asset.units)
-    else:
-        asset.status = payload.revokeStatus
-
     replacement_asset = replacement_unit.asset
+    now = datetime.now(UTC)
     new_assignment = AssetAssignment(
         assetId=replacement_asset.id,
         assetUnitId=replacement_unit.id,
         memberId=active_assignment.memberId,
         providedByMemberId=provider_id,
-        providedDate=datetime.now(UTC),
+        providedDate=now,
         conditionWhileProviding=payload.replacementConditionWhileProviding,
         provideNotes=payload.notes.strip() if payload.notes else None,
     )
     db.add(new_assignment)
     await db.flush()
+
+    active_assignment.replacementAssignmentId = new_assignment.id
+    active_assignment.handoverRequestedAt = now
+    if payload.notes:
+        active_assignment.handoverConditionNotes = payload.notes.strip()
+
+    if payload.revokeStatus != "PENDING_RETURN":
+        active_assignment.returnDate = now
+        active_assignment.returnedCondition = log.conditionBeforeMaintenance or asset.condition
+        active_assignment.receivedByMemberId = ctx.member.id
+        active_assignment.returnNotes = (
+            payload.notes.strip() if payload.notes else "Revoked automatically during asset swap"
+        )
+        if active_assignment.handoverCompletedAt is None:
+            active_assignment.handoverCompletedAt = now
+
+    if source_unit is not None:
+        source_unit.status = payload.revokeStatus
+        source_unit.currentHolderMemberId = (
+            active_assignment.memberId if payload.revokeStatus == "PENDING_RETURN" else None
+        )
+        source_unit.condition = log.conditionBeforeMaintenance or source_unit.condition
+        asset.status = _derive_asset_status(asset.units)
+    else:
+        asset.status = payload.revokeStatus
 
     replacement_unit.status = "ASSIGNED"
     replacement_unit.currentHolderMemberId = active_assignment.memberId

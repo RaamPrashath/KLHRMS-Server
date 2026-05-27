@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.modules.ai_scoring.route import router as ai_scoring_router
+from app.modules.access_control.route import router as access_control_router
 from app.modules.assets.route import router as assets_router
 from app.modules.attendance.route import router as attendance_router
 from app.modules.candidates.route import router as candidates_router
@@ -69,6 +70,7 @@ app.include_router(ai_scoring_router)
 app.include_router(jobs_router)
 app.include_router(leave_router)
 app.include_router(projects_router)
+app.include_router(access_control_router)
 app.include_router(assets_router)
 app.include_router(departments_router)
 app.include_router(holiday_sync_router)

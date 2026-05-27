@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
+import re
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -26,10 +27,28 @@ from app.modules.departments.schema import (
 from app.shared.deps.organization_member import MemberContext
 
 
+def _display_employee_name(name: str | None, email: str | None, fallback: str) -> str:
+    normalized_name = (name or "").strip()
+    normalized_email = (email or "").strip()
+
+    if normalized_name and normalized_name.lower() != normalized_email.lower():
+        return normalized_name
+
+    if normalized_email:
+        local_part = normalized_email.split("@", 1)[0].strip()
+        if local_part:
+            prettified = re.sub(r"[._-]+", " ", local_part).strip()
+            if prettified:
+                return " ".join(part.capitalize() for part in prettified.split())
+        return normalized_email
+
+    return fallback
+
+
 def _member_name(member: Member | None) -> str | None:
     if member is None or member.user is None:
         return None
-    return member.user.name or member.user.email
+    return _display_employee_name(member.user.name, member.user.email, member.id)
 
 
 def _department_to_summary(department: Department, member_id: str | None = None) -> DepartmentSummary:
@@ -292,7 +311,11 @@ async def get_department_meta(db: AsyncSession, ctx: MemberContext) -> Departmen
     )
     return DepartmentMetaResponse(
         members=[
-            LookupOption(id=member_id, label=name or email or member_id, email=email)
+            LookupOption(
+                id=member_id,
+                label=_display_employee_name(name, email, member_id),
+                email=email,
+            )
             for member_id, name, email in members_result.all()
         ],
         departments=[LookupOption(id=department_id, label=name) for department_id, name in departments_result.all()],

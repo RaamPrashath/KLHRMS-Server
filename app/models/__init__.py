@@ -1,3 +1,5 @@
+from app.models.access_control_assignment import AccessControlAssignment
+from app.models.access_control_log import AccessControlLog
 from app.models.account import Account
 from app.models.asset import Asset
 from app.models.asset_assignment import AssetAssignment
