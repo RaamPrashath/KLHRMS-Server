@@ -461,7 +461,7 @@ def _latest_assignment_event(application: CandidateApplication, stage_id: str) -
 
 def _primary_participant(event: StageEvent) -> StageEventParticipant | None:
     for participant in event.participants or []:
-        if participant.role == "INTERVIEWER" or participant.role is None:
+        if (participant.role == "INTERVIEWER" or participant.role is None) and participant.approvalStatus != "REJECTED":
             return participant
     return None
 
@@ -530,7 +530,11 @@ def _serialize_workspace_candidate(
     )
 
 
-def _serialize_stage_workspace(stage: PipelineStage) -> StageWorkspaceRead:
+def _serialize_stage_workspace(
+    stage: PipelineStage,
+    team_members: list[Member] | None = None,
+    assignment_team_id: str | None = None,
+) -> StageWorkspaceRead:
     applications = sorted(
         stage.applications or [],
         key=lambda application: application.appliedAt,
@@ -547,6 +551,8 @@ def _serialize_stage_workspace(stage: PipelineStage) -> StageWorkspaceRead:
         ),
         candidateCount=len(applications),
         candidates=[_serialize_workspace_candidate(application, stage) for application in applications],
+        teamMembers=[_serialize_interviewer(m) for m in (team_members or [])],
+        assignmentTeamId=assignment_team_id,
     )
 
 
@@ -943,7 +949,17 @@ async def get_stage_workspace(
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
     if stage.stageType != StageType.INTERVIEW:
         raise HTTPException(status_code=409, detail="Only interview stages have a workspace")
-    return _serialize_stage_workspace(stage)
+    assignment_team_id = None
+    team_members = []
+    job_posting_id = stage.jobPosting.id if stage.jobPosting else None
+    if job_posting_id:
+        primary_team = await repository.get_primary_hiring_team(
+            organization_id, job_posting_id, stage.id
+        )
+        if primary_team:
+            assignment_team_id = primary_team.id
+            team_members = [m.member for m in primary_team.members]
+    return _serialize_stage_workspace(stage, team_members=team_members, assignment_team_id=assignment_team_id)
 
 
 async def get_stage_workspace_by_job_slug(
@@ -961,7 +977,15 @@ async def get_stage_workspace_by_job_slug(
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
     if stage.stageType != StageType.INTERVIEW:
         raise HTTPException(status_code=409, detail="Only interview stages have a workspace")
-    return _serialize_stage_workspace(stage)
+    assignment_team_id = None
+    team_members = []
+    primary_team = await repository.get_primary_hiring_team(
+        organization_id, posting.id, stage.id
+    )
+    if primary_team:
+        assignment_team_id = primary_team.id
+        team_members = [m.member for m in primary_team.members]
+    return _serialize_stage_workspace(stage, team_members=team_members, assignment_team_id=assignment_team_id)
 
 
 async def search_interviewers(
@@ -1166,7 +1190,7 @@ async def assign_stage_interviews(
     member_ids = list({
         member_id
         for assignment in body.assignments
-        for member_id in [assignment.interviewerMemberId, *assignment.backupInterviewers]
+        for member_id in [assignment.interviewerMemberId]
     })
     members = await repository.get_members_by_ids(organization_id, member_ids)
     members_by_id = {member.id: member for member in members}
@@ -1243,19 +1267,6 @@ async def assign_stage_interviews(
                 approvalStatus="PENDING_ACCEPTANCE",
             )
         )
-        for backup_member_id in dict.fromkeys(assignment.backupInterviewers):
-            if backup_member_id == interviewer.id:
-                continue
-            await repository.add_stage_event_participant(
-                StageEventParticipant(
-                    eventId=event.id,
-                    memberId=backup_member_id,
-                    role="BACKUP",
-                    isBackup=True,
-                    approvalStatus="PENDING_ACCEPTANCE",
-                )
-            )
-
         starts_at_text = _meeting_time_text(starts_at) if starts_at is not None else "To be scheduled after you accept"
         await email_service.send_stage_interview_assignment_to_interviewer(
             to_email=interviewer_email,
@@ -1331,7 +1342,6 @@ async def distribute_stage_interviews(
                 interviewerMemberId=interviewer_member_id,
                 scheduledStartAt=body.scheduledStartAt,
                 durationMinutes=body.durationMinutes,
-                backupInterviewers=body.backupInterviewers,
             )
         )
 
@@ -1339,10 +1349,9 @@ async def distribute_stage_interviews(
     if warnings and not body.ignoreWarnings:
         return TeamDistributionResponse(assignedCount=0, warnings=warnings)
 
-    backup_member_ids = list(dict.fromkeys(body.backupInterviewers or []))
     members = await repository.get_members_by_ids(
         organization_id,
-        list(dict.fromkeys([*team_member_ids, *backup_member_ids])),
+        list(dict.fromkeys(team_member_ids)),
     )
     members_by_id = {member.id: member for member in members}
 
@@ -1386,22 +1395,6 @@ async def distribute_stage_interviews(
                 approvalStatus="PENDING_ACCEPTANCE",
             )
         )
-
-        # Add backup interviewers if any
-        for backup_member_id in (body.backupInterviewers or []):
-            if backup_member_id == assignment.interviewerMemberId:
-                continue
-            backup_member = members_by_id.get(backup_member_id)
-            if backup_member is not None:
-                await repository.add_stage_event_participant(
-                    StageEventParticipant(
-                        eventId=event.id,
-                        memberId=backup_member_id,
-                        role="BACKUP",
-                        isBackup=True,
-                        approvalStatus="PENDING",
-                    )
-                )
 
         starts_at_text = _meeting_time_text(starts_at) if starts_at is not None else "To be scheduled after you accept"
         await email_service.send_stage_interview_assignment_to_interviewer(
@@ -1454,8 +1447,7 @@ async def reshuffle_interview_assignment(
             raise HTTPException(status_code=400, detail="New interviewer not found")
         new_member_id = new_interviewer.id
     else:
-        # Auto reshuffle: find next available team member with fewest warnings
-        # For simplicity, find any org member who is not the current primary and has no warnings
+        # Auto reshuffle: find team member with fewest active interviews who hasn't rejected
         current_primary = None
         for p in (event.participants or []):
             if p.role == "INTERVIEWER" or p.role is None:
@@ -1466,36 +1458,40 @@ async def reshuffle_interview_assignment(
             raise HTTPException(status_code=400, detail="No primary interviewer to reshuffle")
 
         rejected_member_ids = await repository.list_rejected_member_ids_for_event(organization_id, event.id)
-        backup_participants = [
-            p
-            for p in (event.participants or [])
-            if p.role == "BACKUP"
-            and p.memberId not in rejected_member_ids
-            and p.approvalStatus != "REJECTED"
+        rejected_member_ids.add(current_primary.memberId)
+
+        existing_member_ids = {p.memberId for p in (event.participants or [])}
+
+        team_member_ids = await repository.get_primary_hiring_team_member_ids(
+            organization_id,
+            event.stage.jobPostingId,
+            event.stage.id,
+        )
+        available_member_ids = [
+            mid for mid in team_member_ids
+            if mid not in rejected_member_ids and mid not in existing_member_ids
         ]
+
+        if not available_member_ids:
+            raise HTTPException(status_code=400, detail="No team member available for auto-reshuffle")
+
         active_counts = await repository.count_active_interviews_for_members(
             organization_id,
-            [p.memberId for p in backup_participants],
+            available_member_ids,
         )
-        promoted_backup = min(
-            backup_participants,
-            key=lambda p: (active_counts.get(p.memberId, 0), p.createdAt),
-            default=None,
+        new_member_id = min(
+            available_member_ids,
+            key=lambda mid: (active_counts.get(mid, 0), mid),
         )
-        new_member_id = promoted_backup.memberId if promoted_backup is not None else None
 
-        if new_member_id is None:
-            raise HTTPException(status_code=400, detail="No backup interviewer available for auto-reshuffle")
-
-    # Swap primary interviewer
+    # Swap primary: demote old, promote new
     for p in (event.participants or []):
-        if p.role == "INTERVIEWER" or p.role is None:
-            p.role = "BACKUP"
-            p.isBackup = True
-        elif p.memberId == new_member_id:
+        if p.memberId == new_member_id:
             p.role = "INTERVIEWER"
             p.isBackup = False
             p.approvalStatus = "PENDING_ACCEPTANCE"
+        elif p.role == "INTERVIEWER" or p.role is None:
+            p.approvalStatus = "REJECTED"
 
     db.add(event)
     await db.commit()
@@ -1747,8 +1743,6 @@ async def reject_interview(
     now = datetime.now(UTC)
     participant.approvalStatus = "REJECTED"
     participant.rejectedAt = now
-    participant.role = "BACKUP"
-    participant.isBackup = True
     db.add(participant)
 
     rejected_member_ids = await repository.list_rejected_member_ids_for_event(organization_id, event.id)
@@ -1763,14 +1757,20 @@ async def reject_interview(
         )
         rejected_member_ids.add(member_id)
 
-    candidate_backups = [
-        item
-        for item in (event.participants or [])
-        if item.role == "BACKUP"
-        and item.memberId not in rejected_member_ids
-        and item.approvalStatus != "REJECTED"
+    # Find available team member with lowest active interview count
+    existing_participant_ids = {p.memberId for p in (event.participants or [])}
+
+    team_member_ids = await repository.get_primary_hiring_team_member_ids(
+        organization_id,
+        event.stage.jobPostingId,
+        event.stage.id,
+    )
+    available_member_ids = [
+        mid for mid in team_member_ids
+        if mid not in rejected_member_ids and mid not in existing_participant_ids
     ]
-    if not candidate_backups:
+
+    if not available_member_ids:
         event.status = EventStatus.CANCELLED
         db.add(event)
         await db.commit()
@@ -1783,18 +1783,34 @@ async def reject_interview(
 
     active_counts = await repository.count_active_interviews_for_members(
         organization_id,
-        [item.memberId for item in candidate_backups],
+        available_member_ids,
     )
-    promoted = min(
-        candidate_backups,
-        key=lambda item: (active_counts.get(item.memberId, 0), item.createdAt),
+    new_member_id = min(
+        available_member_ids,
+        key=lambda mid: (active_counts.get(mid, 0), mid),
     )
-    promoted.role = "INTERVIEWER"
-    promoted.isBackup = False
-    promoted.approvalStatus = "PENDING_ACCEPTANCE"
-    promoted.approvedAt = None
-    promoted.rejectedAt = None
-    db.add(promoted)
+
+    new_members = await repository.get_members_by_ids(organization_id, [new_member_id])
+    new_member = new_members[0] if new_members else None
+    if new_member is None:
+        event.status = EventStatus.CANCELLED
+        db.add(event)
+        await db.commit()
+        return InterviewRejectResponse(
+            eventId=event.id,
+            newInterviewerMemberId=None,
+            status="UNASSIGNED",
+            warnings=[],
+        )
+
+    new_participant = StageEventParticipant(
+        eventId=event.id,
+        memberId=new_member_id,
+        role="INTERVIEWER",
+        isBackup=False,
+        approvalStatus="PENDING_ACCEPTANCE",
+    )
+    await repository.add_stage_event_participant(new_participant)
     event.status = EventStatus.RESCHEDULED
     db.add(event)
     await db.commit()
@@ -1807,20 +1823,20 @@ async def reject_interview(
             [
                 StageInterviewAssignmentInput(
                     applicationId=event.applicationId,
-                    interviewerMemberId=promoted.memberId,
+                    interviewerMemberId=new_member_id,
                     scheduledStartAt=event.scheduledStartAt,
                     durationMinutes=30,
                 )
             ],
         )
 
-    if promoted.member is not None and promoted.member.user is not None:
+    if new_member.user is not None:
         email_service = ResendEmailService()
         candidate_name = _candidate_display_name(event.application)
         starts_at_text = _meeting_time_text(event.scheduledStartAt) if event.scheduledStartAt else "To be scheduled"
         await email_service.send_stage_interview_assignment_to_interviewer(
-            to_email=promoted.member.user.email,
-            interviewer_name=promoted.member.user.name or promoted.member.user.email,
+            to_email=new_member.user.email,
+            interviewer_name=new_member.user.name or new_member.user.email,
             candidate_name=candidate_name,
             candidate_email=event.application.candidate.email,
             stage_name=event.stage.name if event.stage else "Interview",
@@ -1830,7 +1846,7 @@ async def reject_interview(
 
     return InterviewRejectResponse(
         eventId=event.id,
-        newInterviewerMemberId=promoted.memberId,
+        newInterviewerMemberId=new_member_id,
         status="ESCALATED",
         warnings=warnings,
     )
@@ -1853,7 +1869,6 @@ async def list_my_interviews(
             continue
         candidate = application.candidate
         stage = event.stage
-        is_backup = participant.role == "BACKUP" and participant.approvalStatus != "REJECTED"
         status = participant.approvalStatus
         if status == "PENDING":
             status = "PENDING_ACCEPTANCE"
@@ -1878,7 +1893,7 @@ async def list_my_interviews(
                 scheduledEndAt=event.scheduledEndAt,
                 status=display_status,
                 role=participant.role or "INTERVIEWER",
-                isBackup=is_backup,
+                isBackup=False,
                 meetingUrl=event.meetingUrl,
                 stageDueDate=stage.dueDate if stage else None,
             )
@@ -2257,7 +2272,17 @@ async def complete_interview_meeting(
         db.add(feedback)
         await db.flush()
 
-    feedback.notes = body.notes
+    note_body = body.notes.strip() if body.notes else ""
+    feedback.notes = note_body or None
+    if note_body:
+        db.add(
+            CandidateApplicationNote(
+                organizationId=organization_id,
+                applicationId=application_id,
+                authorMemberId=actor_member_id,
+                body=note_body,
+            )
+        )
 
     event.status = EventStatus.COMPLETED
     event.completedByMemberId = actor_member_id

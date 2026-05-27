@@ -508,6 +508,24 @@ class CandidatePipelineRepository:
         )
         return result.scalars().first()
 
+    async def get_primary_hiring_team_member_ids(
+        self,
+        organization_id: str,
+        job_posting_id: str,
+        stage_id: str,
+    ) -> list[str]:
+        result = await self.db.execute(
+            select(HiringTeamMember.memberId)
+            .join(HiringTeam, HiringTeam.id == HiringTeamMember.hiringTeamId)
+            .where(
+                HiringTeam.organizationId == organization_id,
+                HiringTeam.jobPostingId == job_posting_id,
+                HiringTeam.stageId == stage_id,
+                HiringTeam.isActive.is_(True),
+            )
+        )
+        return [str(row) for row in result.scalars().all()]
+
     async def get_hiring_team(
         self,
         organization_id: str,
@@ -522,6 +540,27 @@ class CandidatePipelineRepository:
                 HiringTeam.organizationId == organization_id,
                 HiringTeam.id == team_id,
                 HiringTeam.isActive.is_(True),
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
+    async def get_primary_hiring_team(
+        self,
+        organization_id: str,
+        job_posting_id: str,
+        stage_id: str,
+    ) -> HiringTeam | None:
+        result = await self.db.execute(
+            select(HiringTeam)
+            .options(
+                joinedload(HiringTeam.members).joinedload(HiringTeamMember.member).joinedload(Member.user)
+            )
+            .where(
+                HiringTeam.organizationId == organization_id,
+                HiringTeam.jobPostingId == job_posting_id,
+                HiringTeam.stageId == stage_id,
+                HiringTeam.isActive.is_(True),
+                HiringTeam.name == f"Workspace-Primary-{stage_id}",
             )
         )
         return result.unique().scalar_one_or_none()

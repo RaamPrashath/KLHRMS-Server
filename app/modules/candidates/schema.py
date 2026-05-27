@@ -130,6 +130,8 @@ class StageWorkspaceRead(BaseModel):
     jobPosting: PipelineJobPostingRead
     candidateCount: int
     candidates: list[StageWorkspaceCandidateRead]
+    teamMembers: list[StageWorkspaceInterviewerRead]
+    assignmentTeamId: str | None = None
 
 
 class InterviewerSearchResponse(BaseModel):
@@ -142,7 +144,6 @@ class StageInterviewAssignmentInput(BaseModel):
     scheduledStartAt: datetime | None = None
     durationMinutes: int = Field(default=30, ge=15, le=240)
     meetLink: str | None = Field(default=None, max_length=2048)
-    backupInterviewers: list[str] = Field(default_factory=list)
 
 
 class StageInterviewWarningRead(BaseModel):
@@ -176,7 +177,6 @@ class TeamDistributionRequest(BaseModel):
     applicationIds: list[str] = Field(min_length=1)
     scheduledStartAt: datetime | None = None
     durationMinutes: int = Field(default=30, ge=15, le=240)
-    backupInterviewers: list[str] = Field(default_factory=list)
     ignoreWarnings: bool = False
 
 

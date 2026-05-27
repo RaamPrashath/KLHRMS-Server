@@ -346,40 +346,6 @@ class ResendEmailService:
         )
         await self._send_email(to_email, subject, html, text)
 
-    async def send_interview_backup_notification(
-        self,
-        to_email: str,
-        backup_name: str,
-        candidate_name: str,
-        stage_name: str,
-        starts_at_text: str,
-        organization_name: str,
-    ) -> None:
-        subject = f"You are a backup interviewer for {candidate_name} - {organization_name}"
-        body = f"""
-          <p style="margin:0 0 16px;">Hello {backup_name},</p>
-          <p style="margin:0 0 16px;">You have been added as a backup interviewer for an upcoming interview at <strong>{organization_name}</strong>.</p>
-          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 8px;">
-            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Candidate</td><td style="padding:2px 0;font-size:14px;">{candidate_name}</td></tr>
-            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Stage</td><td style="padding:2px 0;font-size:14px;">{stage_name}</td></tr>
-            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Time</td><td style="padding:2px 0;font-size:14px;">{starts_at_text}</td></tr>
-          </table>
-          <p style="margin:16px 0 0;">You will be contacted if the primary interviewer is unavailable.</p>
-        """
-        html = _email_wrapper(body)
-        text = (
-            f"Kovan Labs\n\n"
-            f"Hello {backup_name},\n\n"
-            f"You have been added as a backup interviewer for an upcoming interview at {organization_name}.\n"
-            f"Candidate: {candidate_name}\n"
-            f"Stage: {stage_name}\n"
-            f"Time: {starts_at_text}\n\n"
-            f"You will be contacted if the primary interviewer is unavailable.\n\n"
-            f"---\n"
-            f"Kovan Labs\n"
-        )
-        await self._send_email(to_email, subject, html, text)
-
     async def _send_email(self, to_email: str, subject: str, html: str, text: str) -> None:
         if not self.settings.resend_api_key:
             raise HTTPException(status_code=400, detail="Resend API key is not configured")
