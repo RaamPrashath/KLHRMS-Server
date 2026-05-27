@@ -83,6 +83,43 @@ def test_score_resume_facts_is_deterministic_and_evidence_backed():
     assert first.score_breakdown["skills"]["matched"][0]["evidence"] == "Built APIs with Python"
 
 
+def test_extracted_resume_facts_accepts_profile_sections_without_affecting_score():
+    facts = ExtractedResumeFacts.model_validate(
+        {
+            **_facts().model_dump(mode="json"),
+            "recommendationSummary": (
+                "Candidate has relevant backend experience and matches the core role requirements."
+            ),
+            "professionalExperience": [
+                {
+                    "title": "Software Engineer, Example Systems",
+                    "bullets": ["Built APIs with Python", "Created dashboards in React"],
+                }
+            ],
+            "projects": [
+                {
+                    "title": "HR dashboard",
+                    "bullets": ["Built a dashboard for HR operations"],
+                }
+            ],
+            "achievements": ["Improved reporting turnaround time"],
+            "educationDetails": [
+                {
+                    "title": "Bachelor of Engineering",
+                    "bullets": ["Completed engineering degree"],
+                }
+            ],
+            "certificationDetails": ["Certified Python Developer"],
+        }
+    )
+
+    result = score_resume_facts(_rules(), facts)
+
+    assert facts.professionalExperience[0].title == "Software Engineer, Example Systems"
+    assert result.composite_score == 100
+    assert result.evaluation_status == "QUALIFIED"
+
+
 def test_score_resume_facts_applies_hard_knockout_before_points():
     rules = _rules()
     rules.knockoutRules = {"explicitRule": "Candidate must have at least 3 years of Java experience."}

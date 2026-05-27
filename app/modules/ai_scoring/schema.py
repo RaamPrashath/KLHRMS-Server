@@ -68,6 +68,13 @@ class KnockoutAssessmentFact(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class ResumeProfileSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1)
+    bullets: list[str] = Field(default_factory=list)
+
+
 class ExtractedResumeFacts(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -78,6 +85,13 @@ class ExtractedResumeFacts(BaseModel):
     skills: list[SkillEvidence] = Field(default_factory=list)
     degree: EvidenceFact | None = None
     certifications: list[EvidenceFact] = Field(default_factory=list)
+    recommendationSummary: str | None = None
+    professionalExperience: list[ResumeProfileSection] = Field(default_factory=list)
+    projects: list[ResumeProfileSection] = Field(default_factory=list)
+    achievements: list[str] = Field(default_factory=list)
+    educationDetails: list[ResumeProfileSection] = Field(default_factory=list)
+    certificationDetails: list[str] = Field(default_factory=list)
+    additionalSections: list[ResumeProfileSection] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     overallConfidence: float = Field(ge=0, le=1)
 

@@ -10,15 +10,14 @@ from app.modules.candidates.schema import (
     CandidateApplicationUpdateRequest,
     InterviewAcceptRequest,
     InterviewAcceptResponse,
-    InterviewRejectResponse,
     InterviewerSearchResponse,
-    InterviewMeetingCreateRequest,
     InterviewMeetingCompleteRequest,
+    InterviewMeetingCreateRequest,
     InterviewMeetingRead,
-    InterviewMeetingStartRequest,
     InterviewMeetingUpdateRequest,
     InterviewMoveRequest,
     InterviewMoveResponse,
+    InterviewRejectResponse,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
     PipelineApplicationRead,
@@ -30,7 +29,6 @@ from app.modules.candidates.schema import (
     ReassignmentRequestCreate,
     ReshuffleRequest,
     ReshuffleResponse,
-    StageEvaluationWorkspaceRead,
     StageInterviewAssignmentRequest,
     StageInterviewAssignmentResponse,
     StageInterviewWarningRequest,
@@ -366,28 +364,6 @@ async def handle_reject_interview(
         event_id,
     )
 
-
-async def handle_get_evaluation_workspace(
-    ctx: MemberContext,
-    db: AsyncSession,
-    stage_id: str,
-) -> StageEvaluationWorkspaceRead:
-    return await service.get_evaluation_workspace(db, ctx.organization.id, stage_id)
-
-
-async def handle_generate_evaluation_workspace(
-    ctx: MemberContext,
-    db: AsyncSession,
-    stage_id: str,
-) -> StageEvaluationWorkspaceRead:
-    return await service.generate_evaluation_workspace(
-        db,
-        ctx.organization.id,
-        ctx.organization.name,
-        ctx.member.id,
-        ctx.member.userId,
-        stage_id,
-    )
 
 
 async def handle_distribute_stage_interviews(
