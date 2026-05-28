@@ -346,35 +346,182 @@ class ResendEmailService:
         )
         await self._send_email(to_email, subject, html, text)
 
-    async def send_interview_backup_notification(
+    async def send_interview_slot_invitation(
         self,
         to_email: str,
-        backup_name: str,
         candidate_name: str,
-        stage_name: str,
-        starts_at_text: str,
+        interviewer_name: str,
+        job_title: str,
         organization_name: str,
+        candidate_token: str,
+        is_reschedule: bool = False,
     ) -> None:
-        subject = f"You are a backup interviewer for {candidate_name} - {organization_name}"
+        base_url = "http://localhost:3000"
+        slot_url = f"{base_url}/interview/{candidate_token}"
+
+        subject = (
+            f"Choose a new interview time with {organization_name}"
+            if is_reschedule
+            else f"Choose your interview time with {organization_name}"
+        )
+        intro = (
+            f"Your interview for <strong>{job_title}</strong> needs to be rescheduled. Please choose a new time that works best for you."
+            if is_reschedule
+            else f"Your interview for <strong>{job_title}</strong> has been proposed. Please choose a time that works best for you."
+        )
+        text_intro = (
+            f"Your interview for {job_title} needs to be rescheduled."
+            if is_reschedule
+            else f"Your interview for {job_title} has been proposed."
+        )
         body = f"""
-          <p style="margin:0 0 16px;">Hello {backup_name},</p>
-          <p style="margin:0 0 16px;">You have been added as a backup interviewer for an upcoming interview at <strong>{organization_name}</strong>.</p>
+          <p style="margin:0 0 16px;">Hello {candidate_name},</p>
+          <p style="margin:0 0 16px;">{intro}</p>
           <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 8px;">
-            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Candidate</td><td style="padding:2px 0;font-size:14px;">{candidate_name}</td></tr>
-            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Stage</td><td style="padding:2px 0;font-size:14px;">{stage_name}</td></tr>
-            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Time</td><td style="padding:2px 0;font-size:14px;">{starts_at_text}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Interviewer</td><td style="padding:2px 0;font-size:14px;">{interviewer_name}</td></tr>
           </table>
-          <p style="margin:16px 0 0;">You will be contacted if the primary interviewer is unavailable.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{slot_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Choose Your Interview Time</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If the button does not work, open this link:<br /><a href="{slot_url}" style="color:#00874a;">{slot_url}</a></p>
         """
         html = _email_wrapper(body)
         text = (
             f"Kovan Labs\n\n"
-            f"Hello {backup_name},\n\n"
-            f"You have been added as a backup interviewer for an upcoming interview at {organization_name}.\n"
-            f"Candidate: {candidate_name}\n"
-            f"Stage: {stage_name}\n"
-            f"Time: {starts_at_text}\n\n"
-            f"You will be contacted if the primary interviewer is unavailable.\n\n"
+            f"Hello {candidate_name},\n\n"
+            f"{text_intro}\n"
+            f"Interviewer: {interviewer_name}\n\n"
+            f"Please choose your preferred time here:\n"
+            f"{slot_url}\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
+    async def send_interview_slot_confirmation_to_candidate(
+        self,
+        to_email: str,
+        candidate_name: str,
+        interviewer_name: str,
+        job_title: str,
+        starts_at_text: str,
+        meeting_url: str | None,
+    ) -> None:
+        subject = f"Interview confirmed — {job_title}"
+        meet_block = ""
+        if meeting_url:
+            meet_block = f"""
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Google Meet</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If the button does not work, open this link:<br /><a href="{meeting_url}" style="color:#00874a;">{meeting_url}</a></p>"""
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {candidate_name},</p>
+          <p style="margin:0 0 16px;">Your interview for <strong>{job_title}</strong> has been confirmed.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Interviewer</td><td style="padding:2px 0;font-size:14px;">{interviewer_name}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Time</td><td style="padding:2px 0;font-size:14px;">{starts_at_text}</td></tr>
+          </table>
+          {meet_block}
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {candidate_name},\n\n"
+            f"Your interview for {job_title} has been confirmed.\n"
+            f"Interviewer: {interviewer_name}\n"
+            f"Time: {starts_at_text}\n"
+            + (f"\nGoogle Meet: {meeting_url}\n" if meeting_url else "")
+            + "\n---\nKovan Labs\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
+    async def send_interview_slot_confirmation_to_interviewer(
+        self,
+        to_email: str,
+        interviewer_name: str,
+        candidate_name: str,
+        job_title: str,
+        starts_at_text: str,
+        meeting_url: str | None,
+    ) -> None:
+        subject = f"Candidate selected a time — {candidate_name}"
+        meet_block = ""
+        if meeting_url:
+            meet_block = f"""
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Google Meet</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If the button does not work, open this link:<br /><a href="{meeting_url}" style="color:#00874a;">{meeting_url}</a></p>"""
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {interviewer_name},</p>
+          <p style="margin:0 0 16px;"><strong>{candidate_name}</strong> has selected a time for the <strong>{job_title}</strong> interview.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Time</td><td style="padding:2px 0;font-size:14px;">{starts_at_text}</td></tr>
+          </table>
+          {meet_block}
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {interviewer_name},\n\n"
+            f"{candidate_name} has selected a time for the {job_title} interview.\n"
+            f"Time: {starts_at_text}\n"
+            + (f"\nGoogle Meet: {meeting_url}\n" if meeting_url else "")
+            + "\n---\nKovan Labs\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
+    async def send_feedback_request(
+        self,
+        to_email: str,
+        candidate_name: str,
+        job_title: str,
+        interviewer_name: str | None,
+        stage_name: str,
+        feedback_token: str,
+    ) -> None:
+        base_url = self.settings.better_auth_url.rstrip("/")
+        feedback_url = f"{base_url}/feedback/{feedback_token}"
+
+        subject = f"Share your interview feedback – {job_title}"
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {candidate_name},</p>
+          <p style="margin:0 0 16px;">Thank you for interviewing for <strong>{job_title}</strong>. We'd love to hear your thoughts on the interview experience.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 8px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Interviewer</td><td style="padding:2px 0;font-size:14px;">{interviewer_name or "Team"}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Stage</td><td style="padding:2px 0;font-size:14px;">{stage_name}</td></tr>
+          </table>
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{feedback_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Share Your Feedback</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If the button does not work, open this link:<br /><a href="{feedback_url}" style="color:#00874a;">{feedback_url}</a></p>
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {candidate_name},\n\n"
+            f"Thank you for interviewing for {job_title}. We'd love to hear your thoughts.\n"
+            f"Interviewer: {interviewer_name or 'Team'}\n"
+            f"Stage: {stage_name}\n\n"
+            f"Share your feedback here:\n"
+            f"{feedback_url}\n\n"
             f"---\n"
             f"Kovan Labs\n"
         )

@@ -40,7 +40,6 @@ from app.models.recruitment import (
     PipelineStage,
     RequisitionActivityLog,
     RequisitionApproval,
-    StageEvaluationWorkspace,
 )
 from app.models.role import Role
 from app.models.session import Session

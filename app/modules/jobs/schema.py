@@ -460,42 +460,11 @@ class JobRequisitionAiAnalysisRead(BaseModel):
     candidates: list[RequisitionAiCandidateRead] = Field(default_factory=list)
 
 
-class StageEvaluationCategoryInput(BaseModel):
-    id: str | None = None
-    name: str = Field(min_length=1, max_length=120)
-    type: Literal["NUMERIC", "TEXT", "CHECKBOX"] = "NUMERIC"
-    maxScore: int | None = Field(default=None, ge=1)
-    order: int | None = Field(default=None, ge=1)
-
-    @field_validator("name")
-    @classmethod
-    def strip_category_name(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("Category name is required")
-        return stripped
-
-
-class StageEvaluationCategoryRead(BaseModel):
-    id: str
-    stageId: str
-    name: str
-    type: str
-    maxScore: int | None = None
-    order: int
-
-
 class CreatePipelineStageRequest(BaseModel):
     name: str = Field(min_length=1, max_length=50)
     stageType: PipelineStageType = "DEFAULT"
-    evaluationEnabled: bool = False
-    sheetEnabled: bool = False
-    evaluationType: Literal["NUMERIC", "TEXT", "CHECKBOX"] | None = None
-    evaluationIncludeTotal: bool = False
-    evaluationIncludeAnalysis: bool = False
     dueDate: datetime | None = None
     extendToNextWorkingDay: bool = False
-    evaluationCategories: list[StageEvaluationCategoryInput] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -504,16 +473,6 @@ class CreatePipelineStageRequest(BaseModel):
         if not stripped:
             raise ValueError("Stage name is required")
         return stripped
-
-    def model_post_init(self, __context: Any) -> None:
-        if not self.evaluationEnabled:
-            self.evaluationType = None
-            self.evaluationIncludeTotal = False
-            self.evaluationIncludeAnalysis = False
-            self.evaluationCategories = []
-        elif self.evaluationType is None:
-            self.evaluationType = "NUMERIC"
-
 
 class ImportPipelineRequest(BaseModel):
     sourceJobPostingId: str = Field(min_length=1)
@@ -531,14 +490,8 @@ class PipelineStageRead(BaseModel):
     stageType: str
     meetingEnabled: bool
     offerLetterEnabled: bool
-    evaluationEnabled: bool
-    sheetEnabled: bool = False
-    evaluationType: str | None
-    evaluationIncludeTotal: bool
-    evaluationIncludeAnalysis: bool
     dueDate: datetime | None
     extendToNextWorkingDay: bool
-    evaluationCategories: list[StageEvaluationCategoryRead]
 
 
 class PipelineBoardRead(BaseModel):

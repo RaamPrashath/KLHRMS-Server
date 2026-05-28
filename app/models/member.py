@@ -1,14 +1,16 @@
+from datetime import datetime
+
 from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     String,
     UniqueConstraint,
-    Index,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime
+
 from app.models.base import Base, generate_uuid
 
 

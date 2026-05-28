@@ -117,6 +117,33 @@ def _build_extraction_prompt(resume_text: str, rules: JobRequisitionRules) -> st
         ],
         "degree": {"value": "string", "evidence": "string", "confidence": 0.0},
         "certifications": [{"value": "string", "evidence": "string", "confidence": 0.0}],
+        "recommendationSummary": "plain-language hiring recommendation based only on resume evidence and job requirements",
+        "professionalExperience": [
+            {
+                "title": "role, company, and dates when available",
+                "bullets": ["simple resume-supported responsibility or impact"],
+            }
+        ],
+        "projects": [
+            {
+                "title": "project name or concise project label",
+                "bullets": ["simple resume-supported project detail"],
+            }
+        ],
+        "achievements": ["simple resume-supported achievement"],
+        "educationDetails": [
+            {
+                "title": "degree, institution, and dates when available",
+                "bullets": ["simple resume-supported education detail"],
+            }
+        ],
+        "certificationDetails": ["simple resume-supported certification detail"],
+        "additionalSections": [
+            {
+                "title": "other resume section name",
+                "bullets": ["simple resume-supported detail"],
+            }
+        ],
         "warnings": ["string"],
         "overallConfidence": 0.0,
     }
@@ -146,6 +173,10 @@ def _build_extraction_prompt(resume_text: str, rules: JobRequisitionRules) -> st
         "Only set null when NO required anchor is remotely related.\n"
         "- When Required skill anchors is empty, set normalizedSkill to null for observed skills; do not fail extraction.\n"
         "- Only include skills, education, and certifications supported by resume evidence.\n"
+        "- Build professionalExperience, projects, achievements, educationDetails, certificationDetails, and additionalSections from resume text only.\n"
+        "- For resume profile sections, preserve meaning but rewrite into simple, understandable bullet points. Do not add facts, employers, dates, projects, achievements, education, or certifications that are not present in the resume.\n"
+        "- Omit empty resume profile sections by returning empty arrays.\n"
+        "- recommendationSummary must summarize the AI's hiring recommendation for this specific job in one short paragraph. Mention key strengths and important gaps without inventing details.\n"
         "- Keep evidence concise and traceable to the resume text.\n"
         "- Confidence must be a number between 0 and 1.\n\n"
         f"Sanitized resume text:\n{clipped_resume_text}"

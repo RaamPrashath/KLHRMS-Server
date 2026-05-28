@@ -12,7 +12,7 @@ from app.modules.ai_scoring.controller import (
 from app.modules.ai_scoring.schema import CandidateResumeAnalysisRead
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
-from app.shared.deps.permissions import require_permission
+from app.shared.deps.permissions import require_any_permission, require_permission
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/candidates", tags=["candidates"])
 )
 async def get_resume_analysis(
     application_id: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
+    ctx: Annotated[MemberContext, Depends(require_any_permission(("candidates", "view"), ("interviews", "view"), ("jobs", "view")))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CandidateResumeAnalysisRead:
     return await handle_get_resume_analysis(ctx, db, application_id)
@@ -36,7 +36,7 @@ async def get_resume_analysis(
 async def retry_resume_analysis(
     application_id: str,
     background_tasks: BackgroundTasks,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "edit"))],
+    ctx: Annotated[MemberContext, Depends(require_any_permission(("candidates", "view"), ("interviews", "view"), ("jobs", "view")))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CandidateResumeAnalysisRead:
     return await handle_retry_resume_analysis(ctx, db, application_id, background_tasks)

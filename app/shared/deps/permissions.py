@@ -36,6 +36,30 @@ def _is_valid_scope(scope: str | None) -> bool:
     return scope is not None and scope != "none"
 
 
+def require_any_permission(
+    *requirements: tuple[str, str],
+) -> Callable[..., MemberContext]:
+    """
+    Factory that returns a FastAPI dependency enforcing that the resolved
+    member has ANY of the given (module, action) permissions.
+
+    Accepts any non-none scope (self, team, department, organization).
+    """
+    def _dependency(
+        ctx: MemberContext = Depends(get_member_context),
+    ) -> MemberContext:
+        for module, action in requirements:
+            scope = get_member_permission_scope(ctx.member, module, action)
+            if _is_valid_scope(scope):
+                ctx.scope = scope  # type: ignore[attr-defined]
+                return ctx
+        raise HTTPException(status_code=403, detail="you dont have permission")
+
+    names = "_".join(f"{m}_{a}" for m, a in requirements)
+    _dependency.__name__ = f"require_any_{names}"
+    return _dependency
+
+
 def require_permission(
     module: str,
     action: str,

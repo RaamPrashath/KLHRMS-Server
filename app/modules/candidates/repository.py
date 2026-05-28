@@ -18,12 +18,9 @@ from app.models.recruitment import (
     HiringTeam,
     HiringTeamMember,
     InterviewFeedback,
-    InterviewFeedbackValue,
     InterviewRejectionRecord,
     JobPosting,
     PipelineStage,
-    StageEvaluationCategory,
-    StageEvaluationWorkspace,
     StageEvent,
     StageEventParticipant,
 )
@@ -104,8 +101,6 @@ class CandidatePipelineRepository:
                 ).selectinload(StageEvent.participants)
                 .joinedload(StageEventParticipant.member)
                 .joinedload(Member.user),
-                selectinload(PipelineStage.evaluationCategories),
-                selectinload(PipelineStage.evaluationWorkspace),
             )
             .where(
                 PipelineStage.organizationId == organization_id,
@@ -132,8 +127,6 @@ class CandidatePipelineRepository:
         result = await self.db.execute(
             select(PipelineStage)
             .options(
-                selectinload(PipelineStage.evaluationCategories),
-                selectinload(PipelineStage.evaluationWorkspace),
                 selectinload(PipelineStage.applications)
                 .joinedload(CandidateApplication.candidate),
                 selectinload(PipelineStage.applications)
@@ -173,8 +166,6 @@ class CandidatePipelineRepository:
                     .joinedload(StageEventParticipant.member)
                     .joinedload(Member.user),
                 ),
-                selectinload(PipelineStage.evaluationCategories),
-                selectinload(PipelineStage.evaluationWorkspace),
                 joinedload(PipelineStage.jobPosting),
             )
             .where(
@@ -210,8 +201,6 @@ class CandidatePipelineRepository:
                     .joinedload(StageEventParticipant.member)
                     .joinedload(Member.user),
                 ),
-                selectinload(PipelineStage.evaluationCategories),
-                selectinload(PipelineStage.evaluationWorkspace),
                 joinedload(PipelineStage.jobPosting),
             )
             .where(
@@ -311,21 +300,6 @@ class CandidatePipelineRepository:
         )
         return list(result.scalars().all())
 
-    async def list_stage_categories(
-        self,
-        organization_id: str,
-        stage_id: str,
-    ) -> list[StageEvaluationCategory]:
-        result = await self.db.execute(
-            select(StageEvaluationCategory)
-            .where(
-                StageEvaluationCategory.organizationId == organization_id,
-                StageEvaluationCategory.stageId == stage_id,
-            )
-            .order_by(StageEvaluationCategory.order.asc())
-        )
-        return list(result.scalars().all())
-
     async def get_application(
         self,
         organization_id: str,
@@ -376,10 +350,6 @@ class CandidatePipelineRepository:
                 .selectinload(StageEvent.feedbacks)
                 .joinedload(InterviewFeedback.member)
                 .joinedload(Member.user),
-                selectinload(CandidateApplication.stageEvents)
-                .selectinload(StageEvent.feedbacks)
-                .selectinload(InterviewFeedback.values)
-                .joinedload(InterviewFeedbackValue.category),
                 selectinload(CandidateApplication.internalNoteEntries)
                 .joinedload(CandidateApplicationNote.author)
                 .joinedload(Member.user),
@@ -460,68 +430,6 @@ class CandidatePipelineRepository:
         await self.db.flush()
         return history
 
-    async def get_evaluation_workspace(
-        self,
-        organization_id: str,
-        stage_id: str,
-    ) -> StageEvaluationWorkspace | None:
-        result = await self.db.execute(
-            select(StageEvaluationWorkspace).where(
-                StageEvaluationWorkspace.organizationId == organization_id,
-                StageEvaluationWorkspace.stageId == stage_id,
-            )
-        )
-        return result.scalar_one_or_none()
-
-    async def get_any_evaluation_workspace_for_job(
-        self,
-        organization_id: str,
-        job_posting_id: str,
-    ) -> StageEvaluationWorkspace | None:
-        result = await self.db.execute(
-            select(StageEvaluationWorkspace)
-            .join(PipelineStage, StageEvaluationWorkspace.stageId == PipelineStage.id)
-            .where(
-                StageEvaluationWorkspace.organizationId == organization_id,
-                PipelineStage.organizationId == organization_id,
-                PipelineStage.jobPostingId == job_posting_id,
-                PipelineStage.evaluationEnabled.is_(True),
-            )
-            .order_by(StageEvaluationWorkspace.createdAt.asc())
-        )
-        return result.scalars().first()
-
-    async def list_evaluation_stages_for_job(
-        self,
-        organization_id: str,
-        job_posting_id: str,
-    ) -> list[PipelineStage]:
-        result = await self.db.execute(
-            select(PipelineStage)
-            .options(
-                selectinload(PipelineStage.applications).joinedload(
-                    CandidateApplication.candidate
-                ),
-                selectinload(PipelineStage.evaluationCategories),
-                selectinload(PipelineStage.evaluationWorkspace),
-            )
-            .where(
-                PipelineStage.organizationId == organization_id,
-                PipelineStage.jobPostingId == job_posting_id,
-                PipelineStage.evaluationEnabled.is_(True),
-            )
-            .order_by(PipelineStage.order.asc())
-        )
-        return list(result.unique().scalars().all())
-
-    async def add_evaluation_workspace(
-        self,
-        workspace: StageEvaluationWorkspace,
-    ) -> StageEvaluationWorkspace:
-        self.db.add(workspace)
-        await self.db.flush()
-        return workspace
-
     async def add_stage_event(self, event: StageEvent) -> StageEvent:
         self.db.add(event)
         await self.db.flush()
@@ -588,11 +496,10 @@ class CandidatePipelineRepository:
             select(StageEvent)
             .options(
                 joinedload(StageEvent.application).selectinload(CandidateApplication.candidate),
-                joinedload(StageEvent.stage).selectinload(PipelineStage.evaluationCategories),
-                joinedload(StageEvent.stage).joinedload(PipelineStage.evaluationWorkspace),
-                selectinload(StageEvent.participants),
-                selectinload(StageEvent.feedbacks)
-                .selectinload(InterviewFeedback.values),
+                joinedload(StageEvent.application).joinedload(CandidateApplication.jobPosting),
+                joinedload(StageEvent.stage),
+                selectinload(StageEvent.participants).joinedload(StageEventParticipant.member).joinedload(Member.user),
+                selectinload(StageEvent.feedbacks),
             )
             .where(
                 StageEvent.organizationId == organization_id,
@@ -601,6 +508,24 @@ class CandidatePipelineRepository:
             )
         )
         return result.scalars().first()
+
+    async def get_primary_hiring_team_member_ids(
+        self,
+        organization_id: str,
+        job_posting_id: str,
+        stage_id: str,
+    ) -> list[str]:
+        result = await self.db.execute(
+            select(HiringTeamMember.memberId)
+            .join(HiringTeam, HiringTeam.id == HiringTeamMember.hiringTeamId)
+            .where(
+                HiringTeam.organizationId == organization_id,
+                HiringTeam.jobPostingId == job_posting_id,
+                HiringTeam.stageId == stage_id,
+                HiringTeam.isActive.is_(True),
+            )
+        )
+        return [str(row) for row in result.scalars().all()]
 
     async def get_hiring_team(
         self,
@@ -616,6 +541,27 @@ class CandidatePipelineRepository:
                 HiringTeam.organizationId == organization_id,
                 HiringTeam.id == team_id,
                 HiringTeam.isActive.is_(True),
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
+    async def get_primary_hiring_team(
+        self,
+        organization_id: str,
+        job_posting_id: str,
+        stage_id: str,
+    ) -> HiringTeam | None:
+        result = await self.db.execute(
+            select(HiringTeam)
+            .options(
+                joinedload(HiringTeam.members).joinedload(HiringTeamMember.member).joinedload(Member.user)
+            )
+            .where(
+                HiringTeam.organizationId == organization_id,
+                HiringTeam.jobPostingId == job_posting_id,
+                HiringTeam.stageId == stage_id,
+                HiringTeam.isActive.is_(True),
+                HiringTeam.name == f"Workspace-Primary-{stage_id}",
             )
         )
         return result.unique().scalar_one_or_none()
@@ -673,10 +619,30 @@ class CandidatePipelineRepository:
                 joinedload(StageEvent.application).joinedload(CandidateApplication.jobPosting),
                 joinedload(StageEvent.stage),
                 selectinload(StageEvent.participants).joinedload(StageEventParticipant.member).joinedload(Member.user),
+                selectinload(StageEvent.proposedSlots),
             )
             .where(
                 StageEvent.organizationId == organization_id,
                 StageEvent.id == event_id,
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
+    async def get_stage_event_by_candidate_token(
+        self,
+        token: str,
+    ) -> StageEvent | None:
+        result = await self.db.execute(
+            select(StageEvent)
+            .options(
+                joinedload(StageEvent.application).selectinload(CandidateApplication.candidate),
+                joinedload(StageEvent.application).joinedload(CandidateApplication.jobPosting),
+                joinedload(StageEvent.stage),
+                selectinload(StageEvent.participants).joinedload(StageEventParticipant.member).joinedload(Member.user),
+                selectinload(StageEvent.proposedSlots),
+            )
+            .where(
+                StageEvent.candidateToken == token,
             )
         )
         return result.unique().scalar_one_or_none()
@@ -695,9 +661,8 @@ class CandidatePipelineRepository:
                 joinedload(StageEventParticipant.event)
                 .joinedload(StageEvent.application)
                 .joinedload(CandidateApplication.jobPosting),
-                joinedload(StageEventParticipant.event)
-                .joinedload(StageEvent.stage)
-                .selectinload(PipelineStage.evaluationCategories),
+                joinedload(StageEventParticipant.event).joinedload(StageEvent.stage),
+                joinedload(StageEventParticipant.event).selectinload(StageEvent.proposedSlots),
                 joinedload(StageEventParticipant.member).joinedload(Member.user),
             )
             .where(
