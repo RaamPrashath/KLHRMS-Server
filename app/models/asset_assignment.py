@@ -19,6 +19,16 @@ class AssetAssignment(Base):
     providedDate: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     conditionWhileProviding: Mapped[str] = mapped_column(String(40), nullable=False)
     provideNotes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    replacementAssignmentId: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("asset_assignment.id", ondelete="SET NULL"), nullable=True
+    )
+    handoverRequestedAt: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    handoverCompletedAt: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    handoverConditionNotes: Mapped[str | None] = mapped_column(Text, nullable=True)
     returnDate: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     returnedCondition: Mapped[str | None] = mapped_column(String(40), nullable=True)
     receivedByMemberId: Mapped[str | None] = mapped_column(String(36), ForeignKey("member.id", ondelete="SET NULL"))
@@ -39,5 +49,6 @@ class AssetAssignment(Base):
     __table_args__ = (
         Index("asset_assignment_assetId_idx", "assetId"),
         Index("asset_assignment_memberId_idx", "memberId"),
+        Index("asset_assignment_replacementAssignmentId_idx", "replacementAssignmentId"),
         Index("asset_assignment_returnDate_idx", "returnDate"),
     )

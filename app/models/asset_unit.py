@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, generate_uuid
@@ -17,6 +17,9 @@ class AssetUnit(Base):
     status: Mapped[str] = mapped_column(String(40), nullable=False, server_default="AVAILABLE")
     currentHolderMemberId: Mapped[str | None] = mapped_column(String(36), ForeignKey("member.id", ondelete="SET NULL"), nullable=True)
     condition: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    warrantyExpiryDate: Mapped[date | None] = mapped_column(Date, nullable=True)
+    lastWarrantyAlertSentAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reminderCompleted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updatedAt: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -31,4 +34,5 @@ class AssetUnit(Base):
         Index("asset_unit_asset_idx", "assetId"),
         Index("asset_unit_status_idx", "status"),
         Index("asset_unit_holder_idx", "currentHolderMemberId"),
+        Index("asset_unit_warranty_expiry_idx", "warrantyExpiryDate"),
     )

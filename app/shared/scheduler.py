@@ -6,7 +6,8 @@ via FastAPI lifespan events in main.py.
 
 Scheduled jobs
 --------------
-annual_holiday_sync  — runs on January 1st at 00:00 every year.
+annual_holiday_sync   - runs on January 1st at 00:00 every year.
+warranty_tracker_scan - runs daily at 09:00 IST.
 """
 
 from __future__ import annotations
@@ -19,22 +20,10 @@ from apscheduler.triggers.cron import CronTrigger
 
 logger = logging.getLogger(__name__)
 
-# Module-level scheduler instance — imported by main.py lifespan
 scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
 
 
-# ---------------------------------------------------------------------------
-# Job functions
-# ---------------------------------------------------------------------------
-
-
 async def _annual_holiday_sync_job() -> None:
-    """
-    Cron job: fetch public holidays for the new year and propagate them to
-    every organization's Holiday table.
-
-    Runs on January 1st at 00:00 IST.
-    """
     from app.modules.holiday_sync.service import run_annual_sync
     from app.shared.database import AsyncSessionLocal
 
@@ -49,16 +38,21 @@ async def _annual_holiday_sync_job() -> None:
             logger.exception("Annual holiday sync job failed for year %d", year)
 
 
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
+async def _warranty_tracker_scan_job() -> None:
+    from app.modules.assets.service import run_warranty_tracker_scan
+    from app.shared.database import AsyncSessionLocal
+
+    logger.info("Warranty tracker scan job triggered")
+
+    async with AsyncSessionLocal() as db:
+        try:
+            summary = await run_warranty_tracker_scan(db)
+            logger.info("Warranty tracker scan completed: %s", summary)
+        except Exception:
+            logger.exception("Warranty tracker scan job failed")
 
 
 def register_jobs() -> None:
-    """
-    Register all scheduled jobs on the module-level scheduler.
-    Called once during application startup.
-    """
     scheduler.add_job(
         _annual_holiday_sync_job,
         trigger=CronTrigger(
@@ -72,6 +66,21 @@ def register_jobs() -> None:
         id="annual_holiday_sync",
         name="Annual Public Holiday Sync (Jan 1st)",
         replace_existing=True,
-        misfire_grace_time=3600,  # allow up to 1 hour late if server was down
+        misfire_grace_time=3600,
     )
     logger.info("Registered job: annual_holiday_sync (Jan 1 00:00 IST)")
+
+    scheduler.add_job(
+        _warranty_tracker_scan_job,
+        trigger=CronTrigger(
+            hour=9,
+            minute=0,
+            second=0,
+            timezone="Asia/Kolkata",
+        ),
+        id="warranty_tracker_scan",
+        name="Warranty Tracker Scan (Daily 09:00 IST)",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    logger.info("Registered job: warranty_tracker_scan (Daily 09:00 IST)")

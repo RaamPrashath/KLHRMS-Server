@@ -320,6 +320,17 @@ class JobRequisitionDecisionRequest(BaseModel):
         return value
 
 
+class JobLookupOptionRead(BaseModel):
+    id: str
+    label: str
+    email: str | None = None
+
+
+class JobFormMetaRead(BaseModel):
+    members: list[JobLookupOptionRead]
+    departments: list[JobLookupOptionRead]
+
+
 class JobRequisitionApprovalRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

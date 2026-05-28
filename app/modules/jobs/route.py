@@ -12,6 +12,7 @@ from app.modules.jobs.controller import (
     handle_create_default_pipeline,
     handle_create_pipeline_stage,
     handle_create_requisition,
+    handle_get_job_form_meta,
     handle_get_import_options,
     handle_get_public_posting,
     handle_get_requisition,
@@ -32,6 +33,7 @@ from app.modules.jobs.schema import (
     CreatePipelineStageRequest,
     ImportableJobPostingRead,
     ImportPipelineRequest,
+    JobFormMetaRead,
     JobRequisitionAiAnalysisRead,
     JobRequisitionCreateRequest,
     JobRequisitionDecisionRequest,
@@ -95,12 +97,33 @@ def require_requisition_pipeline_edit(
     return ctx
 
 
+def require_job_form_meta_access(
+    ctx: MemberContext = Depends(get_member_context),
+) -> MemberContext:
+    create_scope = get_member_permission_scope(ctx.member, "jobs", "create")
+    view_scope = get_member_permission_scope(ctx.member, "jobs", "view")
+    approve_scope = get_member_permission_scope(ctx.member, "jobs", "approve")
+    best = _pick_best_scope(create_scope, view_scope, approve_scope)
+    if best is None or _SCOPE_RANK.get(best, 0) == 0:
+        raise HTTPException(status_code=403, detail="you dont have permission")
+    ctx.scope = best  # type: ignore[attr-defined]
+    return ctx
+
+
 @router.get("/requisitions", response_model=list[JobRequisitionListItemRead])
 async def list_requisitions(
     ctx: Annotated[MemberContext, Depends(require_requisition_view_or_approve)],
     db: AsyncSession = Depends(get_db),
 ) -> list[JobRequisitionListItemRead]:
     return await handle_list_requisitions(ctx, db)
+
+
+@router.get("/meta", response_model=JobFormMetaRead)
+async def get_job_form_meta(
+    ctx: Annotated[MemberContext, Depends(require_job_form_meta_access)],
+    db: AsyncSession = Depends(get_db),
+) -> JobFormMetaRead:
+    return await handle_get_job_form_meta(ctx, db)
 
 
 @router.get("/requisitions/{requisition_id}", response_model=JobRequisitionDetailRead)

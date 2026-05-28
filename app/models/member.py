@@ -93,6 +93,20 @@ class Member(Base):
         back_populates="createdBy",
     )
 
+    createdEvaluationWorkspaces = relationship(
+        "StageEvaluationWorkspace",
+        foreign_keys="StageEvaluationWorkspace.createdByMemberId",
+        back_populates="createdBy",
+    )
+    generatedPurchaseOrders = relationship(
+        "AssetPurchaseOrder",
+        foreign_keys="[AssetPurchaseOrder.generatedByMemberId]",
+    )
+    receivedPurchaseOrders = relationship(
+        "AssetPurchaseOrder",
+        foreign_keys="[AssetPurchaseOrder.recipientMemberId]",
+    )
+
     __table_args__ = (
         UniqueConstraint("organizationId", "userId", name="member_organizationId_userId_key"),
         ForeignKeyConstraint(["organizationId", "roleId"], ["role.organizationId", "role.id"]),
