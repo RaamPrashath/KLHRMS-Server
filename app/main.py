@@ -21,6 +21,7 @@ from app.modules.hiring_teams.route import router as hiring_teams_router
 from app.modules.holiday_sync.route import router as holiday_sync_router
 from app.modules.jobs.route import router as jobs_router
 from app.modules.leave.route import router as leave_router
+from app.modules.procurement.route import router as procurement_router
 from app.modules.projects.route import router as projects_router
 from app.modules.role.route import router as role_router
 from app.modules.weekly_plan.router import router as weekly_plan_router
@@ -72,6 +73,7 @@ app.include_router(leave_router)
 app.include_router(projects_router)
 app.include_router(access_control_router)
 app.include_router(assets_router)
+app.include_router(procurement_router)
 app.include_router(departments_router)
 app.include_router(holiday_sync_router)
 app.include_router(weekly_plan_router, prefix=settings.api_v1_prefix)

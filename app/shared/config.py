@@ -126,6 +126,21 @@ class Settings(BaseSettings):
         alias="RESEND_FROM_EMAIL",
     )
 
+    supabase_url: str = Field(
+        default=os.getenv("SUPABASE_URL", ""),
+        alias="SUPABASE_URL",
+    )
+
+    supabase_service_role_key: str = Field(
+        default=os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
+        alias="SUPABASE_SERVICE_ROLE_KEY",
+    )
+
+    procurement_po_bucket: str = Field(
+        default=os.getenv("SUPABASE_PROCUREMENT_PO_BUCKET", "procurement-purchase-orders"),
+        alias="SUPABASE_PROCUREMENT_PO_BUCKET",
+    )
+
     mode: str = Field(
         default=os.getenv("MODE", "development"),
         alias="MODE",
