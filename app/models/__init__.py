@@ -27,6 +27,7 @@ from app.models.organization import Organization
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.project_task import ProjectTask
+from app.models.procurement_purchase_order_template import ProcurementPurchaseOrderTemplate
 from app.models.recruitment import (
     ApplicationStageHistory,
     Candidate,
