@@ -27,6 +27,7 @@ dependencies = [
   "olefile>=0.47",
   "python-multipart>=0.0.29",
   "playwright>=1.60.0",
+  "bcrypt>=4.0.0",
 ]
 
 [project.optional-dependencies]

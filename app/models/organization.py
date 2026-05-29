@@ -114,6 +114,11 @@ class Organization(Base):
         back_populates="organization",
     )
 
+    onboardingRecords = relationship(
+        "OnboardingRecord",
+        back_populates="organization",
+    )
+
     __table_args__ = (
         UniqueConstraint("slug", name="organization_slug_key"),
     )

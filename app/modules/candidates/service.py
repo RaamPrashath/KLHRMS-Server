@@ -111,6 +111,7 @@ def _single_stage_type_error(stage_type: StageType) -> str | None:
         StageType.OFFER: "This job already has an offer stage.",
         StageType.HIRED: "This job already has an accepted stage.",
         StageType.REJECTED: "This job already has a rejected stage.",
+        StageType.ONBOARDING: "This job already has an onboard stage.",
     }.get(stage_type)
 
 
@@ -843,8 +844,8 @@ async def _apply_stage_config(
     )
     stage.stageType = next_stage_type
     stage.meetingEnabled = next_stage_type == StageType.INTERVIEW
-    stage.offerLetterEnabled = next_stage_type == StageType.OFFER
-    stage.isFinal = next_stage_type in {StageType.HIRED, StageType.REJECTED}
+    stage.offerLetterEnabled = next_stage_type in {StageType.OFFER, StageType.ONBOARDING}
+    stage.isFinal = next_stage_type in {StageType.HIRED, StageType.REJECTED, StageType.ONBOARDING}
 
     if body.evaluationEnabled is not None:
         stage.evaluationEnabled = body.evaluationEnabled

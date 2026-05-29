@@ -115,6 +115,89 @@ class ResendEmailService:
         )
         await self._send_email(to_email, subject, html, text)
 
+    async def send_onboarding_document_request(
+        self,
+        *,
+        to_email: str,
+        candidate_name: str,
+        job_title: str,
+        organization_name: str,
+        submission_url: str,
+    ) -> None:
+        subject = f"Document Submission Required for {job_title} at {organization_name}"
+        safe_name = escape(candidate_name)
+        safe_job = escape(job_title)
+        safe_org = escape(organization_name)
+        safe_url = escape(submission_url, quote=True)
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {safe_name},</p>
+          <p style="margin:0 0 16px;">Congratulations on your selection for <strong>{safe_job}</strong> at <strong>{safe_org}</strong>!</p>
+          <p style="margin:0 0 20px;">To complete your onboarding, please submit your Aadhar and PAN card documents using the link below.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{safe_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Submit Documents</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If the button does not work, open this link:<br /><a href="{safe_url}" style="color:#00874a;">{safe_url}</a></p>
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {candidate_name},\n\n"
+            f"Congratulations on your selection for {job_title} at {organization_name}!\n"
+            f"To complete your onboarding, please submit your Aadhar and PAN card documents.\n\n"
+            f"Submit Documents: {submission_url}\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
+    async def send_onboarding_credentials(
+        self,
+        *,
+        to_email: str,
+        candidate_name: str,
+        login_email: str,
+        password: str,
+        login_url: str,
+    ) -> None:
+        subject = "Your HRMS Account Credentials"
+        safe_name = escape(candidate_name)
+        safe_login_email = escape(login_email)
+        safe_password = escape(password)
+        safe_login_url = escape(login_url, quote=True)
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {safe_name},</p>
+          <p style="margin:0 0 16px;">Your HRMS account has been created. You can log in using the credentials below:</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Email</td><td style="padding:2px 0;font-size:14px;font-weight:600;">{safe_login_email}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Password</td><td style="padding:2px 0;font-size:14px;font-weight:600;">{safe_password}</td></tr>
+          </table>
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{safe_login_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Log in to HRMS</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">Please change your password after logging in for security purposes.</p>
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {candidate_name},\n\n"
+            f"Your HRMS account has been created.\n"
+            f"Email: {login_email}\n"
+            f"Password: {password}\n\n"
+            f"Log in: {login_url}\n\n"
+            f"Please change your password after logging in.\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
     async def send_offer_letter(
         self,
         *,

@@ -146,6 +146,11 @@ class Settings(BaseSettings):
         alias="SUPABASE_OFFER_BUCKET",
     )
 
+    supabase_onboarding_bucket: str = Field(
+        default=os.getenv("SUPABASE_ONBOARDING_BUCKET", "onboarding-documents"),
+        alias="SUPABASE_ONBOARDING_BUCKET",
+    )
+
     mode: str = Field(
         default=os.getenv("MODE", "development"),
         alias="MODE",

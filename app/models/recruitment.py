@@ -104,6 +104,7 @@ class StageType(str, enum.Enum):
     OFFER = "OFFER"
     HIRED = "HIRED"
     REJECTED = "REJECTED"
+    ONBOARDING = "ONBOARDING"
 
 
 class InterviewType(str, enum.Enum):
@@ -155,6 +156,12 @@ class OfferDispatchBatchStatus(str, enum.Enum):
     COMPLETED = "COMPLETED"
     PARTIAL_FAILED = "PARTIAL_FAILED"
     FAILED = "FAILED"
+
+
+class OnboardingStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    DOCUMENTS_SUBMITTED = "DOCUMENTS_SUBMITTED"
+    CREDENTIALS_SENT = "CREDENTIALS_SENT"
 
 # =========================================================
 # JOB REQUISITION
@@ -1243,6 +1250,12 @@ class CandidateApplication(Base):
         back_populates="application",
         cascade="all, delete-orphan",
         order_by="OfferLetter.createdAt.desc()",
+    )
+
+    onboardingRecords = relationship(
+        "OnboardingRecord",
+        back_populates="application",
+        cascade="all, delete-orphan",
     )
 
     resumeAnalysis = relationship(
@@ -2515,6 +2528,98 @@ class OfferLetter(Base):
         Index("ix_offer_letter_org_template", "organizationId", "templateId"),
         Index("ix_offer_letter_org_stage", "organizationId", "stageId"),
         Index("ix_offer_letter_org_status", "organizationId", "status"),
+    )
+
+
+# =========================================================
+# ONBOARDING RECORD
+# =========================================================
+
+
+class OnboardingRecord(Base):
+    __tablename__ = "onboarding_record"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    applicationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("candidate_application.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    candidateToken: Mapped[str] = mapped_column(
+        String,
+        unique=True,
+        nullable=False,
+    )
+
+    status: Mapped[OnboardingStatus] = mapped_column(
+        Enum(OnboardingStatus),
+        nullable=False,
+        default=OnboardingStatus.PENDING,
+        index=True,
+    )
+
+    aadharUrl: Mapped[str | None] = mapped_column(Text)
+    aadharBucket: Mapped[str | None] = mapped_column(String(120))
+    aadharStoragePath: Mapped[str | None] = mapped_column(Text)
+
+    panUrl: Mapped[str | None] = mapped_column(Text)
+    panBucket: Mapped[str | None] = mapped_column(String(120))
+    panStoragePath: Mapped[str | None] = mapped_column(Text)
+
+    assignedRoleId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("role.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    assignedEmail: Mapped[str | None] = mapped_column(String(320))
+
+    tokenSentAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    submittedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    credentialsSentAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    credentialsEmailError: Mapped[str | None] = mapped_column(Text)
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # RELATIONSHIPS
+
+    organization = relationship(
+        "Organization",
+        back_populates="onboardingRecords",
+    )
+
+    application = relationship(
+        "CandidateApplication",
+        back_populates="onboardingRecords",
+    )
+
+    __table_args__ = (
+        Index("ix_onboarding_org_application", "organizationId", "applicationId"),
+        Index("ix_onboarding_org_status", "organizationId", "status"),
+        Index("ix_onboarding_token", "candidateToken"),
     )
 
 

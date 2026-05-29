@@ -25,6 +25,8 @@ from app.modules.leave.route import router as leave_router
 from app.modules.offers.public_route import router as public_offers_router
 from app.modules.offers.route import router as offers_router
 from app.modules.projects.route import router as projects_router
+from app.modules.onboarding.public_route import router as public_onboarding_router
+from app.modules.onboarding.route import router as onboarding_router
 from app.modules.role.route import router as role_router
 from app.modules.weekly_plan.router import router as weekly_plan_router
 from app.shared.config import get_settings
@@ -70,6 +72,8 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 
+app.include_router(onboarding_router)
+app.include_router(public_onboarding_router)
 app.include_router(role_router)
 app.include_router(attendance_router)
 app.include_router(candidates_router)
