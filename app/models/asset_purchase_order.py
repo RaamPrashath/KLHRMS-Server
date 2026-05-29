@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, generate_uuid
@@ -34,6 +34,8 @@ class AssetPurchaseOrder(Base):
     generatedAt: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    templateVersion: Mapped[str] = mapped_column(String(64), nullable=False, server_default="v1")
+    templateData: Mapped[dict] = mapped_column(JSON, nullable=False)
     sentAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     emailSubject: Mapped[str | None] = mapped_column(String(255), nullable=True)
     emailError: Mapped[str | None] = mapped_column(Text, nullable=True)

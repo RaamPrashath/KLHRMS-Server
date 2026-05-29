@@ -1,16 +1,34 @@
 from __future__ import annotations
 
+import base64
+import html
 import io
+import os
+import re
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
+import httpx
 from fastapi import HTTPException
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.pdfbase.pdfmetrics import stringWidth
-from reportlab.pdfgen import canvas
+from reportlab.lib.enums import TA_RIGHT
+from reportlab.lib.pagesizes import A4, LETTER
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import (
+    HRFlowable,
+    Image as PlatypusImage,
+    ListFlowable,
+    ListItem,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
@@ -27,8 +45,9 @@ from app.models.asset_unit import AssetUnit
 from app.models.department import Department
 from app.models.member import Member
 from app.models.organization import Organization
+from app.models.procurement_purchase_order_template import ProcurementPurchaseOrderTemplate
 from app.models.role import Role
-from app.modules.assets.service import _members_with_asset_admin_scope
+from app.modules.assets.service import _derive_asset_status, _members_with_asset_admin_scope
 from app.modules.procurement.schema import (
     AssetPurchaseRequisitionCreateRequest,
     AssetPurchaseRequisitionListResponse,
@@ -40,13 +59,27 @@ from app.modules.procurement.schema import (
     ProcurementDecisionRequest,
     ProcurementDepartmentOption,
     ProcurementMetaResponse,
-    ProcurementPurchaseOrderCreateRequest,
+    ProcurementOrganizationDraftRead,
+    ProcurementPdfPreviewResponse,
+    ProcurementPurchaseOrderDraftPayload,
+    ProcurementPurchaseOrderDraftResponse,
+    ProcurementPurchaseOrderGenerateRequest,
+    ProcurementPurchaseOrderIssueResponse,
+    ProcurementPurchaseOrderDownloadResponse,
+    ProcurementPurchaseOrderLineItemPayload,
+    ProcurementPurchaseOrderListItemRead,
+    ProcurementPurchaseOrderListResponse,
     ProcurementPurchaseOrderRead,
+    ProcurementPurchaseOrderTemplateRead,
+    ProcurementPurchaseOrderTemplatePayload,
+    ProcurementPurchaseOrderTemplateUpdateRequest,
+    ProcurementPurchaseOrderPreviewRequest,
     ProcurementReplacementTicketOption,
     ProcurementSnapshotRead,
 )
 from app.integrations.storage.supabase_storage import (
     SupabaseStorageError,
+    create_private_file_signed_url,
     upload_private_file,
 )
 from app.shared.deps.organization_member import MemberContext
@@ -57,6 +90,11 @@ from app.shared.notifications.email import (
 )
 from app.shared.config import get_settings
 from app.shared.utils.permissions import get_permission_scope
+
+try:
+    import cairosvg
+except ImportError:  # pragma: no cover - depends on environment sync
+    cairosvg = None
 
 
 def _to_float(value: Decimal | float | int | None) -> float | None:
@@ -185,6 +223,26 @@ async def _get_org(db: AsyncSession, organization_id: str) -> Organization | Non
     return result.scalar_one_or_none()
 
 
+async def _load_purchase_order(
+    db: AsyncSession,
+    organization_id: str,
+    purchase_order_id: str,
+) -> AssetPurchaseOrder | None:
+    result = await db.execute(
+        select(AssetPurchaseOrder)
+        .options(
+            joinedload(AssetPurchaseOrder.recipient).joinedload(Member.user),
+            joinedload(AssetPurchaseOrder.generatedBy).joinedload(Member.user),
+            joinedload(AssetPurchaseOrder.requisition),
+        )
+        .where(
+            AssetPurchaseOrder.organizationId == organization_id,
+            AssetPurchaseOrder.id == purchase_order_id,
+        )
+    )
+    return result.unique().scalar_one_or_none()
+
+
 async def _next_request_number(db: AsyncSession, organization_id: str) -> int:
     result = await db.execute(
         select(func.max(AssetPurchaseRequisition.requestNumber)).where(
@@ -263,6 +321,8 @@ def _serialize_requisition(
             generatedByMemberId=entry.generatedByMemberId,
             generatedByName=_member_display_name(entry.generatedBy),
             generatedAt=entry.generatedAt,
+            templateVersion=entry.templateVersion,
+            templateData=entry.templateData or {},
             sentAt=entry.sentAt,
             emailSubject=entry.emailSubject,
             emailError=entry.emailError,
@@ -340,6 +400,42 @@ async def _log_activity(
     await db.flush()
 
 
+async def _cancel_linked_replacement_ticket_after_approval(
+    db: AsyncSession,
+    requisition: AssetPurchaseRequisition,
+) -> str | None:
+    if requisition.requestType != "REPLACEMENT" or not requisition.maintenanceTicketId:
+        return None
+
+    result = await db.execute(
+        select(AssetMaintenanceLog)
+        .options(joinedload(AssetMaintenanceLog.asset).joinedload(Asset.units))
+        .where(
+            AssetMaintenanceLog.organizationId == requisition.organizationId,
+            AssetMaintenanceLog.id == requisition.maintenanceTicketId,
+        )
+    )
+    ticket = result.unique().scalar_one_or_none()
+    if ticket is None or ticket.status in {"CANCELLED", "COMPLETED"}:
+        return None
+
+    ticket.status = "CANCELLED"
+
+    asset = ticket.asset
+    if asset is None:
+        return ticket.ticketId
+
+    if ticket.assetUnitId:
+        unit = next((item for item in (asset.units or []) if item.id == ticket.assetUnitId), None)
+        if unit is not None:
+            unit.status = "DAMAGED"
+        asset.status = _derive_asset_status(asset.units or [])
+    else:
+        asset.status = "DAMAGED"
+
+    return ticket.ticketId
+
+
 async def _next_purchase_order_number(db: AsyncSession, organization_id: str) -> int:
     result = await db.execute(
         select(func.count(AssetPurchaseOrder.id)).where(AssetPurchaseOrder.organizationId == organization_id)
@@ -352,205 +448,745 @@ def _purchase_order_number(sequence: int) -> str:
     return f"PO-{datetime.now(UTC).year}-{sequence:05d}"
 
 
-def _wrap_pdf_text(
-    pdf: canvas.Canvas,
-    text: str,
-    *,
-    font_name: str,
-    font_size: int,
-    max_width: float,
-) -> list[str]:
-    words = text.split()
-    if not words:
-        return [""]
-
-    lines: list[str] = []
-    current = words[0]
-    for word in words[1:]:
-        candidate = f"{current} {word}"
-        if stringWidth(candidate, font_name, font_size) <= max_width:
-            current = candidate
-            continue
-        lines.append(current)
-        current = word
-    lines.append(current)
-    return lines
+def _requisition_label(requisition: AssetPurchaseRequisition) -> str:
+    return f"APR-{requisition.requestNumber:05d}" if requisition.requestNumber else requisition.id
 
 
-def _draw_pdf_label_value(
-    pdf: canvas.Canvas,
-    *,
-    x: float,
-    y: float,
-    label: str,
-    value: str,
-    width: float,
-) -> float:
-    pdf.setFillColor(colors.HexColor("#6E6E73"))
-    pdf.setFont("Helvetica", 9)
-    pdf.drawString(x, y, label)
+def _is_procurement_email_configured() -> bool:
+    settings = get_settings()
+    return bool(settings.resend_api_key.strip() and settings.resend_from_email.strip())
 
-    lines = _wrap_pdf_text(
-        pdf,
-        value,
-        font_name="Helvetica-Bold",
-        font_size=11,
-        max_width=width,
+
+def _round_money(value: float) -> float:
+    return round(value, 2)
+
+
+def _default_purchase_order_template(org: Organization) -> ProcurementPurchaseOrderTemplatePayload:
+    return ProcurementPurchaseOrderTemplatePayload(
+        name="Default Purchase Order",
+        pageSize="A4",
+        locale="en-IN",
+        language="en",
+        headerTitle="Purchase Order",
+        headerSubtitle="Finance-approved procurement document",
+        headerRichText=(
+            "<p>Prepared for approved procurement requisitions with tenant-branded details, "
+            "vendor information, and operational delivery instructions.</p>"
+        ),
+        footerRichText="<p>This purchase order was generated within KL HRMS.</p>",
+        company={
+            "displayName": org.name,
+            "name": org.name,
+            "logoUrl": org.logo,
+            "address": None,
+            "contactEmail": None,
+            "contactPhone": None,
+            "taxId": None,
+        },
+        signatory={"name": None, "title": "Authorized Signatory", "signatureImageUrl": None},
+        defaultPaymentTermsHtml="<p>Net 30 days from invoice date unless otherwise agreed in writing.</p>",
+        defaultNotesHtml="<p>Please reference the purchase order number on all invoices and shipping documents.</p>",
+        defaultTermsHtml=(
+            "<ul>"
+            "<li>Deliver only against the items and quantities listed on this purchase order.</li>"
+            "<li>Notify the finance team promptly if pricing, lead time, or availability changes.</li>"
+            "</ul>"
+        ),
     )
-    cursor = y - 14
-    pdf.setFillColor(colors.black)
-    pdf.setFont("Helvetica-Bold", 11)
-    for line in lines:
-        pdf.drawString(x, cursor, line)
-        cursor -= 14
-    return cursor
 
 
-def _render_purchase_order_pdf(
+def _coerce_template_payload(
+    value: ProcurementPurchaseOrderTemplatePayload | dict[str, Any],
+) -> ProcurementPurchaseOrderTemplatePayload:
+    if isinstance(value, ProcurementPurchaseOrderTemplatePayload):
+        return value
+    return ProcurementPurchaseOrderTemplatePayload(**value)
+
+
+def _legacy_notes_to_html(
+    justification: str | None,
+    specification_notes: str | None,
+    additional_notes: str | None,
+) -> tuple[str | None, str | None]:
+    note_parts = [part.strip() for part in [justification, specification_notes, additional_notes] if part and part.strip()]
+    if not note_parts:
+        return None, None
+    notes_html = "".join(f"<p>{html.escape(part)}</p>" for part in note_parts[:2])
+    terms_html = f"<p>{html.escape(note_parts[2])}</p>" if len(note_parts) > 2 else None
+    return notes_html or None, terms_html
+
+
+def _legacy_payload_to_snapshot(value: dict[str, Any]) -> tuple[ProcurementPurchaseOrderTemplatePayload, ProcurementPurchaseOrderDraftPayload]:
+    legacy = value
+    company = legacy.get("company") or {}
+    vendor = legacy.get("vendor") or {}
+    document = legacy.get("document") or {}
+    line_item = legacy.get("lineItem") or {}
+    notes = legacy.get("notes") or {}
+    signatory = legacy.get("signatory") or {}
+    notes_html, terms_html = _legacy_notes_to_html(
+        notes.get("justification"),
+        notes.get("specificationNotes"),
+        notes.get("additionalNotes"),
+    )
+    template = ProcurementPurchaseOrderTemplatePayload(
+        name="Default Purchase Order",
+        pageSize="A4",
+        locale="en-IN",
+        language="en",
+        headerTitle="Purchase Order",
+        headerSubtitle=None,
+        headerRichText=None,
+        footerRichText=None,
+        company={
+            "displayName": company.get("displayName") or company.get("name") or "Organization",
+            "name": company.get("name") or company.get("displayName") or "Organization",
+            "logoUrl": company.get("logoUrl"),
+            "address": company.get("address"),
+            "contactEmail": company.get("contactEmail"),
+            "contactPhone": company.get("contactPhone"),
+            "taxId": company.get("taxId"),
+        },
+        signatory={
+            "name": signatory.get("name"),
+            "title": signatory.get("title"),
+            "signatureImageUrl": signatory.get("signatureImageUrl"),
+        },
+        defaultPaymentTermsHtml=(
+            f"<p>{html.escape(document.get('paymentTerms'))}</p>" if document.get("paymentTerms") else None
+        ),
+        defaultNotesHtml=notes_html,
+        defaultTermsHtml=terms_html,
+    )
+    draft = ProcurementPurchaseOrderDraftPayload(
+        document={
+            "vendor": {
+                "name": vendor.get("name") or "Vendor name",
+                "contactPerson": vendor.get("contactPerson"),
+                "email": vendor.get("email"),
+                "phone": vendor.get("phone"),
+                "address": vendor.get("address"),
+                "taxId": vendor.get("taxId"),
+            },
+            "purchaseOrderDate": document.get("purchaseOrderDate") or date.today(),
+            "deliveryDate": document.get("deliveryDate"),
+            "billingAddress": company.get("address"),
+            "shippingAddress": document.get("deliveryAddress"),
+            "shippingMethod": document.get("shippingMethod"),
+            "currency": document.get("currency") or "INR",
+            "subject": notes.get("subject") or "Purchase order",
+            "paymentTermsHtml": (
+                f"<p>{html.escape(document.get('paymentTerms'))}</p>" if document.get("paymentTerms") else None
+            ),
+            "notesHtml": notes_html,
+            "termsHtml": terms_html,
+            "footerNotesHtml": None,
+        },
+        lineItems=[
+            {
+                "description": line_item.get("description") or "Asset purchase",
+                "sku": line_item.get("sku"),
+                "quantity": line_item.get("quantity") or 1,
+                "unitPrice": _round_money(float(line_item.get("unitPrice") or 0)),
+                "taxPercent": _round_money(float(line_item.get("taxPercent") or 0)),
+                "total": _round_money(float(line_item.get("total") or 0)),
+            }
+        ],
+    )
+    return template, draft
+
+
+def _coerce_document_payload(
+    value: ProcurementPurchaseOrderDraftPayload | dict[str, Any],
+) -> ProcurementPurchaseOrderDraftPayload:
+    if isinstance(value, ProcurementPurchaseOrderDraftPayload):
+        return value
+    return ProcurementPurchaseOrderDraftPayload(**value)
+
+
+def _coerce_purchase_order_snapshot(
+    value: dict[str, Any] | None,
+) -> tuple[ProcurementPurchaseOrderTemplatePayload | None, ProcurementPurchaseOrderDraftPayload | None]:
+    if not value:
+        return None, None
+    if "template" in value and "document" in value:
+        return _coerce_template_payload(value["template"]), _coerce_document_payload(value["document"])
+    if "company" in value and "vendor" in value and "document" in value:
+        return _legacy_payload_to_snapshot(value)
+    return None, None
+
+
+def _build_default_purchase_order_document(
+    requisition: AssetPurchaseRequisition,
+    template: ProcurementPurchaseOrderTemplatePayload,
+) -> ProcurementPurchaseOrderDraftPayload:
+    quantity = requisition.estimatedQuantity or 1
+    unit_price = _to_float(requisition.estimatedUnitCost) or 0
+    estimated_total = _to_float(requisition.estimatedTotalCost)
+    total = estimated_total if estimated_total is not None else (quantity * unit_price)
+    note_parts = [requisition.justification]
+    if requisition.specificationNotes:
+        note_parts.append(requisition.specificationNotes)
+
+    return ProcurementPurchaseOrderDraftPayload(
+        document={
+            "vendor": {
+                "name": requisition.vendorPreference or "Vendor name",
+                "contactPerson": None,
+                "email": None,
+                "phone": None,
+                "address": None,
+                "taxId": None,
+            },
+            "purchaseOrderDate": date.today(),
+            "deliveryDate": requisition.requiredByDate,
+            "billingAddress": template.company.address,
+            "shippingAddress": template.company.address,
+            "shippingMethod": None,
+            "currency": "INR",
+            "subject": f"Purchase order for {requisition.assetName or requisition.requestType.title()}",
+            "paymentTermsHtml": template.defaultPaymentTermsHtml,
+            "notesHtml": "".join(f"<p>{html.escape(part)}</p>" for part in note_parts if part and part.strip()) or template.defaultNotesHtml,
+            "termsHtml": template.defaultTermsHtml,
+            "footerNotesHtml": None,
+        },
+        lineItems=[
+            {
+                "description": requisition.assetName or "Asset purchase",
+                "sku": requisition.assetCode,
+                "quantity": quantity,
+                "unitPrice": _round_money(unit_price),
+                "taxPercent": 0,
+                "total": _round_money(total),
+            }
+        ],
+    )
+
+
+async def _get_procurement_purchase_order_template_record(
+    db: AsyncSession,
+    organization_id: str,
+) -> ProcurementPurchaseOrderTemplate | None:
+    result = await db.execute(
+        select(ProcurementPurchaseOrderTemplate).where(
+            ProcurementPurchaseOrderTemplate.organizationId == organization_id,
+            ProcurementPurchaseOrderTemplate.status == "ACTIVE",
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+def _serialize_template_record(
+    record: ProcurementPurchaseOrderTemplate | None,
+    template: ProcurementPurchaseOrderTemplatePayload,
+) -> ProcurementPurchaseOrderTemplateRead:
+    return ProcurementPurchaseOrderTemplateRead(
+        id=record.id if record is not None else None,
+        name=template.name,
+        status=record.status if record is not None else "ACTIVE",
+        templateVersion=f"v{record.templateVersion}" if record is not None else "v1",
+        updatedAt=record.updatedAt if record is not None else None,
+        template=template,
+    )
+
+
+_PDF_FONT_CACHE: dict[str, str] | None = None
+
+
+def _resolve_pdf_font_family() -> dict[str, str]:
+    global _PDF_FONT_CACHE
+    if _PDF_FONT_CACHE is not None:
+        return _PDF_FONT_CACHE
+
+    font_pairs = [
+        ("KLPODefault", r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\arialbd.ttf"),
+        ("KLPODefault", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ]
+    for name, regular_path, bold_path in font_pairs:
+        if os.path.exists(regular_path) and os.path.exists(bold_path):
+            regular_name = f"{name}Regular"
+            bold_name = f"{name}Bold"
+            if regular_name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(regular_name, regular_path))
+            if bold_name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(bold_name, bold_path))
+            _PDF_FONT_CACHE = {"regular": regular_name, "bold": bold_name}
+            return _PDF_FONT_CACHE
+
+    _PDF_FONT_CACHE = {"regular": "Helvetica", "bold": "Helvetica-Bold"}
+    return _PDF_FONT_CACHE
+
+
+async def _load_remote_image_bytes(url: str | None) -> bytes | None:
+    if not url:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+        content = response.content
+        content_type = (response.headers.get("content-type") or "").lower()
+        normalized_url = url.lower()
+
+        # ReportLab/Pillow cannot consume SVG directly, so rasterize it first.
+        if (
+            "image/svg+xml" in content_type
+            or normalized_url.endswith(".svg")
+            or content.lstrip().startswith(b"<svg")
+            or (content.lstrip().startswith(b"<?xml") and b"<svg" in content[:512].lower())
+        ):
+            if cairosvg is None:
+                return None
+            return cairosvg.svg2png(bytestring=content)
+
+        return content
+    except Exception:
+        return None
+
+
+def _normalize_rich_text_html(value: str | None) -> str:
+    if not value:
+        return ""
+    markup = value.replace("&nbsp;", " ")
+    markup = re.sub(r"<\s*strong\b", "<b", markup, flags=re.I)
+    markup = re.sub(r"</\s*strong\s*>", "</b>", markup, flags=re.I)
+    markup = re.sub(r"<\s*em\b", "<i", markup, flags=re.I)
+    markup = re.sub(r"</\s*em\s*>", "</i>", markup, flags=re.I)
+    markup = re.sub(r"<br\s*/?>", "<br/>", markup, flags=re.I)
+    return markup
+
+
+def _inline_markup(value: str | None) -> str:
+    if not value:
+        return ""
+    markup = _normalize_rich_text_html(value)
+    markup = re.sub(r"</?(?!b\b|i\b|u\b|br\b)[^>]+>", "", markup, flags=re.I)
+    return markup.strip()
+
+
+def _plain_text(value: str | None) -> str:
+    cleaned = re.sub(r"<[^>]+>", " ", _normalize_rich_text_html(value or ""))
+    return " ".join(html.unescape(cleaned).split())
+
+
+def _html_to_flowables(
+    value: str | None,
+    *,
+    body_style: ParagraphStyle,
+    heading_style: ParagraphStyle,
+    subheading_style: ParagraphStyle,
+    list_style: ParagraphStyle,
+) -> list[Any]:
+    if not value or not value.strip():
+        return []
+
+    normalized = _normalize_rich_text_html(value)
+    block_pattern = re.compile(r"<(h2|h3|p|ul|ol)(?:\s[^>]*)?>(.*?)</\1>", re.I | re.S)
+    blocks = block_pattern.findall(normalized)
+    if not blocks:
+        return [Paragraph(_inline_markup(normalized) or html.escape(_plain_text(normalized)), body_style)]
+
+    flowables: list[Any] = []
+    for tag, content in blocks:
+        lowered = tag.lower()
+        if lowered == "h2":
+            flowables.append(Paragraph(_inline_markup(content), heading_style))
+            continue
+        if lowered == "h3":
+            flowables.append(Paragraph(_inline_markup(content), subheading_style))
+            continue
+        if lowered == "p":
+            flowables.append(Paragraph(_inline_markup(content), body_style))
+            continue
+
+        items = [
+            ListItem(Paragraph(_inline_markup(match), list_style), leftIndent=0)
+            for match in re.findall(r"<li(?:\s[^>]*)?>(.*?)</li>", content, flags=re.I | re.S)
+        ]
+        if items:
+            flowables.append(
+                ListFlowable(
+                    items,
+                    bulletType="bullet" if lowered == "ul" else "1",
+                    leftIndent=14,
+                )
+            )
+    return flowables
+
+
+def _calculate_purchase_order_totals(
+    line_items: list[ProcurementPurchaseOrderLineItemPayload],
+) -> tuple[float, float, float]:
+    subtotal = _round_money(sum(item.quantity * item.unitPrice for item in line_items))
+    tax_total = _round_money(sum((item.quantity * item.unitPrice) * (item.taxPercent / 100) for item in line_items))
+    grand_total = _round_money(sum(item.total for item in line_items))
+    return subtotal, tax_total, grand_total
+
+
+def _purchase_order_snapshot_payload(
+    template: ProcurementPurchaseOrderTemplatePayload,
+    document: ProcurementPurchaseOrderDraftPayload,
+) -> dict[str, Any]:
+    return {
+        "template": template.model_dump(mode="json"),
+        "document": document.model_dump(mode="json"),
+    }
+
+
+async def _render_purchase_order_pdf(
     requisition: AssetPurchaseRequisition,
     *,
     po_number: str,
-    organization_name: str,
-    recipient_name: str,
+    template: ProcurementPurchaseOrderTemplatePayload,
+    document: ProcurementPurchaseOrderDraftPayload,
     generated_by_name: str,
 ) -> bytes:
+    fonts = _resolve_pdf_font_family()
     buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-    margin = 18 * mm
-    content_width = width - (margin * 2)
-    y = height - margin
-
-    pdf.setTitle(f"{po_number}.pdf")
-    pdf.setStrokeColor(colors.HexColor("#E5E5EA"))
-    pdf.setFillColor(colors.black)
-    pdf.setFont("Helvetica-Bold", 24)
-    pdf.drawString(margin, y, "Purchase Order")
-    pdf.setFont("Helvetica", 10)
-    pdf.setFillColor(colors.HexColor("#6E6E73"))
-    pdf.drawRightString(width - margin, y, organization_name)
-    y -= 16
-    pdf.drawRightString(width - margin, y, "KL HRMS Procurement")
-    y -= 22
-    pdf.line(margin, y, width - margin, y)
-    y -= 22
-
-    left_x = margin
-    right_x = margin + (content_width / 2) + 10
-    column_width = (content_width / 2) - 10
-
-    left_bottom = _draw_pdf_label_value(
-        pdf, x=left_x, y=y, label="PO Number", value=po_number, width=column_width
+    page_size = A4 if template.pageSize == "A4" else LETTER
+    margin = 0.7 * inch
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=page_size,
+        leftMargin=margin,
+        rightMargin=margin,
+        topMargin=0.85 * inch,
+        bottomMargin=0.85 * inch,
+        title=f"{po_number}.pdf",
     )
-    right_bottom = _draw_pdf_label_value(
-        pdf,
-        x=right_x,
-        y=y,
-        label="Requisition",
-        value=f"APR-{requisition.requestNumber:05d}" if requisition.requestNumber else requisition.id,
-        width=column_width,
+    width, _ = page_size
+    logo_bytes = await _load_remote_image_bytes(template.company.logoUrl)
+    signature_bytes = await _load_remote_image_bytes(template.signatory.signatureImageUrl)
+    styles = getSampleStyleSheet()
+    body_style = ParagraphStyle(
+        "ProcurementBody",
+        parent=styles["BodyText"],
+        fontName=fonts["regular"],
+        fontSize=9.5,
+        leading=13,
+        textColor=colors.HexColor("#1D1D1F"),
+        spaceAfter=6,
     )
-    y = min(left_bottom, right_bottom) - 10
-
-    left_bottom = _draw_pdf_label_value(
-        pdf,
-        x=left_x,
-        y=y,
-        label="Recipient",
-        value=recipient_name,
-        width=column_width,
+    heading_style = ParagraphStyle(
+        "ProcurementHeading",
+        parent=styles["Heading2"],
+        fontName=fonts["bold"],
+        fontSize=12.5,
+        leading=16,
+        textColor=colors.HexColor("#1D1D1F"),
+        spaceBefore=6,
+        spaceAfter=6,
     )
-    right_bottom = _draw_pdf_label_value(
-        pdf,
-        x=right_x,
-        y=y,
-        label="Prepared By",
-        value=generated_by_name,
-        width=column_width,
+    subheading_style = ParagraphStyle(
+        "ProcurementSubheading",
+        parent=styles["Heading3"],
+        fontName=fonts["bold"],
+        fontSize=10.5,
+        leading=14,
+        textColor=colors.HexColor("#1D1D1F"),
+        spaceBefore=4,
+        spaceAfter=4,
     )
-    y = min(left_bottom, right_bottom) - 10
-
-    left_bottom = _draw_pdf_label_value(
-        pdf,
-        x=left_x,
-        y=y,
-        label="Asset / Item",
-        value=requisition.assetName or requisition.requestType.title(),
-        width=column_width,
+    label_style = ParagraphStyle(
+        "ProcurementLabel",
+        parent=styles["BodyText"],
+        fontName=fonts["bold"],
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor("#6E6E73"),
+        spaceAfter=2,
     )
-    right_bottom = _draw_pdf_label_value(
-        pdf,
-        x=right_x,
-        y=y,
-        label="Preferred Vendor",
-        value=requisition.vendorPreference or "Not specified",
-        width=column_width,
+    meta_value_style = ParagraphStyle(
+        "ProcurementMetaValue",
+        parent=styles["BodyText"],
+        fontName=fonts["regular"],
+        fontSize=9.5,
+        leading=12,
+        textColor=colors.HexColor("#1D1D1F"),
     )
-    y = min(left_bottom, right_bottom) - 16
+    right_body_style = ParagraphStyle("ProcurementBodyRight", parent=body_style, alignment=TA_RIGHT)
+    right_label_style = ParagraphStyle("ProcurementLabelRight", parent=label_style, alignment=TA_RIGHT)
+    title_style = ParagraphStyle(
+        "ProcurementTitle",
+        parent=styles["Title"],
+        fontName=fonts["bold"],
+        fontSize=21,
+        leading=24,
+        textColor=colors.HexColor("#1D1D1F"),
+        alignment=TA_RIGHT,
+    )
 
-    pdf.roundRect(margin, y - 90, content_width, 90, 12, stroke=1, fill=0)
-    table_y = y - 18
-    pdf.setFillColor(colors.HexColor("#6E6E73"))
-    pdf.setFont("Helvetica", 9)
-    headers = ["Description", "Qty", "Unit Cost", "Total Cost"]
-    header_positions = [margin + 12, margin + 260, margin + 340, margin + 430]
-    for header, x_pos in zip(headers, header_positions, strict=False):
-        pdf.drawString(x_pos, table_y, header)
+    currency = (document.document.currency or "INR").upper()
+    subtotal, tax_total, grand_total = _calculate_purchase_order_totals(document.lineItems)
 
-    pdf.setFillColor(colors.black)
-    pdf.setFont("Helvetica-Bold", 11)
-    row_y = table_y - 20
-    pdf.drawString(margin + 12, row_y, (requisition.assetName or "Asset Purchase")[:38])
-    pdf.drawString(margin + 260, row_y, str(requisition.estimatedQuantity or 1))
-    pdf.drawString(margin + 340, row_y, f"INR {(_to_float(requisition.estimatedUnitCost) or 0):,.2f}")
-    pdf.drawString(margin + 430, row_y, f"INR {(_to_float(requisition.estimatedTotalCost) or 0):,.2f}")
-    y -= 112
+    header_left: list[Any] = []
+    if template.visibility.showLogo and logo_bytes:
+        header_left.append(
+            PlatypusImage(io.BytesIO(logo_bytes), width=1.35 * inch, height=0.65 * inch, kind="proportional")
+        )
+        header_left.append(Spacer(1, 6))
+    header_left.append(Paragraph(html.escape(template.company.displayName), subheading_style))
+    for line in [
+        template.company.address,
+        template.company.contactEmail,
+        template.company.contactPhone,
+        template.company.taxId,
+    ]:
+        if line:
+            header_left.append(Paragraph(html.escape(line), body_style))
 
-    pdf.setFillColor(colors.HexColor("#6E6E73"))
-    pdf.setFont("Helvetica", 9)
-    pdf.drawString(margin, y, "Justification")
-    y -= 14
-    pdf.setFillColor(colors.black)
-    pdf.setFont("Helvetica", 10)
-    for line in _wrap_pdf_text(
-        pdf,
-        requisition.justification,
-        font_name="Helvetica",
-        font_size=10,
-        max_width=content_width,
-    ):
-        pdf.drawString(margin, y, line)
-        y -= 13
+    header_right = [
+        Paragraph(html.escape(template.headerTitle), title_style),
+        Paragraph(html.escape(template.headerSubtitle or po_number), right_body_style),
+        Spacer(1, 4),
+        Paragraph(f"<b>PO Number</b><br/>{html.escape(po_number)}", right_body_style),
+        Paragraph(f"<b>PO Date</b><br/>{document.document.purchaseOrderDate.isoformat()}", right_body_style),
+    ]
+    if document.document.deliveryDate:
+        header_right.append(
+            Paragraph(f"<b>Delivery</b><br/>{document.document.deliveryDate.isoformat()}", right_body_style)
+        )
 
-    if requisition.specificationNotes:
-        y -= 8
+    story: list[Any] = [
+        Table(
+            [[header_left, header_right]],
+            colWidths=[doc.width * 0.55, doc.width * 0.45],
+            style=TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            ),
+        ),
+        Spacer(1, 10),
+    ]
+    story.extend(
+        _html_to_flowables(
+            template.headerRichText,
+            body_style=body_style,
+            heading_style=heading_style,
+            subheading_style=subheading_style,
+            list_style=body_style,
+        )
+    )
+    if template.headerRichText:
+        story.append(Spacer(1, 6))
+    story.append(HRFlowable(color=colors.HexColor("#E5E5EA"), width="100%"))
+    story.append(Spacer(1, 10))
+
+    requisition_label = _requisition_label(requisition)
+    vendor_lines = [document.document.vendor.name]
+    if template.visibility.showVendorContact:
+        vendor_lines.extend(
+            [
+                document.document.vendor.contactPerson,
+                document.document.vendor.email,
+                document.document.vendor.phone,
+                document.document.vendor.taxId,
+            ]
+        )
+    if template.visibility.showVendorAddress:
+        vendor_lines.append(document.document.vendor.address)
+    vendor_value = "<br/>".join(html.escape(line) for line in vendor_lines if line)
+    meta_rows = [
+        [Paragraph("Vendor", label_style), Paragraph("Prepared By", right_label_style)],
+        [Paragraph(vendor_value or "Vendor name", meta_value_style), Paragraph(html.escape(generated_by_name), right_body_style)],
+        [Paragraph("Requisition", label_style), Paragraph("Shipping Method", right_label_style)],
+        [Paragraph(html.escape(requisition_label), meta_value_style), Paragraph(html.escape(document.document.shippingMethod or "Not specified"), right_body_style)],
+    ]
+    if template.visibility.showBillingAddress:
+        meta_rows.extend(
+            [
+                [Paragraph("Billing Address", label_style), Paragraph("", right_label_style)],
+                [Paragraph(html.escape(document.document.billingAddress or "Not specified"), meta_value_style), Paragraph("", right_body_style)],
+            ]
+        )
+    if template.visibility.showShippingAddress:
+        meta_rows.extend(
+            [
+                [Paragraph("Shipping Address", label_style), Paragraph("", right_label_style)],
+                [Paragraph(html.escape(document.document.shippingAddress or "Not specified"), meta_value_style), Paragraph("", right_body_style)],
+            ]
+        )
+    story.append(
+        Table(
+            meta_rows,
+            colWidths=[doc.width * 0.5, doc.width * 0.5],
+            style=TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
+            ),
+        )
+    )
+    story.append(Spacer(1, 12))
+
+    item_rows: list[list[Any]] = [
+        [
+            Paragraph("<b>Description</b>", label_style),
+            Paragraph("<b>SKU</b>", label_style),
+            Paragraph("<b>Qty</b>", label_style),
+            Paragraph("<b>Unit Price</b>", label_style),
+            Paragraph("<b>Tax</b>", label_style),
+            Paragraph("<b>Total</b>", label_style),
+        ]
+    ]
+    for item in document.lineItems:
+        item_rows.append(
+            [
+                Paragraph(html.escape(item.description), body_style),
+                Paragraph(html.escape(item.sku or "-"), body_style),
+                Paragraph(str(item.quantity), body_style),
+                Paragraph(f"{currency} {item.unitPrice:,.2f}", body_style),
+                Paragraph(f"{item.taxPercent:.2f}%", body_style),
+                Paragraph(f"{currency} {item.total:,.2f}", body_style),
+            ]
+        )
+    story.append(
+        Table(
+            item_rows,
+            repeatRows=1,
+            colWidths=[
+                doc.width * 0.33,
+                doc.width * 0.12,
+                doc.width * 0.08,
+                doc.width * 0.16,
+                doc.width * 0.11,
+                doc.width * 0.20,
+            ],
+            style=TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F5F5F7")),
+                    ("GRID", (0, 0), (-1, -1), 0.6, colors.HexColor("#E5E5EA")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 8),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ]
+            ),
+        )
+    )
+    story.append(Spacer(1, 10))
+
+    summary_rows = [
+        [Paragraph("Subtotal", right_label_style), Paragraph(f"{currency} {subtotal:,.2f}", right_body_style)],
+        [Paragraph("Tax", right_label_style), Paragraph(f"{currency} {tax_total:,.2f}", right_body_style)],
+        [Paragraph("Grand Total", right_label_style), Paragraph(f"<b>{currency} {grand_total:,.2f}</b>", right_body_style)],
+    ]
+    story.append(
+        Table(
+            [[ "", Table(summary_rows, colWidths=[doc.width * 0.18, doc.width * 0.18], style=TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ])) ]],
+            colWidths=[doc.width * 0.64, doc.width * 0.36],
+            style=TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            ),
+        )
+    )
+    story.append(Spacer(1, 12))
+
+    if template.visibility.showSubject and document.document.subject:
+        story.append(Paragraph("Subject", heading_style))
+        story.append(Paragraph(html.escape(document.document.subject), body_style))
+    if template.visibility.showNotes:
+        note_flowables = _html_to_flowables(
+            document.document.notesHtml,
+            body_style=body_style,
+            heading_style=heading_style,
+            subheading_style=subheading_style,
+            list_style=body_style,
+        )
+        if note_flowables:
+            story.append(Paragraph("Notes", heading_style))
+            story.extend(note_flowables)
+    if template.visibility.showPaymentTerms and document.document.paymentTermsHtml:
+        story.append(Paragraph("Payment Terms", heading_style))
+        story.extend(
+            _html_to_flowables(
+                document.document.paymentTermsHtml,
+                body_style=body_style,
+                heading_style=heading_style,
+                subheading_style=subheading_style,
+                list_style=body_style,
+            )
+        )
+    if template.visibility.showTerms:
+        term_flowables = _html_to_flowables(
+            document.document.termsHtml,
+            body_style=body_style,
+            heading_style=heading_style,
+            subheading_style=subheading_style,
+            list_style=body_style,
+        )
+        if term_flowables:
+            story.append(Paragraph("Terms", heading_style))
+            story.extend(term_flowables)
+
+    story.append(Spacer(1, 16))
+    story.append(HRFlowable(color=colors.HexColor("#E5E5EA"), width="100%"))
+    story.append(Spacer(1, 12))
+    story.append(
+        Paragraph(
+            html.escape(
+                f"Approved by Finance on {(requisition.approvedAt.date().isoformat() if requisition.approvedAt else date.today().isoformat())}"
+            ),
+            body_style,
+        )
+    )
+    if template.visibility.showSignature:
+        if signature_bytes:
+            story.append(
+                PlatypusImage(io.BytesIO(signature_bytes), width=1.6 * inch, height=0.75 * inch, kind="proportional")
+            )
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(html.escape(template.signatory.name or generated_by_name), subheading_style))
+        story.append(
+            Paragraph(
+                html.escape(template.signatory.title or "Authorized Signatory"),
+                body_style,
+            )
+        )
+
+    footer_lines = [
+        _plain_text(template.footerRichText),
+        _plain_text(document.document.footerNotesHtml),
+    ]
+
+    def draw_footer(pdf, _doc) -> None:
+        if not template.visibility.showFooter:
+            return
+        pdf.saveState()
+        pdf.setStrokeColor(colors.HexColor("#E5E5EA"))
+        pdf.line(_doc.leftMargin, 0.62 * inch, width - _doc.rightMargin, 0.62 * inch)
+        pdf.setFont(fonts["regular"], 8)
         pdf.setFillColor(colors.HexColor("#6E6E73"))
-        pdf.setFont("Helvetica", 9)
-        pdf.drawString(margin, y, "Specifications / Notes")
-        y -= 14
-        pdf.setFillColor(colors.black)
-        pdf.setFont("Helvetica", 10)
-        for line in _wrap_pdf_text(
-            pdf,
-            requisition.specificationNotes,
-            font_name="Helvetica",
-            font_size=10,
-            max_width=content_width,
-        ):
-            pdf.drawString(margin, y, line)
-            y -= 13
+        text_y = 0.45 * inch
+        for footer_line in [line for line in footer_lines if line]:
+            pdf.drawString(_doc.leftMargin, text_y, footer_line[:120])
+            text_y -= 10
+        pdf.drawRightString(width - _doc.rightMargin, 0.45 * inch, f"Page {_doc.page}")
+        pdf.restoreState()
 
-    y -= 16
-    pdf.setStrokeColor(colors.HexColor("#E5E5EA"))
-    pdf.line(margin, y, width - margin, y)
-    y -= 18
-    pdf.setFillColor(colors.HexColor("#6E6E73"))
-    pdf.setFont("Helvetica", 9)
-    pdf.drawString(margin, y, f"Approved by Finance on {requisition.approvedAt.date().isoformat() if requisition.approvedAt else date.today().isoformat()}")
-    if requisition.requiredByDate:
-        pdf.drawRightString(width - margin, y, f"Required by {requisition.requiredByDate.isoformat()}")
-
-    pdf.save()
+    doc.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
     return buffer.getvalue()
 
 
@@ -759,6 +1395,74 @@ async def get_procurement_admin_recipients(
     )
 
 
+async def list_procurement_purchase_orders(
+    db: AsyncSession,
+    ctx: MemberContext,
+) -> ProcurementPurchaseOrderListResponse:
+    if ctx.member.role is None or get_permission_scope(ctx.member.role.permissions, "procurement", "approve") != "organization":
+        raise HTTPException(status_code=403, detail="Only procurement approvers can access generated purchase orders")
+
+    result = await db.execute(
+        select(AssetPurchaseOrder)
+        .options(
+            joinedload(AssetPurchaseOrder.recipient).joinedload(Member.user),
+            joinedload(AssetPurchaseOrder.generatedBy).joinedload(Member.user),
+            joinedload(AssetPurchaseOrder.requisition),
+        )
+        .where(AssetPurchaseOrder.organizationId == ctx.organization.id)
+        .order_by(AssetPurchaseOrder.generatedAt.desc(), AssetPurchaseOrder.createdAt.desc())
+    )
+    purchase_orders = result.unique().scalars().all()
+    return ProcurementPurchaseOrderListResponse(
+        items=[
+            ProcurementPurchaseOrderListItemRead(
+                id=entry.id,
+                poNumber=entry.poNumber,
+                status=entry.status,
+                fileName=entry.fileName,
+                generatedAt=entry.generatedAt,
+                generatedByName=_member_display_name(entry.generatedBy),
+                recipientName=_member_display_name(entry.recipient),
+                recipientEmail=entry.recipientEmail,
+                requestLabel=_requisition_label(entry.requisition) if entry.requisition is not None else None,
+                assetName=entry.requisition.assetName if entry.requisition is not None else None,
+                storageBucket=entry.storageBucket,
+                storagePath=entry.storagePath,
+            )
+            for entry in purchase_orders
+        ]
+    )
+
+
+async def get_procurement_purchase_order_download(
+    db: AsyncSession,
+    ctx: MemberContext,
+    purchase_order_id: str,
+) -> ProcurementPurchaseOrderDownloadResponse:
+    if ctx.member.role is None or get_permission_scope(ctx.member.role.permissions, "procurement", "approve") != "organization":
+        raise HTTPException(status_code=403, detail="Only procurement approvers can download generated purchase orders")
+
+    purchase_order = await _load_purchase_order(db, ctx.organization.id, purchase_order_id)
+    if purchase_order is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+
+    expires_in_seconds = 300
+    try:
+        download_url = await create_private_file_signed_url(
+            bucket=purchase_order.storageBucket,
+            path=purchase_order.storagePath,
+            expires_in=expires_in_seconds,
+        )
+    except SupabaseStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return ProcurementPurchaseOrderDownloadResponse(
+        fileName=purchase_order.fileName,
+        downloadUrl=download_url,
+        expiresInSeconds=expires_in_seconds,
+    )
+
+
 async def list_procurement_requisitions(
     db: AsyncSession,
     ctx: MemberContext,
@@ -866,45 +1570,167 @@ async def create_procurement_requisition(
     return _serialize_requisition(saved, ctx.member)
 
 
+async def get_procurement_purchase_order_template(
+    db: AsyncSession,
+    ctx: MemberContext,
+) -> ProcurementPurchaseOrderTemplateRead:
+    org = await _get_org(db, ctx.organization.id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    record = await _get_procurement_purchase_order_template_record(db, ctx.organization.id)
+    template = _coerce_template_payload(record.templateData) if record is not None else _default_purchase_order_template(org)
+    return _serialize_template_record(record, template)
+
+
+async def upsert_procurement_purchase_order_template(
+    db: AsyncSession,
+    ctx: MemberContext,
+    payload: ProcurementPurchaseOrderTemplateUpdateRequest,
+) -> ProcurementPurchaseOrderTemplateRead:
+    record = await _get_procurement_purchase_order_template_record(db, ctx.organization.id)
+    if record is None:
+        record = ProcurementPurchaseOrderTemplate(
+            organizationId=ctx.organization.id,
+            name=payload.template.name.strip(),
+            status="ACTIVE",
+            templateVersion=1,
+            templateData=payload.template.model_dump(mode="json"),
+            lastEditedByMemberId=ctx.member.id,
+        )
+    else:
+        record.name = payload.template.name.strip()
+        record.templateVersion += 1
+        record.templateData = payload.template.model_dump(mode="json")
+        record.lastEditedByMemberId = ctx.member.id
+        record.status = "ACTIVE"
+
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    template = _coerce_template_payload(record.templateData)
+    return _serialize_template_record(record, template)
+
+
+async def get_procurement_purchase_order_draft(
+    db: AsyncSession,
+    ctx: MemberContext,
+    requisition_id: str,
+) -> ProcurementPurchaseOrderDraftResponse:
+    requisition = await _load_requisition(db, ctx.organization.id, requisition_id)
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Procurement requisition not found")
+    if not _can_issue_purchase_order(requisition, ctx.member):
+        raise HTTPException(status_code=403, detail="Only finance approvers can access purchase order composer")
+
+    org = await _get_org(db, ctx.organization.id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    template_record = await _get_procurement_purchase_order_template_record(db, ctx.organization.id)
+    template = _coerce_template_payload(template_record.templateData) if template_record is not None else _default_purchase_order_template(org)
+    latest_po = (requisition.purchaseOrders or [None])[0]
+    saved_template, saved_document = _coerce_purchase_order_snapshot(latest_po.templateData if latest_po is not None else None)
+    if saved_template is not None:
+        template = saved_template
+    document = saved_document or _build_default_purchase_order_document(requisition, template)
+
+    recipients = await _get_procurement_admin_recipients(db, ctx.organization.id)
+    return ProcurementPurchaseOrderDraftResponse(
+        requisition=_serialize_requisition(requisition, ctx.member),
+        organization=ProcurementOrganizationDraftRead(name=org.name, logoUrl=org.logo),
+        adminRecipients=[
+            ProcurementAdminRecipientOption(
+                memberId=member.id,
+                name=_member_display_name(member) or member.user.email,
+                email=member.user.email.lower(),
+            )
+            for member in recipients
+            if member.user is not None and member.user.email
+        ],
+        emailConfigured=_is_procurement_email_configured(),
+        templateVersion=f"v{template_record.templateVersion}" if template_record is not None else "v1",
+        templateRecordId=template_record.id if template_record is not None else None,
+        template=template,
+        document=document,
+    )
+
+
+async def preview_procurement_purchase_order(
+    db: AsyncSession,
+    ctx: MemberContext,
+    requisition_id: str,
+    payload: ProcurementPurchaseOrderPreviewRequest,
+) -> ProcurementPdfPreviewResponse:
+    requisition = await _load_requisition(db, ctx.organization.id, requisition_id)
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Procurement requisition not found")
+    if not _can_issue_purchase_order(requisition, ctx.member):
+        raise HTTPException(status_code=403, detail="Only finance approvers can preview purchase orders")
+
+    pdf_bytes = await _render_purchase_order_pdf(
+        requisition,
+        po_number="PREVIEW",
+        template=payload.template,
+        document=payload.document,
+        generated_by_name=_member_display_name(ctx.member) or "Finance",
+    )
+    return ProcurementPdfPreviewResponse(
+        fileName=f"{_requisition_label(requisition).lower()}-preview.pdf",
+        base64=base64.b64encode(pdf_bytes).decode("utf-8"),
+    )
+
+
 async def issue_procurement_purchase_order(
     db: AsyncSession,
     ctx: MemberContext,
     requisition_id: str,
-    payload: ProcurementPurchaseOrderCreateRequest,
-) -> AssetPurchaseRequisitionRead:
+    payload: ProcurementPurchaseOrderGenerateRequest,
+) -> ProcurementPurchaseOrderIssueResponse:
     requisition = await _load_requisition(db, ctx.organization.id, requisition_id)
     if requisition is None:
         raise HTTPException(status_code=404, detail="Procurement requisition not found")
     if not _can_issue_purchase_order(requisition, ctx.member):
         raise HTTPException(status_code=403, detail="Only finance approvers can issue purchase orders")
 
-    recipients = await _get_procurement_admin_recipients(db, ctx.organization.id)
-    recipient = next(
-        (
-            member
-            for member in recipients
-            if member.id == payload.recipientMemberId
-            and member.user is not None
-            and member.user.email.lower() == payload.recipientEmail
-        ),
-        None,
-    )
-    if recipient is None or recipient.user is None:
-        raise HTTPException(status_code=400, detail="Selected recipient is not a valid admin contact")
-
     org = await _get_org(db, ctx.organization.id)
     if org is None:
         raise HTTPException(status_code=404, detail="Organization not found")
 
+    recipient: Member | None = None
+    if payload.recipientMemberId and payload.recipientEmail:
+        recipients = await _get_procurement_admin_recipients(db, ctx.organization.id)
+        recipient = next(
+            (
+                member
+                for member in recipients
+                if member.id == payload.recipientMemberId
+                and member.user is not None
+                and member.user.email.lower() == payload.recipientEmail
+            ),
+            None,
+        )
+        if recipient is None or recipient.user is None:
+            raise HTTPException(status_code=400, detail="Selected recipient is not a valid admin contact")
+
+    if payload.sendToAdmin:
+        if not _is_procurement_email_configured():
+            raise HTTPException(
+                status_code=400,
+                detail="Purchase order email is not configured on the server",
+            )
+        if recipient is None or recipient.user is None:
+            raise HTTPException(status_code=400, detail="Selected recipient is not a valid admin contact")
+
     sequence = await _next_purchase_order_number(db, ctx.organization.id)
     po_number = _purchase_order_number(sequence)
-    recipient_name = _member_display_name(recipient) or recipient.user.email
     generated_by_name = _member_display_name(ctx.member) or "Finance"
-    pdf_bytes = _render_purchase_order_pdf(
+    template_record = await _get_procurement_purchase_order_template_record(db, ctx.organization.id)
+    pdf_bytes = await _render_purchase_order_pdf(
         requisition,
         po_number=po_number,
-        organization_name=org.name,
-        recipient_name=recipient_name,
+        template=payload.template,
+        document=payload.document,
         generated_by_name=generated_by_name,
     )
 
@@ -930,33 +1756,37 @@ async def issue_procurement_purchase_order(
         storageBucket=storage_bucket,
         storagePath=storage_path,
         fileName=file_name,
-        recipientMemberId=recipient.id,
-        recipientEmail=recipient.user.email.lower(),
+        recipientMemberId=recipient.id if recipient is not None else None,
+        recipientEmail=(recipient.user.email.lower() if recipient is not None and recipient.user is not None else ""),
         generatedByMemberId=ctx.member.id,
+        templateVersion=f"v{template_record.templateVersion}" if template_record is not None else "v1",
+        templateData=_purchase_order_snapshot_payload(payload.template, payload.document),
         emailSubject=f"Purchase Order {po_number}",
     )
     db.add(purchase_order)
     await db.flush()
 
     email_error: str | None = None
-    try:
-        await send_procurement_purchase_order(
-            to_email=recipient.user.email,
-            recipient_name=recipient_name,
-            org_slug=org.slug,
-            po_number=po_number,
-            requisition_label=f"APR-{requisition.requestNumber:05d}" if requisition.requestNumber else requisition.id,
-            asset_name=requisition.assetName or requisition.requestType.title(),
-            generated_by_name=generated_by_name,
-            pdf_bytes=pdf_bytes,
-            file_name=file_name,
-        )
-        purchase_order.status = "SENT"
-        purchase_order.sentAt = datetime.now(UTC)
-    except Exception as exc:
-        email_error = "Failed to send purchase order email"
-        purchase_order.status = "FAILED"
-        purchase_order.emailError = str(exc)[:1000]
+    if payload.sendToAdmin and recipient is not None and recipient.user is not None:
+        recipient_name = _member_display_name(recipient) or recipient.user.email
+        try:
+            await send_procurement_purchase_order(
+                to_email=recipient.user.email,
+                recipient_name=recipient_name,
+                org_slug=org.slug,
+                po_number=po_number,
+                requisition_label=f"APR-{requisition.requestNumber:05d}" if requisition.requestNumber else requisition.id,
+                asset_name=requisition.assetName or requisition.requestType.title(),
+                generated_by_name=generated_by_name,
+                pdf_bytes=pdf_bytes,
+                file_name=file_name,
+            )
+            purchase_order.status = "SENT"
+            purchase_order.sentAt = datetime.now(UTC)
+        except Exception as exc:
+            email_error = "Failed to send purchase order email"
+            purchase_order.status = "FAILED"
+            purchase_order.emailError = str(exc)[:1000]
 
     db.add(purchase_order)
     await _log_activity(
@@ -965,7 +1795,11 @@ async def issue_procurement_purchase_order(
         requisition.id,
         ctx.member.id,
         "PO_SENT" if purchase_order.status == "SENT" else "PO_GENERATED",
-        f"{po_number} -> {recipient.user.email}" + (f" | {payload.message}" if payload.message else ""),
+        (
+            f"{po_number}"
+            + (f" -> {recipient.user.email}" if recipient is not None and recipient.user is not None else "")
+            + (f" | {payload.message}" if payload.message else "")
+        ),
     )
     await db.commit()
 
@@ -974,7 +1808,16 @@ async def issue_procurement_purchase_order(
         raise HTTPException(status_code=404, detail="Procurement requisition not found")
     if email_error:
         raise HTTPException(status_code=502, detail=email_error)
-    return _serialize_requisition(saved, ctx.member)
+    return ProcurementPurchaseOrderIssueResponse(
+        requisition=_serialize_requisition(saved, ctx.member),
+        purchaseOrderId=purchase_order.id,
+        poNumber=po_number,
+        status=purchase_order.status,
+        pdf=ProcurementPdfPreviewResponse(
+            fileName=file_name,
+            base64=base64.b64encode(pdf_bytes).decode("utf-8"),
+        ),
+    )
 
 
 async def submit_procurement_requisition(
@@ -1027,6 +1870,7 @@ async def approve_procurement_requisition(
     requisition.approvedAt = datetime.now(UTC)
     requisition.rejectedAt = None
     requisition.reviewerComment = (payload.comment or "").strip() or None
+    cancelled_ticket_id = await _cancel_linked_replacement_ticket_after_approval(db, requisition)
     db.add(requisition)
     await _log_activity(
         db,
@@ -1036,6 +1880,15 @@ async def approve_procurement_requisition(
         "APPROVED",
         requisition.reviewerComment,
     )
+    if cancelled_ticket_id is not None:
+        await _log_activity(
+            db,
+            ctx.organization.id,
+            requisition.id,
+            ctx.member.id,
+            "LINKED_TICKET_CANCELLED",
+            f"{cancelled_ticket_id} auto-cancelled after finance approval",
+        )
     await db.commit()
 
     saved = await _load_requisition(db, ctx.organization.id, requisition.id)

@@ -1,7 +1,7 @@
 """remove manual evaluation marks
 
 Revision ID: 4d5e6f7a8b9c
-Revises: 3c4d5e6f7a8b
+Revises: 333100a8dc1a
 Create Date: 2026-05-26 00:00:00.000000
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "4d5e6f7a8b9c"
-down_revision = "3c4d5e6f7a8b"
+down_revision = "333100a8dc1a"
 branch_labels = None
 depends_on = None
 
