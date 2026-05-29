@@ -26,6 +26,8 @@ alembic upgrade head
 uvicorn app.main:app --reload --port 8000
 ```
 
+Offer-letter PDFs are rendered with Playwright/Chromium. The Docker image installs Chromium with `uv run playwright install --with-deps chromium`. For non-Docker local runs, install the browser once with `uv run playwright install chromium` before generating PDFs.
+
 ## CI and Local Test Scripts
 
 ```bash

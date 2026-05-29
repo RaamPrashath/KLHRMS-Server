@@ -85,6 +85,11 @@ class Settings(BaseSettings):
         alias="BETTER_AUTH_URL",
     )
 
+    public_app_url: str = Field(
+        default=os.getenv("PUBLIC_APP_URL", os.getenv("BETTER_AUTH_URL", "http://localhost:3000")),
+        alias="PUBLIC_APP_URL",
+    )
+
     attendance_office_radius_meters: float = Field(
         default=200.0,
         alias="ATTENDANCE_OFFICE_RADIUS_METERS",
@@ -134,6 +139,16 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = Field(
         default=os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
         alias="SUPABASE_SERVICE_ROLE_KEY",
+    )
+
+    supabase_offer_bucket: str = Field(
+        default=os.getenv("SUPABASE_OFFER_BUCKET", "offer-letter"),
+        alias="SUPABASE_OFFER_BUCKET",
+    )
+
+    supabase_onboarding_bucket: str = Field(
+        default=os.getenv("SUPABASE_ONBOARDING_BUCKET", "onboarding-documents"),
+        alias="SUPABASE_ONBOARDING_BUCKET",
     )
 
     procurement_po_bucket: str = Field(

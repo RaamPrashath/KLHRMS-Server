@@ -2,7 +2,6 @@ from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, String, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime
 from app.models.base import Base, TimestampMixin, generate_uuid
 
 

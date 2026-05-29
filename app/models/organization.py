@@ -81,8 +81,33 @@ class Organization(Base):
         back_populates="organization",
     )
 
+    offerTemplates = relationship(
+        "OfferTemplate",
+        back_populates="organization",
+    )
+
+    offerTemplateCategories = relationship(
+        "OfferTemplateCategory",
+        back_populates="organization",
+    )
+
+    offerTemplateSections = relationship(
+        "OfferTemplateSection",
+        back_populates="organization",
+    )
+
+    offerDispatchBatches = relationship(
+        "OfferDispatchBatch",
+        back_populates="organization",
+    )
+
     hiringTeams = relationship(
         "HiringTeam",
+        back_populates="organization",
+    )
+
+    onboardingRecords = relationship(
+        "OnboardingRecord",
         back_populates="organization",
     )
 
