@@ -743,14 +743,30 @@ async def list_leave_balances(
                     )
                 )
 
-    # Sort: by member name then leave type name
+    # ── 5. Client-side search filter ──────────────────────────────────────────
+    if filters.search:
+        q = filters.search.lower()
+        rows = [
+            r for r in rows
+            if q in (r.member.user.name or '').lower()
+            or q in (r.member.user.email or '').lower()
+            or q in r.leave_type.name.lower()
+        ]
+
+    # ── 6. Sort: by member name then leave type name ─────────────────────────
     rows.sort(key=lambda r: (
         (r.member.user.name or r.member.user.email or r.memberId).lower()
         if r.member.user else r.memberId,
         r.leave_type.name.lower(),
     ))
 
-    return rows, len(rows)
+    total = len(rows)
+
+    # ── 7. Paginate ──────────────────────────────────────────────────────────
+    offset = (filters.page - 1) * filters.page_size
+    paged = rows[offset : offset + filters.page_size]
+
+    return paged, total
 
 
 async def upsert_leave_balance(
