@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.email.resend_service import ResendEmailService
@@ -88,6 +89,38 @@ ACTIVE_ASSIGNMENT_STATUSES = {"PENDING", "PENDING_ACCEPTANCE", "ACCEPTED", "SCHE
 
 def _is_protected_stage(stage: PipelineStage) -> bool:
     return stage.name.strip().lower() == "applied" and stage.order == 1
+
+
+def _single_stage_type_error(stage_type: StageType) -> str | None:
+    return {
+        StageType.OFFER: "This job already has an offer stage.",
+        StageType.HIRED: "This job already has an accepted stage.",
+        StageType.REJECTED: "This job already has a rejected stage.",
+        StageType.ONBOARDING: "This job already has an onboard stage.",
+    }.get(stage_type)
+
+
+async def _assert_single_stage_type(
+    db: AsyncSession,
+    organization_id: str,
+    job_posting_id: str,
+    stage_type: StageType,
+    *,
+    excluded_stage_id: str | None = None,
+) -> None:
+    message = _single_stage_type_error(stage_type)
+    if message is None:
+        return
+    query = select(PipelineStage.id).where(
+        PipelineStage.organizationId == organization_id,
+        PipelineStage.jobPostingId == job_posting_id,
+        PipelineStage.stageType == stage_type,
+    )
+    if excluded_stage_id is not None:
+        query = query.where(PipelineStage.id != excluded_stage_id)
+    result = await db.execute(query.limit(1))
+    if result.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail=message)
 
 
 async def _generate_stage_slug(
@@ -675,10 +708,17 @@ async def _apply_stage_config(
     next_stage_type = stage.stageType
     if getattr(body, "stageType", None) is not None:
         next_stage_type = StageType(str(body.stageType).strip().upper())
+    await _assert_single_stage_type(
+        db,
+        organization_id,
+        stage.jobPostingId,
+        next_stage_type,
+        excluded_stage_id=stage.id,
+    )
     stage.stageType = next_stage_type
     stage.meetingEnabled = next_stage_type == StageType.INTERVIEW
-    stage.offerLetterEnabled = next_stage_type == StageType.OFFER
-    stage.isFinal = next_stage_type in {StageType.HIRED, StageType.REJECTED}
+    stage.offerLetterEnabled = next_stage_type in {StageType.OFFER, StageType.ONBOARDING}
+    stage.isFinal = next_stage_type in {StageType.HIRED, StageType.REJECTED, StageType.ONBOARDING}
 
     if isinstance(body, PipelineStageUpdateRequest) and body.dueDateEnabled is False:
         stage.dueDate = None

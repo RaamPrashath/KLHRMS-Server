@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from base64 import b64encode
+from html import escape
+
 import httpx
 from fastapi import HTTPException
 
@@ -110,26 +113,160 @@ class ResendEmailService:
             f"---\n"
             f"Kovan Labs\n"
         )
-        from_email, recipient_list = self._resolve_delivery(to_email)
+        await self._send_email(to_email, subject, html, text)
 
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(
-                RESEND_EMAILS_URL,
-                headers={
-                    "Authorization": f"Bearer {self.settings.resend_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "from": from_email,
-                    "to": recipient_list,
-                    "subject": subject,
-                    "html": html,
-                    "text": text,
-                },
-            )
+    async def send_onboarding_document_request(
+        self,
+        *,
+        to_email: str,
+        candidate_name: str,
+        job_title: str,
+        organization_name: str,
+        submission_url: str,
+    ) -> None:
+        subject = f"Document Submission Required for {job_title} at {organization_name}"
+        safe_name = escape(candidate_name)
+        safe_job = escape(job_title)
+        safe_org = escape(organization_name)
+        safe_url = escape(submission_url, quote=True)
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {safe_name},</p>
+          <p style="margin:0 0 16px;">Congratulations on your selection for <strong>{safe_job}</strong> at <strong>{safe_org}</strong>!</p>
+          <p style="margin:0 0 20px;">To complete your onboarding, please submit your Aadhar and PAN card documents using the link below.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{safe_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Submit Documents</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If the button does not work, open this link:<br /><a href="{safe_url}" style="color:#00874a;">{safe_url}</a></p>
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {candidate_name},\n\n"
+            f"Congratulations on your selection for {job_title} at {organization_name}!\n"
+            f"To complete your onboarding, please submit your Aadhar and PAN card documents.\n\n"
+            f"Submit Documents: {submission_url}\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        )
+        await self._send_email(to_email, subject, html, text)
 
-        if response.status_code >= 400:
-            raise HTTPException(status_code=502, detail=self._error_message(response))
+    async def send_onboarding_credentials(
+        self,
+        *,
+        to_email: str,
+        candidate_name: str,
+        login_email: str,
+        password: str,
+        login_url: str,
+    ) -> None:
+        subject = "Your HRMS Account Credentials"
+        safe_name = escape(candidate_name)
+        safe_login_email = escape(login_email)
+        safe_password = escape(password)
+        safe_login_url = escape(login_url, quote=True)
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {safe_name},</p>
+          <p style="margin:0 0 16px;">Your HRMS account has been created. You can log in using the credentials below:</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Email</td><td style="padding:2px 0;font-size:14px;font-weight:600;">{safe_login_email}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Password</td><td style="padding:2px 0;font-size:14px;font-weight:600;">{safe_password}</td></tr>
+          </table>
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{safe_login_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Log in to HRMS</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">Please change your password after logging in for security purposes.</p>
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {candidate_name},\n\n"
+            f"Your HRMS account has been created.\n"
+            f"Email: {login_email}\n"
+            f"Password: {password}\n\n"
+            f"Log in: {login_url}\n\n"
+            f"Please change your password after logging in.\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
+    async def send_offer_letter(
+        self,
+        *,
+        to_email: str,
+        candidate_name: str,
+        job_title: str,
+        organization_name: str,
+        download_url: str | None,
+        accept_url: str,
+        reject_url: str,
+        expires_at_text: str,
+        attachment_pdf: bytes | None = None,
+        attachment_filename: str | None = None,
+    ) -> None:
+        subject = f"Offer Letter for {job_title} at {organization_name}"
+        safe_candidate_name = escape(candidate_name)
+        safe_job_title = escape(job_title)
+        safe_organization_name = escape(organization_name)
+        safe_expires_at_text = escape(expires_at_text)
+        safe_accept_url = escape(accept_url, quote=True)
+        safe_reject_url = escape(reject_url, quote=True)
+        download_html = ""
+        download_text = ""
+        if download_url:
+            safe_download_url = escape(download_url, quote=True)
+            download_html = f"""
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 18px;">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{safe_download_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Download offer letter</a>
+              </td>
+            </tr>
+          </table>
+            """
+            download_text = f"Download offer letter: {download_url}\n"
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {safe_candidate_name},</p>
+          <p style="margin:0 0 16px;">You have received an offer letter for <strong>{safe_job_title}</strong> at <strong>{safe_organization_name}</strong>.</p>
+          <p style="margin:0 0 20px;">Please review the offer letter and respond before <strong>{safe_expires_at_text}</strong>.</p>
+          {download_html}
+          <p style="margin:0 0 10px;">To respond directly, use one of these links:</p>
+          <p style="margin:0 0 6px;"><a href="{safe_accept_url}" style="color:#00874a;font-weight:600;">Accept offer</a></p>
+          <p style="margin:0 0 16px;"><a href="{safe_reject_url}" style="color:#b42318;font-weight:600;">Reject offer</a></p>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If a link does not work, copy and open it in your browser.</p>
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {candidate_name},\n\n"
+            f"You have received an offer letter for {job_title} at {organization_name}.\n"
+            f"Please respond before {expires_at_text}.\n\n"
+            f"{download_text}"
+            f"Accept offer: {accept_url}\n"
+            f"Reject offer: {reject_url}\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        )
+        attachments = None
+        if attachment_pdf:
+            attachments = [
+                {
+                    "filename": attachment_filename or "Offer Letter.pdf",
+                    "content": b64encode(attachment_pdf).decode("ascii"),
+                }
+            ]
+        if attachments:
+            await self._send_email(to_email, subject, html, text, attachments=attachments)
+        else:
+            await self._send_email(to_email, subject, html, text)
 
     async def send_stage_interview_assignment_to_interviewer(
         self,
@@ -235,26 +372,7 @@ class ResendEmailService:
             f"---\n"
             f"Kovan Labs\n"
         )
-        from_email, recipient_list = self._resolve_delivery(to_email)
-
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(
-                RESEND_EMAILS_URL,
-                headers={
-                    "Authorization": f"Bearer {self.settings.resend_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "from": from_email,
-                    "to": recipient_list,
-                    "subject": subject,
-                    "html": html,
-                    "text": text,
-                },
-            )
-
-        if response.status_code >= 400:
-            raise HTTPException(status_code=502, detail=self._error_message(response))
+        await self._send_email(to_email, subject, html, text)
 
     async def send_interview_meeting_ready(
         self,
@@ -288,26 +406,7 @@ class ResendEmailService:
             f"---\n"
             f"Kovan Labs\n"
         )
-        from_email, recipient_list = self._resolve_delivery(to_email)
-
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(
-                RESEND_EMAILS_URL,
-                headers={
-                    "Authorization": f"Bearer {self.settings.resend_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "from": from_email,
-                    "to": recipient_list,
-                    "subject": subject,
-                    "html": html,
-                    "text": text,
-                },
-            )
-
-        if response.status_code >= 400:
-            raise HTTPException(status_code=502, detail=self._error_message(response))
+        await self._send_email(to_email, subject, html, text)
 
     async def send_reassignment_notification_to_hr(
         self,
@@ -527,11 +626,29 @@ class ResendEmailService:
         )
         await self._send_email(to_email, subject, html, text)
 
-    async def _send_email(self, to_email: str, subject: str, html: str, text: str) -> None:
+    async def _send_email(
+        self,
+        to_email: str,
+        subject: str,
+        html: str,
+        text: str,
+        *,
+        attachments: list[dict[str, str]] | None = None,
+    ) -> None:
         if not self.settings.resend_api_key:
             raise HTTPException(status_code=400, detail="Resend API key is not configured")
 
         from_email, recipient_list = self._resolve_delivery(to_email)
+
+        payload: dict[str, object] = {
+            "from": from_email,
+            "to": recipient_list,
+            "subject": subject,
+            "html": html,
+            "text": text,
+        }
+        if attachments:
+            payload["attachments"] = attachments
 
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(
@@ -540,13 +657,7 @@ class ResendEmailService:
                     "Authorization": f"Bearer {self.settings.resend_api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "from": from_email,
-                    "to": recipient_list,
-                    "subject": subject,
-                    "html": html,
-                    "text": text,
-                },
+                json=payload,
             )
 
         if response.status_code >= 400:
