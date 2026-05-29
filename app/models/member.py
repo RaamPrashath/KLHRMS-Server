@@ -1,14 +1,16 @@
+from datetime import datetime
+
 from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     String,
     UniqueConstraint,
-    Index,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime
+
 from app.models.base import Base, generate_uuid
 
 
@@ -113,6 +115,14 @@ class Member(Base):
         "StageEvaluationWorkspace",
         foreign_keys="StageEvaluationWorkspace.createdByMemberId",
         back_populates="createdBy",
+    )
+    generatedPurchaseOrders = relationship(
+        "AssetPurchaseOrder",
+        foreign_keys="[AssetPurchaseOrder.generatedByMemberId]",
+    )
+    receivedPurchaseOrders = relationship(
+        "AssetPurchaseOrder",
+        foreign_keys="[AssetPurchaseOrder.recipientMemberId]",
     )
 
     __table_args__ = (

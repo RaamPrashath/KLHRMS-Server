@@ -1,6 +1,8 @@
+from datetime import datetime
+
 from sqlalchemy import DateTime, Float, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime
+
 from app.models.base import Base, generate_uuid
 
 
@@ -36,16 +38,6 @@ class Organization(Base):
 
     pipelineStages = relationship(
         "PipelineStage",
-        back_populates="organization",
-    )
-
-    stageEvaluationCategories = relationship(
-        "StageEvaluationCategory",
-        back_populates="organization",
-    )
-
-    stageEvaluationWorkspaces = relationship(
-        "StageEvaluationWorkspace",
         back_populates="organization",
     )
 

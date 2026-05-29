@@ -151,6 +151,11 @@ class Settings(BaseSettings):
         alias="SUPABASE_ONBOARDING_BUCKET",
     )
 
+    procurement_po_bucket: str = Field(
+        default=os.getenv("SUPABASE_PROCUREMENT_PO_BUCKET", "procurement-purchase-orders"),
+        alias="SUPABASE_PROCUREMENT_PO_BUCKET",
+    )
+
     mode: str = Field(
         default=os.getenv("MODE", "development"),
         alias="MODE",

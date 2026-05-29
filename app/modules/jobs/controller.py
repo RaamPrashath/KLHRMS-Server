@@ -9,6 +9,7 @@ from app.modules.jobs.schema import (
     CreatePipelineStageRequest,
     ImportableJobPostingRead,
     ImportPipelineRequest,
+    JobFormMetaRead,
     JobRequisitionAiAnalysisRead,
     JobRequisitionCreateRequest,
     JobRequisitionDecisionRequest,
@@ -34,6 +35,16 @@ async def handle_list_requisitions(
         organization_id=ctx.organization.id,
         actor_member_id=ctx.member.id,
         view_scope=ctx.scope,  # type: ignore[attr-defined]
+    )
+
+
+async def handle_get_job_form_meta(
+    ctx: MemberContext,
+    db: AsyncSession,
+) -> JobFormMetaRead:
+    return await service.get_job_form_meta(
+        db=db,
+        organization_id=ctx.organization.id,
     )
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Numeric, String, Text, func
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, generate_uuid
@@ -33,11 +33,17 @@ class AssetMaintenanceLog(Base):
     issueDescription: Mapped[str] = mapped_column(Text, nullable=False)
     serviceDate: Mapped[date] = mapped_column(Date, nullable=False)
     expectedCompletionDate: Mapped[date | None] = mapped_column(Date, nullable=True)
+    estimatedDowntimeHours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    operationalCriticalityTier: Mapped[str | None] = mapped_column(String(40), nullable=True)
     completedDate: Mapped[date | None] = mapped_column(Date, nullable=True)
     cost: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(40), nullable=False, server_default="OPEN")
     conditionBeforeMaintenance: Mapped[str | None] = mapped_column(String(40), nullable=True)
     conditionAfterMaintenance: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    replacementDecision: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    replacementAssetUnitId: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("asset_unit.id", ondelete="SET NULL"), nullable=True
+    )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     createdAt: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

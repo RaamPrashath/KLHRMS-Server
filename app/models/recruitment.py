@@ -852,32 +852,6 @@ class PipelineStage(Base):
         default=False,
     )
 
-    evaluationEnabled: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=False,
-    )
-
-    sheetEnabled: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=False,
-    )
-
-    evaluationType: Mapped[str | None] = mapped_column(String(32))
-
-    evaluationIncludeTotal: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=False,
-    )
-
-    evaluationIncludeAnalysis: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=False,
-    )
-
     dueDate: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
     completedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -926,7 +900,6 @@ class PipelineStage(Base):
         cascade="all, delete-orphan",
         order_by="StageEvaluationCategory.order",
     )
-
     organization = relationship(
         "Organization",
         back_populates="pipelineStages",
@@ -965,178 +938,6 @@ class PipelineStage(Base):
             "slug",
             name="uq_pipeline_stage_job_slug",
         ),
-    )
-
-
-# =========================================================
-# STAGE EVALUATION WORKSPACE
-# =========================================================
-
-class StageEvaluationWorkspace(Base):
-    __tablename__ = "stage_evaluation_workspace"
-
-    id: Mapped[str] = mapped_column(
-        String(36),
-        primary_key=True,
-        default=generate_uuid,
-    )
-
-    organizationId: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("organization.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    stageId: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("pipeline_stage.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    googleSpreadsheetId: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
-    )
-
-    googleSpreadsheetUrl: Mapped[str] = mapped_column(
-        Text,
-        nullable=False,
-    )
-
-    googleSheetId: Mapped[int | None] = mapped_column(Integer)
-
-    googleSheetTitle: Mapped[str] = mapped_column(
-        String(100),
-        nullable=False,
-    )
-
-    createdByMemberId: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("member.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-
-    createdAt: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-    )
-
-    updatedAt: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    organization = relationship(
-        "Organization",
-        back_populates="stageEvaluationWorkspaces",
-    )
-
-    stage = relationship(
-        "PipelineStage",
-        back_populates="evaluationWorkspace",
-    )
-
-    createdBy = relationship(
-        "Member",
-        foreign_keys=[createdByMemberId],
-        back_populates="createdEvaluationWorkspaces",
-    )
-
-    __table_args__ = (
-        UniqueConstraint(
-            "stageId",
-            name="uq_stage_evaluation_workspace_stage",
-        ),
-        UniqueConstraint(
-            "organizationId",
-            "stageId",
-            name="uq_stage_evaluation_workspace_org_stage",
-        ),
-        Index("ix_stage_evaluation_workspace_org_stage", "organizationId", "stageId"),
-    )
-
-
-# =========================================================
-# STAGE EVALUATION CATEGORY
-# =========================================================
-
-class StageEvaluationCategory(Base):
-    __tablename__ = "stage_evaluation_category"
-
-    id: Mapped[str] = mapped_column(
-        String(36),
-        primary_key=True,
-        default=generate_uuid,
-    )
-
-    organizationId: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("organization.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    stageId: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("pipeline_stage.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    name: Mapped[str] = mapped_column(
-        String(120),
-        nullable=False,
-    )
-
-    valueType: Mapped[str] = mapped_column(
-        String(32),
-        nullable=False,
-        default="NUMERIC",
-    )
-
-    maxScore: Mapped[int | None] = mapped_column(
-        Integer,
-        nullable=True,
-        default=None,
-    )
-
-    order: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-    )
-
-    createdAt: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-    )
-
-    updatedAt: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    organization = relationship(
-        "Organization",
-        back_populates="stageEvaluationCategories",
-    )
-
-    stage = relationship(
-        "PipelineStage",
-        back_populates="evaluationCategories",
-    )
-
-    __table_args__ = (
-        UniqueConstraint(
-            "stageId",
-            "order",
-            name="uq_stage_evaluation_category_order",
-        ),
-        Index("ix_stage_evaluation_category_org_stage", "organizationId", "stageId"),
     )
 
 
@@ -1186,13 +987,9 @@ class CandidateApplication(Base):
         default=ApplicationSource.DIRECT,
     )
 
-    score: Mapped[int | None] = mapped_column(Integer)
-
     notes: Mapped[str | None] = mapped_column(Text)
 
     internalNotes: Mapped[str | None] = mapped_column(Text)
-
-    rating: Mapped[int | None] = mapped_column(Integer)
 
     appliedAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
@@ -1648,6 +1445,12 @@ class StageEvent(Base):
 
     emailSentAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
+    candidateToken: Mapped[str | None] = mapped_column(
+        String,
+        unique=True,
+        nullable=True,
+    )
+
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -1697,6 +1500,12 @@ class StageEvent(Base):
 
     feedbacks = relationship(
         "InterviewFeedback",
+        back_populates="event",
+        cascade="all, delete-orphan",
+    )
+
+    proposedSlots = relationship(
+        "StageEventProposedSlot",
         back_populates="event",
         cascade="all, delete-orphan",
     )
@@ -1773,6 +1582,72 @@ class StageEventParticipant(Base):
             "memberId",
             name="uq_stage_event_participant",
         ),
+    )
+
+
+# =========================================================
+# STAGE EVENT PROPOSED SLOT
+# =========================================================
+
+
+class StageEventProposedSlot(Base):
+    __tablename__ = "stage_event_proposed_slot"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    eventId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stage_event.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    participantId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stage_event_participant.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    startTime: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    endTime: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    isSelectedByCandidate: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    # RELATIONSHIPS
+
+    event = relationship(
+        "StageEvent",
+        back_populates="proposedSlots",
+    )
+
+    participant = relationship(
+        "StageEventParticipant",
+    )
+
+    __table_args__ = (
+        Index("seps_eventId_idx", "eventId"),
+        Index("seps_participantId_idx", "participantId"),
     )
 
 
@@ -1870,8 +1745,6 @@ class InterviewFeedback(Base):
         default=InterviewOutcome.PENDING,
     )
 
-    score: Mapped[int | None] = mapped_column(Integer)
-
     strengths: Mapped[str | None] = mapped_column(Text)
 
     weaknesses: Mapped[str | None] = mapped_column(Text)
@@ -1893,12 +1766,6 @@ class InterviewFeedback(Base):
     event = relationship(
         "StageEvent",
         back_populates="feedbacks",
-    )
-
-    values = relationship(
-        "InterviewFeedbackValue",
-        back_populates="feedback",
-        cascade="all, delete-orphan",
     )
 
     member = relationship(

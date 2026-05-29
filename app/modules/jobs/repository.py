@@ -19,7 +19,6 @@ from app.models.recruitment import (
     PipelineStage,
     RequisitionActivityLog,
     RequisitionApproval,
-    StageEvaluationCategory,
 )
 from app.shared.utils.permissions import get_permission_scope
 
@@ -442,7 +441,6 @@ class JobRequisitionRepository:
     ) -> list[PipelineStage]:
         result = await self.db.execute(
             select(PipelineStage)
-            .options(selectinload(PipelineStage.evaluationCategories))
             .where(
                 PipelineStage.organizationId == organization_id,
                 PipelineStage.jobPostingId == job_posting_id,
@@ -469,13 +467,6 @@ class JobRequisitionRepository:
         await self.db.flush()
         return stage
 
-    async def create_stage_evaluation_categories(
-        self,
-        categories: list[StageEvaluationCategory],
-    ) -> None:
-        self.db.add_all(categories)
-        await self.db.flush()
-
     async def list_job_postings_for_import(
         self,
         organization_id: str,
@@ -485,7 +476,7 @@ class JobRequisitionRepository:
             select(JobPosting)
             .options(
                 joinedload(JobPosting.requisition).joinedload(JobRequisition.department),
-                selectinload(JobPosting.pipelineStages).selectinload(PipelineStage.evaluationCategories),
+                selectinload(JobPosting.pipelineStages),
             )
             .where(
                 JobPosting.organizationId == organization_id,

@@ -385,6 +385,7 @@ class WorkLogReportDetailResponse(BaseModel):
     attendanceRecordId: str
     employeeId: str
     employeeName: str
+    employeeEmail: str | None = None
     date: dt.date
     clockIn: dt.datetime | None
     clockOut: dt.datetime | None

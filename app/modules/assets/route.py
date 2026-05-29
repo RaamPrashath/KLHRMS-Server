@@ -21,28 +21,39 @@ from app.modules.assets.controller import (
     handle_export_report,
     handle_export_report_pdf,
     handle_get_asset,
+    handle_get_brand_model_analytics,
     handle_get_dashboard,
+    handle_get_employee_asset_view,
     handle_get_meta,
+    handle_get_os_distribution_analytics,
+    handle_get_returned_assets,
+    handle_get_swap_preview,
+    handle_get_upcoming_warranty_feed,
     handle_issue_assets,
     handle_list_asset_ids,
+    handle_request_asset_return,
     handle_list_assets,
     handle_list_categories,
     handle_list_my_tickets,
     handle_list_tickets,
     handle_return_asset,
+    handle_revoke_and_swap_asset,
     handle_update_asset,
     handle_update_asset_id,
     handle_update_category,
     handle_update_category_field,
     handle_update_maintenance,
     handle_update_maintenance_by_id,
+    handle_withdraw_helpdesk_ticket,
 )
 from app.modules.assets.schema import (
     AssetCategoryCreate,
     AssetCategoryResponse,
     AssetCategoryUpdate,
+    AssetBrandModelAnalyticsResponse,
     AssetDashboardResponse,
     AssetDetailResponse,
+    EmployeeAssetViewResponse,
     AssetFilters,
     AssetIdCreate,
     AssetIdResponse,
@@ -50,11 +61,17 @@ from app.modules.assets.schema import (
     AssetIssueRequest,
     AssetIssueResponse,
     AssetListResponse,
+    ReturnedAssetSummary,
     AssetMaintenanceCreateRequest,
     AssetMaintenanceUpdateRequest,
     AssetMetaResponse,
+    AssetOsDistributionResponse,
+    AssetRevokeSwapRequest,
     AssetReportRequest,
     AssetReturnRequest,
+    AssetReturnRequestedResponse,
+    AssetSwapExecutionResponse,
+    AssetSwapPreviewResponse,
     AssetUpsertRequest,
     AvailableAssetGroupResponse,
     BulkAssetCreateRequest,
@@ -64,6 +81,7 @@ from app.modules.assets.schema import (
     HelpdeskTicketCreateRequest,
     MaintenanceTicketResponse,
     MyTicketResponse,
+    WarrantyExpirationFeedResponse,
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
@@ -230,6 +248,16 @@ async def list_assets_route(
     return await handle_list_assets(access, db, filters)
 
 
+@router.get("/employee-view", response_model=EmployeeAssetViewResponse)
+async def get_employee_asset_view_route(
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> EmployeeAssetViewResponse:
+    return await handle_get_employee_asset_view(access, db)
+
+
 @router.get("/dashboard", response_model=AssetDashboardResponse)
 async def get_asset_dashboard(
     access: Annotated[
@@ -238,6 +266,46 @@ async def get_asset_dashboard(
     db: DbSession,
 ) -> AssetDashboardResponse:
     return await handle_get_dashboard(access, db)
+
+
+@router.get("/returned", response_model=list[ReturnedAssetSummary])
+async def get_returned_assets_route(
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> list[ReturnedAssetSummary]:
+    return await handle_get_returned_assets(access, db)
+
+
+@router.get("/analytics/brand-models", response_model=AssetBrandModelAnalyticsResponse)
+async def get_brand_model_analytics_route(
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> AssetBrandModelAnalyticsResponse:
+    return await handle_get_brand_model_analytics(access, db)
+
+
+@router.get("/analytics/os-distribution", response_model=AssetOsDistributionResponse)
+async def get_os_distribution_route(
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> AssetOsDistributionResponse:
+    return await handle_get_os_distribution_analytics(access, db)
+
+
+@router.get("/warranty/upcoming", response_model=WarrantyExpirationFeedResponse)
+async def get_upcoming_warranty_feed_route(
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> WarrantyExpirationFeedResponse:
+    return await handle_get_upcoming_warranty_feed(access, db)
 
 
 @router.get("/tickets", response_model=list[MaintenanceTicketResponse])
@@ -269,6 +337,17 @@ async def create_helpdesk_ticket_route(
     db: DbSession,
 ) -> MyTicketResponse:
     return await handle_create_helpdesk_ticket(access, db, body)
+
+
+@router.post("/tickets/mine/{ticket_id}/withdraw", response_model=MyTicketResponse)
+async def withdraw_helpdesk_ticket_route(
+    ticket_id: str,
+    access: Annotated[
+        MemberContext, Depends(require_permission("helpdesk", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> MyTicketResponse:
+    return await handle_withdraw_helpdesk_ticket(access, db, ticket_id)
 
 
 @router.get("/meta", response_model=AssetMetaResponse)
@@ -353,6 +432,15 @@ async def issue_assets_route(
     return await handle_issue_assets(access, db, body)
 
 
+@router.post("/{asset_id}/request-return", response_model=AssetReturnRequestedResponse)
+async def request_asset_return_route(
+    asset_id: str,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> AssetReturnRequestedResponse:
+    return await handle_request_asset_return(access, db, asset_id)
+
+
 @router.get("/{asset_id}", response_model=AssetDetailResponse)
 async def get_asset_detail(
     asset_id: str,
@@ -435,3 +523,26 @@ async def update_maintenance_by_id_route(
 ) -> Response:
     await handle_update_maintenance_by_id(access, db, maintenance_id, body)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/maintenance/{maintenance_id}/swap-preview", response_model=AssetSwapPreviewResponse)
+async def get_swap_preview_route(
+    maintenance_id: str,
+    access: Annotated[MemberContext, Depends(require_permission("maintenance", "view"))],
+    db: DbSession,
+) -> AssetSwapPreviewResponse:
+    return await handle_get_swap_preview(access, db, maintenance_id)
+
+
+@router.post(
+    "/maintenance/{maintenance_id}/revoke-swap",
+    response_model=AssetSwapExecutionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def revoke_and_swap_route(
+    maintenance_id: str,
+    body: AssetRevokeSwapRequest,
+    access: Annotated[MemberContext, Depends(require_permission("maintenance", "edit"))],
+    db: DbSession,
+) -> AssetSwapExecutionResponse:
+    return await handle_revoke_and_swap_asset(access, db, maintenance_id, body)

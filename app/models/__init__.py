@@ -1,3 +1,5 @@
+from app.models.access_control_assignment import AccessControlAssignment
+from app.models.access_control_log import AccessControlLog
 from app.models.account import Account
 from app.models.asset import Asset
 from app.models.asset_assignment import AssetAssignment
@@ -6,6 +8,12 @@ from app.models.asset_category_field_definition import AssetCategoryFieldDefinit
 from app.models.asset_custom_field_value import AssetCustomFieldValue
 from app.models.asset_id_definition import AssetIdDefinition
 from app.models.asset_maintenance_log import AssetMaintenanceLog
+from app.models.asset_notification import AssetNotification
+from app.models.asset_purchase_requisition import (
+    AssetPurchaseRequisition,
+    AssetPurchaseRequisitionActivityLog,
+)
+from app.models.asset_purchase_order import AssetPurchaseOrder
 from app.models.asset_unit import AssetUnit
 from app.models.attendance_record import AttendanceRecord
 from app.models.attendance_work_log import AttendanceWorkLog
@@ -37,7 +45,6 @@ from app.models.recruitment import (
     PipelineStage,
     RequisitionActivityLog,
     RequisitionApproval,
-    StageEvaluationWorkspace,
 )
 from app.models.role import Role
 from app.models.session import Session
