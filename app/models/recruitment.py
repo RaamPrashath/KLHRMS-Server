@@ -862,6 +862,32 @@ class PipelineStage(Base):
         default=False,
     )
 
+    evaluationEnabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    sheetEnabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    evaluationType: Mapped[str | None] = mapped_column(String(32))
+
+    evaluationIncludeTotal: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    evaluationIncludeAnalysis: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -937,6 +963,79 @@ class PipelineStage(Base):
             "jobPostingId",
             "slug",
             name="uq_pipeline_stage_job_slug",
+        ),
+    )
+
+
+# =========================================================
+# STAGE EVALUATION
+# =========================================================
+
+
+class StageEvaluationCategory(Base):
+    __tablename__ = "stage_evaluation_category"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organization.id", ondelete="CASCADE"), nullable=False
+    )
+    stageId: Mapped[str] = mapped_column(
+        String(36), ForeignKey("pipeline_stage.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    valueType: Mapped[str] = mapped_column(String(32), nullable=False, server_default="NUMERIC")
+    maxScore: Mapped[int | None] = mapped_column(Integer)
+    order: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    stage = relationship("PipelineStage", back_populates="evaluationCategories")
+    feedbackValues = relationship("InterviewFeedbackValue", back_populates="category")
+
+    __table_args__ = (
+        UniqueConstraint("stageId", "order", name="uq_stage_evaluation_category_order"),
+    )
+
+
+class StageEvaluationWorkspace(Base):
+    __tablename__ = "stage_evaluation_workspace"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organization.id", ondelete="CASCADE"), nullable=False
+    )
+    stageId: Mapped[str] = mapped_column(
+        String(36), ForeignKey("pipeline_stage.id", ondelete="CASCADE"), nullable=False
+    )
+    googleSpreadsheetId: Mapped[str] = mapped_column(String(255), nullable=False)
+    googleSpreadsheetUrl: Mapped[str] = mapped_column(Text, nullable=False)
+    googleSheetId: Mapped[int | None] = mapped_column(Integer)
+    googleSheetTitle: Mapped[str] = mapped_column(String(100), nullable=False)
+    createdByMemberId: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("member.id", ondelete="SET NULL")
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    stage = relationship("PipelineStage", back_populates="evaluationWorkspace")
+    createdBy = relationship("Member", back_populates="createdEvaluationWorkspaces")
+
+    __table_args__ = (
+        UniqueConstraint("stageId", name="uq_stage_evaluation_workspace_stage"),
+        UniqueConstraint(
+            "organizationId", "stageId", name="uq_stage_evaluation_workspace_org_stage"
         ),
     )
 
@@ -1773,6 +1872,12 @@ class InterviewFeedback(Base):
         back_populates="interviewFeedbacks",
     )
 
+    values = relationship(
+        "InterviewFeedbackValue",
+        back_populates="feedback",
+        cascade="all, delete-orphan",
+    )
+
     __table_args__ = (
         UniqueConstraint(
             "eventId",
@@ -1832,7 +1937,7 @@ class InterviewFeedbackValue(Base):
         back_populates="values",
     )
 
-    category = relationship("StageEvaluationCategory")
+    category = relationship("StageEvaluationCategory", back_populates="feedbackValues")
 
     __table_args__ = (
         UniqueConstraint(
