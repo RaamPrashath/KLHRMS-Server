@@ -91,11 +91,6 @@ from app.shared.notifications.email import (
 from app.shared.config import get_settings
 from app.shared.utils.permissions import get_permission_scope
 
-try:
-    import cairosvg
-except ImportError:  # pragma: no cover - depends on environment sync
-    cairosvg = None
-
 
 def _to_float(value: Decimal | float | int | None) -> float | None:
     if value is None:
@@ -724,22 +719,7 @@ async def _load_remote_image_bytes(url: str | None) -> bytes | None:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(url)
             response.raise_for_status()
-        content = response.content
-        content_type = (response.headers.get("content-type") or "").lower()
-        normalized_url = url.lower()
-
-        # ReportLab/Pillow cannot consume SVG directly, so rasterize it first.
-        if (
-            "image/svg+xml" in content_type
-            or normalized_url.endswith(".svg")
-            or content.lstrip().startswith(b"<svg")
-            or (content.lstrip().startswith(b"<?xml") and b"<svg" in content[:512].lower())
-        ):
-            if cairosvg is None:
-                return None
-            return cairosvg.svg2png(bytestring=content)
-
-        return content
+        return response.content
     except Exception:
         return None
 
