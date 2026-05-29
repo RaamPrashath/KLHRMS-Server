@@ -324,6 +324,8 @@ async def handle_list_leave_balances(
     return LeaveBalanceListResponse(
         items=[_leave_balance_response(item) for item in items],
         total=total,
+        page=filters.page,
+        page_size=filters.page_size,
     )
 
 

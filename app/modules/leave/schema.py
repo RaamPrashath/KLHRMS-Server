@@ -135,6 +135,9 @@ class LeaveBalanceFilters(BaseModel):
     year: int | None = None
     member_id: str | None = Field(default=None, alias="memberId")
     leave_type_id: str | None = Field(default=None, alias="leaveTypeId")
+    search: str | None = Field(default=None, max_length=255)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=200)
 
     model_config = {"populate_by_name": True}
 
@@ -264,6 +267,8 @@ class LeaveBalanceResponse(BaseModel):
 class LeaveBalanceListResponse(BaseModel):
     items: list[LeaveBalanceResponse]
     total: int
+    page: int
+    page_size: int
 
 
 class LeaveCalendarResponse(BaseModel):

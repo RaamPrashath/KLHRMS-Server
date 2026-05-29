@@ -116,7 +116,7 @@ async def list_interviewers(
 @router.get("/pipeline/stages/by-slug/{stage_slug}/workspace", response_model=StageWorkspaceRead)
 async def get_stage_workspace(
     stage_slug: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
     db: AsyncSession = Depends(get_db),
 ) -> StageWorkspaceRead:
     return await handle_get_stage_workspace(ctx, db, stage_slug)
@@ -126,7 +126,7 @@ async def get_stage_workspace(
 async def get_stage_workspace_by_job_slug(
     job_slug: str,
     stage_slug: str,
-    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view"))],
     db: AsyncSession = Depends(get_db),
 ) -> StageWorkspaceRead:
     return await handle_get_stage_workspace_by_job_slug(ctx, db, job_slug, stage_slug)
