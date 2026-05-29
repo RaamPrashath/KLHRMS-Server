@@ -1,6 +1,6 @@
 """add pipeline_stage evaluation fields and missing tables
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: b1a2c3d4e5f7
 Revises: 6f7a8b9c0d1e
 Create Date: 2026-05-28 00:00:00.000000
 """
@@ -12,7 +12,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision: str = "a1b2c3d4e5f6"
+revision: str = "b1a2c3d4e5f7"
 down_revision: str | Sequence[str] | None = "6f7a8b9c0d1e"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
