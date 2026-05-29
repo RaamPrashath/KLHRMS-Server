@@ -57,7 +57,7 @@ async def list_employees(
         description="Filter by today's attendance: PRESENT | ABSENT | WORK_FROM_HOME | HALF_DAY | NO_RECORD",
     ),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(25, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(25, ge=1, le=200, description="Items per page"),
 ) -> EmployeeListResponse:
     filters = EmployeeListFilters(
         search=search,

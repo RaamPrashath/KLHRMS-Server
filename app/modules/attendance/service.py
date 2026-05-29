@@ -640,20 +640,41 @@ async def clock_in(
     """
     enforce_scope(actor_member_id, target_member_id, scope)
 
-    # Reject if there is already an open session.
-    active = await get_active_session(db, organization_id, target_member_id)
-    if active is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="An active clock-in session already exists for this member",
-        )
-
     now = (
         _normalize_attendance_datetime(clock_in_time)
         if clock_in_time is not None
         else datetime.now(tz=BUSINESS_TIMEZONE)
     )
     today = now.astimezone(BUSINESS_TIMEZONE).date()
+
+    # Reject if there is already an open session.
+    active = await get_active_session(db, organization_id, target_member_id)
+    if active is not None:
+        if active.date >= today:
+            # Same-day or future session — genuine duplicate.
+            raise HTTPException(
+                status_code=400,
+                detail="An active clock-in session already exists for this member",
+            )
+
+        # Stale session from a previous day — auto-close at 23:50 same day and proceed.
+        ci = _normalize_attendance_datetime(active.clockIn).astimezone(BUSINESS_TIMEZONE)
+        close_time = datetime(
+            active.date.year, active.date.month, active.date.day, 23, 50,
+            tzinfo=BUSINESS_TIMEZONE,
+        )
+        clock_out = _cap_clock_out(ci, close_time)
+        stale_total = _compute_hours(ci, clock_out)
+
+        policy = await load_policy(db, organization_id)
+        stale_overtime = _compute_overtime(stale_total, policy.overtime_threshold)
+        stale_status = _derive_status(stale_total, policy.half_day_max_hours)
+
+        active.clockOut = clock_out
+        active.totalHours = stale_total
+        active.overtimeHours = stale_overtime
+        active.status = stale_status
+        await db.flush()
     validated_project_id, validated_project_task_id = await _validate_attendance_project_selection(
         db=db,
         organization_id=organization_id,
@@ -767,7 +788,7 @@ async def clock_out(
     scope: str,
     policy: PolicyDefaults,
     clock_out_time: datetime | None = None,
-    work_log_text: str = "",
+    work_log_text: str | None = None,
 ) -> list[AttendanceRecord]:
     """
     Finalize an open attendance session.
@@ -810,7 +831,7 @@ async def clock_out(
     active_project_id = active.projectId
     active_project_task_id = active.projectTaskId
     active_description = active.description
-    normalized_work_log_text = work_log_text.strip()
+    normalized_work_log_text = (work_log_text or "").strip()
 
     for seg in segments:
         total = _compute_hours(seg.clock_in, seg.clock_out)
