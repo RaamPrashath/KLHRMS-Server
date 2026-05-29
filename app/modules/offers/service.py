@@ -228,8 +228,6 @@ def _candidate_eligibility(
         errors.append("Candidate last name is missing")
     if requires_compensation and not job_has_salary_data:
         errors.append("Job salary data is missing")
-    if latest_offer is not None and latest_offer.status == OfferStatus.SENT:
-        warnings.append("Candidate already has a sent offer")
     return OfferEligibilityRead(canSend=not errors, errors=errors, warnings=warnings)
 
 

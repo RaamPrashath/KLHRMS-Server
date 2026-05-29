@@ -72,7 +72,7 @@ def test_candidate_eligibility_keeps_resend_selectable_with_warning() -> None:
     )
 
     assert eligibility.canSend
-    assert eligibility.warnings == ["Candidate already has a sent offer"]
+    assert eligibility.warnings == []
 
 
 def test_candidate_eligibility_blocks_missing_salary_for_compensation_tokens() -> None:
