@@ -91,6 +91,24 @@ class Member(Base):
         back_populates="createdBy",
     )
 
+    createdOfferTemplates = relationship(
+        "OfferTemplate",
+        foreign_keys="OfferTemplate.createdByMemberId",
+        back_populates="createdBy",
+    )
+
+    updatedOfferTemplates = relationship(
+        "OfferTemplate",
+        foreign_keys="OfferTemplate.updatedByMemberId",
+        back_populates="updatedBy",
+    )
+
+    createdOfferDispatchBatches = relationship(
+        "OfferDispatchBatch",
+        foreign_keys="OfferDispatchBatch.createdByMemberId",
+        back_populates="createdBy",
+    )
+
     createdEvaluationWorkspaces = relationship(
         "StageEvaluationWorkspace",
         foreign_keys="StageEvaluationWorkspace.createdByMemberId",

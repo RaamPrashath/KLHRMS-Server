@@ -136,10 +136,25 @@ class InterviewOutcome(str, enum.Enum):
 class OfferStatus(str, enum.Enum):
     DRAFT = "DRAFT"
     SENT = "SENT"
+    FAILED = "FAILED"
     ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
     WITHDRAWN = "WITHDRAWN"
+
+
+class OfferTemplateStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+
+
+class OfferDispatchBatchStatus(str, enum.Enum):
+    QUEUED = "QUEUED"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    PARTIAL_FAILED = "PARTIAL_FAILED"
+    FAILED = "FAILED"
 
 # =========================================================
 # JOB REQUISITION
@@ -735,6 +750,11 @@ class JobPosting(Base):
         cascade="all, delete-orphan",
     )
 
+    offerDispatchBatches = relationship(
+        "OfferDispatchBatch",
+        back_populates="jobPosting",
+    )
+
     __table_args__ = (
         UniqueConstraint(
             "organizationId",
@@ -879,6 +899,11 @@ class PipelineStage(Base):
         "StageEvent",
         back_populates="stage",
         cascade="all, delete-orphan",
+    )
+
+    offerDispatchBatches = relationship(
+        "OfferDispatchBatch",
+        back_populates="stage",
     )
 
     evaluationWorkspace = relationship(
@@ -1213,11 +1238,11 @@ class CandidateApplication(Base):
         cascade="all, delete-orphan",
     )
 
-    offerLetter = relationship(
+    offerLetters = relationship(
         "OfferLetter",
         back_populates="application",
-        uselist=False,
         cascade="all, delete-orphan",
+        order_by="OfferLetter.createdAt.desc()",
     )
 
     resumeAnalysis = relationship(
@@ -1266,7 +1291,6 @@ class CandidateResumeAnalysis(Base):
         String(36),
         ForeignKey("candidate_application.id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
         index=True,
     )
 
@@ -1940,6 +1964,382 @@ class InterviewFeedbackValue(Base):
 
 
 # =========================================================
+# OFFER TEMPLATES
+# =========================================================
+
+
+class OfferTemplate(Base):
+    __tablename__ = "offer_template"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+
+    status: Mapped[OfferTemplateStatus] = mapped_column(
+        Enum(OfferTemplateStatus),
+        nullable=False,
+        default=OfferTemplateStatus.DRAFT,
+        index=True,
+    )
+
+    logoUrl: Mapped[str | None] = mapped_column(Text)
+    signatureUrl: Mapped[str | None] = mapped_column(Text)
+    signatoryName: Mapped[str | None] = mapped_column(String(160))
+    signatoryTitle: Mapped[str | None] = mapped_column(String(160))
+    footerHtml: Mapped[str | None] = mapped_column(Text)
+    websiteUrl: Mapped[str | None] = mapped_column(Text)
+    lastUsedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
+    createdByMemberId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    updatedByMemberId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization = relationship(
+        "Organization",
+        back_populates="offerTemplates",
+    )
+
+    createdBy = relationship(
+        "Member",
+        foreign_keys=[createdByMemberId],
+        back_populates="createdOfferTemplates",
+    )
+
+    updatedBy = relationship(
+        "Member",
+        foreign_keys=[updatedByMemberId],
+        back_populates="updatedOfferTemplates",
+    )
+
+    categories = relationship(
+        "OfferTemplateCategory",
+        back_populates="template",
+        cascade="all, delete-orphan",
+        order_by="OfferTemplateCategory.order",
+    )
+
+    sections = relationship(
+        "OfferTemplateSection",
+        back_populates="template",
+        cascade="all, delete-orphan",
+        order_by="OfferTemplateSection.order",
+    )
+
+    dispatchBatches = relationship(
+        "OfferDispatchBatch",
+        back_populates="template",
+    )
+
+    offerLetters = relationship(
+        "OfferLetter",
+        back_populates="template",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organizationId",
+            "name",
+            name="uq_offer_template_org_name",
+        ),
+        Index("ix_offer_template_org_status", "organizationId", "status"),
+        Index("ix_offer_template_org_last_used", "organizationId", "lastUsedAt"),
+    )
+
+
+class OfferTemplateCategory(Base):
+    __tablename__ = "offer_template_category"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    templateId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("offer_template.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization = relationship(
+        "Organization",
+        back_populates="offerTemplateCategories",
+    )
+
+    template = relationship(
+        "OfferTemplate",
+        back_populates="categories",
+    )
+
+    sections = relationship(
+        "OfferTemplateSection",
+        back_populates="category",
+        order_by="OfferTemplateSection.order",
+    )
+
+    dispatchBatches = relationship(
+        "OfferDispatchBatch",
+        back_populates="templateCategory",
+    )
+
+    offerLetters = relationship(
+        "OfferLetter",
+        back_populates="templateCategory",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "templateId",
+            "slug",
+            name="uq_offer_template_category_template_slug",
+        ),
+        Index("ix_offer_template_category_org_template", "organizationId", "templateId"),
+    )
+
+
+class OfferTemplateSection(Base):
+    __tablename__ = "offer_template_section"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    templateId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("offer_template.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    categoryId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("offer_template_category.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    sectionKey: Mapped[str] = mapped_column(String(80), nullable=False)
+    sectionName: Mapped[str] = mapped_column(String(120), nullable=False)
+    order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    tiptapJson: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    html: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization = relationship(
+        "Organization",
+        back_populates="offerTemplateSections",
+    )
+
+    template = relationship(
+        "OfferTemplate",
+        back_populates="sections",
+    )
+
+    category = relationship(
+        "OfferTemplateCategory",
+        back_populates="sections",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "categoryId",
+            "sectionKey",
+            name="uq_offer_template_section_category_key",
+        ),
+        Index("ix_offer_template_section_org_template", "organizationId", "templateId"),
+        Index("ix_offer_template_section_org_category", "organizationId", "categoryId"),
+    )
+
+
+class OfferDispatchBatch(Base):
+    __tablename__ = "offer_dispatch_batch"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    jobPostingId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("job_posting.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    stageId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("pipeline_stage.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    templateId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("offer_template.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    templateCategoryId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("offer_template_category.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    status: Mapped[OfferDispatchBatchStatus] = mapped_column(
+        Enum(OfferDispatchBatchStatus),
+        nullable=False,
+        default=OfferDispatchBatchStatus.QUEUED,
+        index=True,
+    )
+
+    candidateCount: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    successCount: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failureCount: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    createdByMemberId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    completedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    errorSummary: Mapped[str | None] = mapped_column(Text)
+
+    organization = relationship(
+        "Organization",
+        back_populates="offerDispatchBatches",
+    )
+
+    jobPosting = relationship(
+        "JobPosting",
+        back_populates="offerDispatchBatches",
+    )
+
+    stage = relationship(
+        "PipelineStage",
+        back_populates="offerDispatchBatches",
+    )
+
+    template = relationship(
+        "OfferTemplate",
+        back_populates="dispatchBatches",
+    )
+
+    templateCategory = relationship(
+        "OfferTemplateCategory",
+        back_populates="dispatchBatches",
+    )
+
+    createdBy = relationship(
+        "Member",
+        foreign_keys=[createdByMemberId],
+        back_populates="createdOfferDispatchBatches",
+    )
+
+    offerLetters = relationship(
+        "OfferLetter",
+        back_populates="batch",
+    )
+
+    __table_args__ = (
+        Index("ix_offer_dispatch_batch_org_job", "organizationId", "jobPostingId"),
+        Index("ix_offer_dispatch_batch_org_stage", "organizationId", "stageId"),
+        Index("ix_offer_dispatch_batch_org_status", "organizationId", "status"),
+    )
+
+
+# =========================================================
 # OFFER LETTER
 # =========================================================
 
@@ -1964,7 +2364,36 @@ class OfferLetter(Base):
         String(36),
         ForeignKey("candidate_application.id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
+        index=True,
+    )
+
+    batchId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("offer_dispatch_batch.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    templateId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("offer_template.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    templateCategoryId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("offer_template_category.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    templateSnapshotJson: Mapped[dict | None] = mapped_column(JSONB)
+
+    stageId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("pipeline_stage.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
 
@@ -2020,6 +2449,20 @@ class OfferLetter(Base):
 
     pdfUrl: Mapped[str | None] = mapped_column(Text)
 
+    renderedHtml: Mapped[str | None] = mapped_column(Text)
+
+    storageBucket: Mapped[str | None] = mapped_column(String(120))
+
+    storagePath: Mapped[str | None] = mapped_column(Text)
+
+    fileName: Mapped[str | None] = mapped_column(String(255))
+
+    emailSentAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
+    emailError: Mapped[str | None] = mapped_column(Text)
+
+    responseIgnoredAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -2040,13 +2483,38 @@ class OfferLetter(Base):
 
     application = relationship(
         "CandidateApplication",
-        back_populates="offerLetter",
+        back_populates="offerLetters",
     )
+
+    batch = relationship(
+        "OfferDispatchBatch",
+        back_populates="offerLetters",
+    )
+
+    template = relationship(
+        "OfferTemplate",
+        back_populates="offerLetters",
+    )
+
+    templateCategory = relationship(
+        "OfferTemplateCategory",
+        back_populates="offerLetters",
+    )
+
+    stage = relationship("PipelineStage")
 
     createdBy = relationship(
         "Member",
         foreign_keys=[createdByMemberId],
         back_populates="createdOfferLetters",
+    )
+
+    __table_args__ = (
+        Index("ix_offer_letter_org_application", "organizationId", "applicationId"),
+        Index("ix_offer_letter_org_batch", "organizationId", "batchId"),
+        Index("ix_offer_letter_org_template", "organizationId", "templateId"),
+        Index("ix_offer_letter_org_stage", "organizationId", "stageId"),
+        Index("ix_offer_letter_org_status", "organizationId", "status"),
     )
 
 

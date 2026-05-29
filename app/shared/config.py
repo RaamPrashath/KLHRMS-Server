@@ -85,6 +85,11 @@ class Settings(BaseSettings):
         alias="BETTER_AUTH_URL",
     )
 
+    public_app_url: str = Field(
+        default=os.getenv("PUBLIC_APP_URL", os.getenv("BETTER_AUTH_URL", "http://localhost:3000")),
+        alias="PUBLIC_APP_URL",
+    )
+
     attendance_office_radius_meters: float = Field(
         default=200.0,
         alias="ATTENDANCE_OFFICE_RADIUS_METERS",
@@ -124,6 +129,21 @@ class Settings(BaseSettings):
     resend_from_email: str = Field(
         default=os.getenv("RESEND_FROM_EMAIL", "KL HRMS <onboarding@resend.dev>"),
         alias="RESEND_FROM_EMAIL",
+    )
+
+    supabase_url: str = Field(
+        default=os.getenv("SUPABASE_URL", ""),
+        alias="SUPABASE_URL",
+    )
+
+    supabase_service_role_key: str = Field(
+        default=os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
+        alias="SUPABASE_SERVICE_ROLE_KEY",
+    )
+
+    supabase_offer_bucket: str = Field(
+        default=os.getenv("SUPABASE_OFFER_BUCKET", "offer-letter"),
+        alias="SUPABASE_OFFER_BUCKET",
     )
 
     mode: str = Field(

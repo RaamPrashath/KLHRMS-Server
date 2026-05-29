@@ -6,9 +6,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.modules.ai_scoring.route import router as ai_scoring_router
 from app.modules.assets.route import router as assets_router
@@ -20,6 +22,8 @@ from app.modules.hiring_teams.route import router as hiring_teams_router
 from app.modules.holiday_sync.route import router as holiday_sync_router
 from app.modules.jobs.route import router as jobs_router
 from app.modules.leave.route import router as leave_router
+from app.modules.offers.public_route import router as public_offers_router
+from app.modules.offers.route import router as offers_router
 from app.modules.projects.route import router as projects_router
 from app.modules.role.route import router as role_router
 from app.modules.weekly_plan.router import router as weekly_plan_router
@@ -27,6 +31,7 @@ from app.shared.config import get_settings
 from app.shared.scheduler import register_jobs, scheduler
 
 settings = get_settings()
+UPLOADS_DIR = Path(__file__).resolve().parents[1] / ".uploads"
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -60,6 +65,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+
 # ── Routers ───────────────────────────────────────────────────────────────────
 
 app.include_router(role_router)
@@ -67,6 +75,8 @@ app.include_router(attendance_router)
 app.include_router(candidates_router)
 app.include_router(ai_scoring_router)
 app.include_router(jobs_router)
+app.include_router(offers_router)
+app.include_router(public_offers_router)
 app.include_router(leave_router)
 app.include_router(projects_router)
 app.include_router(assets_router)

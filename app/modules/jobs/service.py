@@ -153,7 +153,7 @@ SETUP_DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
     {"name": "Screening", "stageType": StageType.DEFAULT, "isFinal": False},
     {"name": "Interview", "stageType": StageType.INTERVIEW, "isFinal": False},
     {"name": "Offer", "stageType": StageType.OFFER, "isFinal": False},
-    {"name": "Hired", "stageType": StageType.HIRED, "isFinal": True},
+    {"name": "Accepted", "stageType": StageType.HIRED, "isFinal": True},
     {"name": "Rejected", "stageType": StageType.REJECTED, "isFinal": True},
 ]
 
@@ -270,6 +270,28 @@ async def _generate_job_slug(
 
 def _generate_stage_slug(name: str, used: set[str]) -> str:
     return generate_unique_slug(name, used, fallback="stage")
+
+
+def _assert_single_stage_type(
+    stages: list[PipelineStage],
+    stage_type: StageType,
+    *,
+    excluded_stage_id: str | None = None,
+) -> None:
+    protected_types = {
+        StageType.OFFER: "This job already has an offer stage.",
+        StageType.HIRED: "This job already has an accepted stage.",
+        StageType.REJECTED: "This job already has a rejected stage.",
+    }
+    message = protected_types.get(stage_type)
+    if message is None:
+        return
+    has_existing = any(
+        stage.stageType == stage_type and stage.id != excluded_stage_id
+        for stage in stages
+    )
+    if has_existing:
+        raise HTTPException(status_code=409, detail=message)
 
 
 def _to_utc_datetime(value: datetime | None) -> datetime | None:
@@ -979,6 +1001,7 @@ async def create_pipeline_stage(
     stages = await repository.list_pipeline_stages(organization_id, posting.id)
     next_order = max((stage.order for stage in stages), default=0.0) + 1.0
     stage_type = StageType(body.stageType)
+    _assert_single_stage_type(stages, stage_type)
     stage = PipelineStage(
         organizationId=organization_id,
         jobPostingId=posting.id,
