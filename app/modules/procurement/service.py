@@ -47,7 +47,7 @@ from app.models.member import Member
 from app.models.organization import Organization
 from app.models.procurement_purchase_order_template import ProcurementPurchaseOrderTemplate
 from app.models.role import Role
-from app.modules.assets.service import _members_with_asset_admin_scope
+from app.modules.assets.service import _derive_asset_status, _members_with_asset_admin_scope
 from app.modules.procurement.schema import (
     AssetPurchaseRequisitionCreateRequest,
     AssetPurchaseRequisitionListResponse,
@@ -398,6 +398,42 @@ async def _log_activity(
         )
     )
     await db.flush()
+
+
+async def _cancel_linked_replacement_ticket_after_approval(
+    db: AsyncSession,
+    requisition: AssetPurchaseRequisition,
+) -> str | None:
+    if requisition.requestType != "REPLACEMENT" or not requisition.maintenanceTicketId:
+        return None
+
+    result = await db.execute(
+        select(AssetMaintenanceLog)
+        .options(joinedload(AssetMaintenanceLog.asset).joinedload(Asset.units))
+        .where(
+            AssetMaintenanceLog.organizationId == requisition.organizationId,
+            AssetMaintenanceLog.id == requisition.maintenanceTicketId,
+        )
+    )
+    ticket = result.unique().scalar_one_or_none()
+    if ticket is None or ticket.status in {"CANCELLED", "COMPLETED"}:
+        return None
+
+    ticket.status = "CANCELLED"
+
+    asset = ticket.asset
+    if asset is None:
+        return ticket.ticketId
+
+    if ticket.assetUnitId:
+        unit = next((item for item in (asset.units or []) if item.id == ticket.assetUnitId), None)
+        if unit is not None:
+            unit.status = "DAMAGED"
+        asset.status = _derive_asset_status(asset.units or [])
+    else:
+        asset.status = "DAMAGED"
+
+    return ticket.ticketId
 
 
 async def _next_purchase_order_number(db: AsyncSession, organization_id: str) -> int:
@@ -1834,6 +1870,7 @@ async def approve_procurement_requisition(
     requisition.approvedAt = datetime.now(UTC)
     requisition.rejectedAt = None
     requisition.reviewerComment = (payload.comment or "").strip() or None
+    cancelled_ticket_id = await _cancel_linked_replacement_ticket_after_approval(db, requisition)
     db.add(requisition)
     await _log_activity(
         db,
@@ -1843,6 +1880,15 @@ async def approve_procurement_requisition(
         "APPROVED",
         requisition.reviewerComment,
     )
+    if cancelled_ticket_id is not None:
+        await _log_activity(
+            db,
+            ctx.organization.id,
+            requisition.id,
+            ctx.member.id,
+            "LINKED_TICKET_CANCELLED",
+            f"{cancelled_ticket_id} auto-cancelled after finance approval",
+        )
     await db.commit()
 
     saved = await _load_requisition(db, ctx.organization.id, requisition.id)

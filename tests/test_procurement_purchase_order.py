@@ -9,6 +9,7 @@ from app.modules.procurement.schema import ProcurementPurchaseOrderLineItemPaylo
 from app.modules.procurement.service import (
     _calculate_purchase_order_totals,
     _coerce_purchase_order_snapshot,
+    approve_procurement_requisition,
     get_procurement_purchase_order_download,
     list_procurement_purchase_orders,
 )
@@ -183,3 +184,260 @@ async def test_get_procurement_purchase_order_download_returns_signed_url(monkey
     assert response.fileName == "po-2026-00001.pdf"
     assert response.downloadUrl == "https://example.com/download.pdf"
     assert response.expiresInSeconds == 300
+
+
+@pytest.mark.asyncio
+async def test_approve_replacement_requisition_cancels_linked_ticket(monkeypatch: pytest.MonkeyPatch) -> None:
+    asset = SimpleNamespace(status="IN_MAINTENANCE", units=[])
+    ticket = SimpleNamespace(
+        id="ticket-1",
+        ticketId="AST-101",
+        organizationId="org-1",
+        status="OPEN",
+        asset=asset,
+        assetUnitId=None,
+    )
+    requisition = SimpleNamespace(
+        id="req-1",
+        organizationId="org-1",
+        requestType="REPLACEMENT",
+        maintenanceTicketId="ticket-1",
+        status="PENDING_FINANCE_APPROVAL",
+        approvedByMemberId=None,
+        approvedAt=None,
+        rejectedAt=None,
+        reviewerComment=None,
+        raisedBy=SimpleNamespace(user=SimpleNamespace(name="Requester", email="requester@example.com")),
+    )
+
+    class FakeResult:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def unique(self) -> "FakeResult":
+            return self
+
+        def scalar_one_or_none(self) -> object:
+            return self.value
+
+    class FakeDb:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+            self.committed = False
+
+        async def execute(self, _query: object) -> FakeResult:
+            return FakeResult(ticket)
+
+        def add(self, value: object) -> None:
+            self.added.append(value)
+
+        async def flush(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            self.committed = True
+
+    async def fake_load_requisition(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return requisition
+
+    async def fake_get_org(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def fake_send_decided(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.modules.procurement.service._load_requisition", fake_load_requisition)
+    monkeypatch.setattr("app.modules.procurement.service._get_org", fake_get_org)
+    monkeypatch.setattr("app.modules.procurement.service.send_procurement_requisition_decided", fake_send_decided)
+    monkeypatch.setattr(
+        "app.modules.procurement.service._serialize_requisition",
+        lambda req, _actor: SimpleNamespace(status=req.status, reviewerComment=req.reviewerComment),
+    )
+
+    ctx = SimpleNamespace(
+        organization=SimpleNamespace(id="org-1"),
+        member=SimpleNamespace(
+            id="finance-1",
+            role=SimpleNamespace(
+                name="Finance Manager",
+                permissions={"procurement": {"approve": "organization"}},
+            ),
+        ),
+    )
+    payload = SimpleNamespace(comment="Approved for replacement")
+    db = FakeDb()
+
+    response = await approve_procurement_requisition(db, ctx, "req-1", payload)
+
+    assert requisition.status == "APPROVED"
+    assert ticket.status == "CANCELLED"
+    assert asset.status == "DAMAGED"
+    assert db.committed is True
+    assert response.status == "APPROVED"
+
+
+@pytest.mark.asyncio
+async def test_approve_bulk_requisition_skips_ticket_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:
+    requisition = SimpleNamespace(
+        id="req-2",
+        organizationId="org-1",
+        requestType="BULK",
+        maintenanceTicketId=None,
+        status="PENDING_FINANCE_APPROVAL",
+        approvedByMemberId=None,
+        approvedAt=None,
+        rejectedAt=None,
+        reviewerComment=None,
+        raisedBy=None,
+    )
+
+    class FakeDb:
+        def __init__(self) -> None:
+            self.committed = False
+
+        async def execute(self, _query: object) -> None:
+            raise AssertionError("ticket lookup should not run for bulk requisitions")
+
+        def add(self, _value: object) -> None:
+            return None
+
+        async def flush(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            self.committed = True
+
+    async def fake_load_requisition(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return requisition
+
+    async def fake_get_org(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def fake_send_decided(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.modules.procurement.service._load_requisition", fake_load_requisition)
+    monkeypatch.setattr("app.modules.procurement.service._get_org", fake_get_org)
+    monkeypatch.setattr("app.modules.procurement.service.send_procurement_requisition_decided", fake_send_decided)
+    monkeypatch.setattr(
+        "app.modules.procurement.service._serialize_requisition",
+        lambda req, _actor: SimpleNamespace(status=req.status),
+    )
+
+    ctx = SimpleNamespace(
+        organization=SimpleNamespace(id="org-1"),
+        member=SimpleNamespace(
+            id="finance-1",
+            role=SimpleNamespace(
+                name="Finance Manager",
+                permissions={"procurement": {"approve": "organization"}},
+            ),
+        ),
+    )
+    db = FakeDb()
+
+    response = await approve_procurement_requisition(
+        db,
+        ctx,
+        "req-2",
+        SimpleNamespace(comment=None),
+    )
+
+    assert requisition.status == "APPROVED"
+    assert db.committed is True
+    assert response.status == "APPROVED"
+
+
+@pytest.mark.asyncio
+async def test_approve_replacement_requisition_keeps_cancelled_ticket_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset = SimpleNamespace(status="DAMAGED", units=[])
+    ticket = SimpleNamespace(
+        id="ticket-3",
+        ticketId="AST-303",
+        organizationId="org-1",
+        status="CANCELLED",
+        asset=asset,
+        assetUnitId=None,
+    )
+    requisition = SimpleNamespace(
+        id="req-3",
+        organizationId="org-1",
+        requestType="REPLACEMENT",
+        maintenanceTicketId="ticket-3",
+        status="PENDING_FINANCE_APPROVAL",
+        approvedByMemberId=None,
+        approvedAt=None,
+        rejectedAt=None,
+        reviewerComment=None,
+        raisedBy=None,
+    )
+
+    class FakeResult:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def unique(self) -> "FakeResult":
+            return self
+
+        def scalar_one_or_none(self) -> object:
+            return self.value
+
+    class FakeDb:
+        def __init__(self) -> None:
+            self.committed = False
+
+        async def execute(self, _query: object) -> FakeResult:
+            return FakeResult(ticket)
+
+        def add(self, _value: object) -> None:
+            return None
+
+        async def flush(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            self.committed = True
+
+    async def fake_load_requisition(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return requisition
+
+    async def fake_get_org(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def fake_send_decided(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.modules.procurement.service._load_requisition", fake_load_requisition)
+    monkeypatch.setattr("app.modules.procurement.service._get_org", fake_get_org)
+    monkeypatch.setattr("app.modules.procurement.service.send_procurement_requisition_decided", fake_send_decided)
+    monkeypatch.setattr(
+        "app.modules.procurement.service._serialize_requisition",
+        lambda req, _actor: SimpleNamespace(status=req.status),
+    )
+
+    ctx = SimpleNamespace(
+        organization=SimpleNamespace(id="org-1"),
+        member=SimpleNamespace(
+            id="finance-1",
+            role=SimpleNamespace(
+                name="Finance Manager",
+                permissions={"procurement": {"approve": "organization"}},
+            ),
+        ),
+    )
+    db = FakeDb()
+
+    response = await approve_procurement_requisition(
+        db,
+        ctx,
+        "req-3",
+        SimpleNamespace(comment=None),
+    )
+
+    assert requisition.status == "APPROVED"
+    assert ticket.status == "CANCELLED"
+    assert asset.status == "DAMAGED"
+    assert db.committed is True
+    assert response.status == "APPROVED"
