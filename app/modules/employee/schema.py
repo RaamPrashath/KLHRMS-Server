@@ -45,6 +45,7 @@ class EmployeeListItem(BaseModel):
     role: Optional[RoleBriefResponse] = None
     joined_at: str  # ISO datetime string
     attendance_today: AttendanceTodayResponse
+    microsoft_synced: bool = False
 
     model_config = {"from_attributes": True}
 

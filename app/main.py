@@ -24,6 +24,7 @@ from app.modules.hiring_teams.route import router as hiring_teams_router
 from app.modules.holiday_sync.route import router as holiday_sync_router
 from app.modules.jobs.route import router as jobs_router
 from app.modules.leave.route import router as leave_router
+from app.modules.microsoft_graph.route import router as microsoft_graph_router
 from app.modules.offers.public_route import router as public_offers_router
 from app.modules.offers.route import router as offers_router
 from app.modules.procurement.route import router as procurement_router
@@ -95,6 +96,7 @@ app.include_router(holiday_sync_router)
 app.include_router(weekly_plan_router, prefix=settings.api_v1_prefix)
 app.include_router(hiring_teams_router)
 app.include_router(employee_router)
+app.include_router(microsoft_graph_router)
 
 
 @app.get("/", tags=["root"], include_in_schema=False)

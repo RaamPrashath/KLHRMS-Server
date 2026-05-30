@@ -7,18 +7,18 @@ All queries are scoped by organizationId.
 
 from __future__ import annotations
 
-import datetime as dt
+import logging
 from typing import Optional
+from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
 
-from app.models.attendance_record import AttendanceRecord
-from app.models.member import Member
+from app.integrations.microsoft_graph.graph_client import MicrosoftGraphClient
+from app.integrations.microsoft_graph.token_manager import TokenManager
+from app.models.microsoft_integration_setting import MicrosoftIntegrationSetting
 from app.models.role import Role
-from app.models.user import User
 from app.modules.employee.schema import (
     AttendanceTodayResponse,
     EmployeeDeletePreview,
@@ -31,20 +31,7 @@ from app.modules.employee.schema import (
 )
 from app.models.recruitment import StageEventParticipant, HiringTeamMember, StageEvent, EventStatus
 
-
-def _attendance_status_for_record(record: AttendanceRecord | None) -> AttendanceTodayResponse:
-    """Map an AttendanceRecord ORM row to the response DTO."""
-    if record is None:
-        return AttendanceTodayResponse(status="NO_RECORD")
-
-    clock_in_str = record.clockIn.isoformat() if record.clockIn else None
-    clock_out_str = record.clockOut.isoformat() if record.clockOut else None
-
-    return AttendanceTodayResponse(
-        status=record.status,
-        clock_in=clock_in_str,
-        clock_out=clock_out_str,
-    )
+logger = logging.getLogger("klhrms.employee.service")
 
 
 async def list_employees(
@@ -52,128 +39,97 @@ async def list_employees(
     filters: EmployeeListFilters,
     db: AsyncSession,
 ) -> EmployeeListResponse:
-    """
-    Return a paginated list of employees for the given organization.
+    # ── Resolve Microsoft Graph credentials ──────────────────────────────────
+    tenant_id = ""
+    client_id = ""
+    client_secret = ""
 
-    Joins:
-      Member → User (name, email, image)
-      Member → Role (name)
-      Member → DepartmentMember → Department (name)
-      Member → AttendanceRecord for today (status, clock_in, clock_out)
-
-    Filters:
-      search          — case-insensitive match on user name or email
-      department_id   — filter by department
-      role_id         — filter by role
-      attendance_status — filter by today's attendance status
-    """
-    today = dt.date.today()
-
-    # ── Base query: Members in this org with eager-loaded relations ────────────
-    base_q = (
-        select(Member)
-        .where(Member.organizationId == organization_id)
-        .options(
-            joinedload(Member.user),
-            joinedload(Member.role),
+    settings_result = await db.execute(
+        select(MicrosoftIntegrationSetting).where(
+            MicrosoftIntegrationSetting.organization_id == UUID(organization_id),
+            MicrosoftIntegrationSetting.is_enabled.is_(True),
         )
     )
-
-    # ── Search filter ──────────────────────────────────────────────────────────
-    if filters.search:
-        term = f"%{filters.search.strip()}%"
-        base_q = base_q.join(User, Member.userId == User.id).where(
-            or_(
-                func.lower(User.name).like(func.lower(term)),
-                func.lower(User.email).like(func.lower(term)),
-            )
-        )
+    settings = settings_result.scalar_one_or_none()
+    if settings:
+        tenant_id = settings.tenant_id
+        client_id = settings.client_id
+        client_secret = settings.client_secret_ciphertext
     else:
-        # Always join user so we can order by name
-        base_q = base_q.join(User, Member.userId == User.id)
+        from app.shared.config import get_settings as get_app_settings
+        env = get_app_settings()
+        if env.azure_tenant_id and env.azure_client_id and env.azure_client_secret:
+            tenant_id = env.azure_tenant_id
+            client_id = env.azure_client_id
+            client_secret = env.azure_client_secret
 
-    # ── Department filter ──────────────────────────────────────────────────────
-    # (department table not yet migrated — filter skipped)
-
-    # ── Role filter ────────────────────────────────────────────────────────────
-    if filters.role_id:
-        base_q = base_q.where(Member.roleId == filters.role_id)
-
-    # ── Count total (before pagination) ───────────────────────────────────────
-    count_q = select(func.count()).select_from(base_q.subquery())
-    total_result = await db.execute(count_q)
-    total: int = total_result.scalar_one()
-
-    # ── Pagination ─────────────────────────────────────────────────────────────
-    page = max(1, filters.page)
-    page_size = max(1, min(100, filters.page_size))
-    offset = (page - 1) * page_size
-
-    members_result = await db.execute(
-        base_q.order_by(User.name.asc()).offset(offset).limit(page_size)
-    )
-    members: list[Member] = list(
-        members_result.scalars().unique().all()
-    )
-
-    if not members:
-        return EmployeeListResponse(
-            items=[],
-            total=total,
-            page=page,
-            page_size=page_size,
-            total_pages=max(1, -(-total // page_size)),
-        )
-
-    # ── Fetch today's attendance for all returned members in one query ─────────
-    member_ids = [m.id for m in members]
-    attendance_result = await db.execute(
-        select(AttendanceRecord).where(
-            AttendanceRecord.organizationId == organization_id,
-            AttendanceRecord.employeeId.in_(member_ids),
-            AttendanceRecord.date == today,
-        )
-    )
-    attendance_rows: list[AttendanceRecord] = list(
-        attendance_result.scalars().all()
-    )
-    attendance_map: dict[str, AttendanceRecord] = {r.employeeId: r for r in attendance_rows}
-
-    # ── Attendance status filter (post-fetch) ──────────────────────────────────
-    # We apply this after fetching to avoid a complex subquery join.
-    # For large orgs this should be moved to a SQL-level filter.
-    if filters.attendance_status:
-        target_status = filters.attendance_status.upper()
-        filtered_members: list[Member] = []
-        for m in members:
-            record = attendance_map.get(m.id)
-            actual_status = record.status if record else "NO_RECORD"
-            if actual_status == target_status:
-                filtered_members.append(m)
-        members = filtered_members
-
-    # ── Build response items ───────────────────────────────────────────────────
     items: list[EmployeeListItem] = []
-    for member in members:
-        user: User = member.user
-        role: Role | None = member.role
 
-        attendance_today = _attendance_status_for_record(attendance_map.get(member.id))
+    if not (tenant_id and client_id and client_secret):
+        return EmployeeListResponse(items=[], total=0, page=1, page_size=filters.page_size, total_pages=0)
 
+    # ── Fetch users live from Microsoft Graph API ────────────────────────────
+    page_size = max(1, min(100, filters.page_size))
+    page = max(1, filters.page)
+
+    try:
+        logger.info("Fetching Microsoft Graph users for org %s", organization_id)
+        tm = TokenManager(tenant_id, client_id, client_secret)
+        client = MicrosoftGraphClient(tm)
+        graph_users = await client.get_users()
+        logger.info("Fetched %d users from Microsoft Graph", len(graph_users))
+    except Exception as e:
+        logger.error("Failed to fetch Microsoft Graph users: %s", e)
+        return EmployeeListResponse(items=[], total=0, page=1, page_size=page_size, total_pages=0)
+
+    # ── Look up default "Employee" role for this org ─────────────────────────
+    default_role: RoleBriefResponse | None = None
+    role_result = await db.execute(
+        select(Role)
+        .where(Role.organizationId == organization_id)
+        .order_by(Role.name.asc())
+    )
+    all_roles: list[Role] = list(role_result.scalars().all())
+    for r in all_roles:
+        if r.name.lower() == "employee":
+            default_role = RoleBriefResponse(id=r.id, name=r.name)
+            break
+    if default_role is None and all_roles:
+        default_role = RoleBriefResponse(id=all_roles[0].id, name=all_roles[0].name)
+
+    # ── Search filter (client-side on fetched users) ─────────────────────────
+    filtered = graph_users
+    if filters.search:
+        term = filters.search.strip().lower()
+        filtered = [
+            u for u in filtered
+            if term in (u.display_name or "").lower()
+            or term in (u.email or "").lower()
+            or term in (u.user_principal_name or "").lower()
+        ]
+
+    total = len(filtered)
+    total_pages = max(1, -(-total // page_size))
+
+    # ── Paginate ─────────────────────────────────────────────────────────────
+    offset = (page - 1) * page_size
+    page_users = filtered[offset:offset + page_size]
+
+    # ── Build response items ─────────────────────────────────────────────────
+    for gu in page_users:
         items.append(
             EmployeeListItem(
-                member_id=member.id,
-                user_id=user.id,
-                name=user.name or user.email,
-                email=user.email,
-                image=user.image,
-                role=RoleBriefResponse(id=role.id, name=role.name) if role else None,
-                joined_at=member.createdAt.isoformat(),
-                attendance_today=attendance_today,
+                member_id=gu.graph_id,
+                user_id='',
+                name=gu.display_name or gu.email or gu.user_principal_name or 'Unknown',
+                email=gu.email or gu.user_principal_name or '',
+                image=None,
+                role=default_role,
+                joined_at='',
+                attendance_today=AttendanceTodayResponse(status='NO_RECORD'),
+                microsoft_synced=True,
             )
         )
-
-    total_pages = max(1, -(-total // page_size))
 
     return EmployeeListResponse(
         items=items,
