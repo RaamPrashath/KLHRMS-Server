@@ -13,6 +13,8 @@ from app.modules.employee.schema import (
     EmployeeDeactivateResponse,
     EmployeeListFilters,
     EmployeeListResponse,
+    UpdateEmployeeRoleRequest,
+    UpdateEmployeeRoleResponse,
 )
 from app.modules.employee import service
 from app.shared.deps.organization_member import MemberContext
@@ -52,6 +54,15 @@ async def handle_delete_employee(
     db: AsyncSession,
 ) -> EmployeeDeleteResponse:
     return await service.delete_employee(ctx.organization.id, member_id, db)
+
+
+async def handle_update_employee_role(
+    ctx: MemberContext,
+    member_id: str,
+    body: UpdateEmployeeRoleRequest,
+    db: AsyncSession,
+) -> UpdateEmployeeRoleResponse:
+    return await service.update_employee_role(ctx.organization.id, member_id, body.role_id, db)
 
 
 async def handle_deactivate_employee(

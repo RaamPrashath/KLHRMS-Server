@@ -92,6 +92,20 @@ class EmployeeDeleteResponse(BaseModel):
     removed_team_memberships: int
 
 
+# ─── Employee Role Update ──────────────────────────────────────────
+
+
+class UpdateEmployeeRoleRequest(BaseModel):
+    role_id: str
+
+
+class UpdateEmployeeRoleResponse(BaseModel):
+    member_id: str
+    name: str
+    role_id: str
+    role_name: str
+
+
 # ─── Employee Deactivate ──────────────────────────────────────────
 
 

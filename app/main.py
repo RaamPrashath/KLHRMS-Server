@@ -32,6 +32,7 @@ from app.modules.projects.route import router as projects_router
 from app.modules.onboarding.public_route import router as public_onboarding_router
 from app.modules.onboarding.route import router as onboarding_router
 from app.modules.role.route import router as role_router
+from app.modules.user.route import router as user_router
 from app.modules.weekly_plan.router import router as weekly_plan_router
 from app.shared.config import get_settings
 from app.shared.scheduler import register_jobs, scheduler
@@ -97,6 +98,7 @@ app.include_router(weekly_plan_router, prefix=settings.api_v1_prefix)
 app.include_router(hiring_teams_router)
 app.include_router(employee_router)
 app.include_router(microsoft_graph_router)
+app.include_router(user_router)
 
 
 @app.get("/", tags=["root"], include_in_schema=False)

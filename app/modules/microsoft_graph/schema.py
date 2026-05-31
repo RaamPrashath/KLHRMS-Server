@@ -4,16 +4,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class MicrosoftSettingsSaveRequest(BaseModel):
-    tenant_id: str = Field("", min_length=0)
-    client_id: str = Field("", min_length=0)
-    client_secret: str = Field("", min_length=0)
-
-
 class MicrosoftSettingsResponse(BaseModel):
     tenant_id: str = ""
     client_id: str = ""
-    client_secret_configured: bool = False
+    client_secret: str = ""
     is_enabled: bool = False
     last_sync_at: datetime | None = None
     last_sync_status: str | None = None

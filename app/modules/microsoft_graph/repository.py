@@ -41,20 +41,20 @@ class MicrosoftGraphRepository:
         org_id: str,
         tenant_id: str,
         client_id: str,
-        client_secret_ciphertext: str,
+        client_secret: str,
     ) -> MicrosoftIntegrationSetting:
         existing = await self.get_settings(org_id)
         if existing:
             existing.tenant_id = tenant_id
             existing.client_id = client_id
-            existing.client_secret_ciphertext = client_secret_ciphertext
+            existing.client_secret = client_secret
             existing.is_enabled = True
             return existing
         setting = MicrosoftIntegrationSetting(
             organization_id=UUID(org_id),
             tenant_id=tenant_id,
             client_id=client_id,
-            client_secret_ciphertext=client_secret_ciphertext,
+            client_secret=client_secret,
             is_enabled=True,
         )
         self._db.add(setting)

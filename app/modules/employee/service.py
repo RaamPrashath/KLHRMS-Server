@@ -8,17 +8,20 @@ All queries are scoped by organizationId.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Optional
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, func as sa_func, select
+from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.integrations.microsoft_graph.graph_client import MicrosoftGraphClient
-from app.integrations.microsoft_graph.token_manager import TokenManager
-from app.models.microsoft_integration_setting import MicrosoftIntegrationSetting
+from app.models.account import Account
+from app.models.attendance_record import AttendanceRecord
+from app.models.member import Member
 from app.models.role import Role
+from app.models.user import User
 from app.modules.employee.schema import (
     AttendanceTodayResponse,
     EmployeeDeletePreview,
@@ -28,6 +31,7 @@ from app.modules.employee.schema import (
     EmployeeListItem,
     EmployeeListResponse,
     RoleBriefResponse,
+    UpdateEmployeeRoleResponse,
 )
 from app.models.recruitment import StageEventParticipant, HiringTeamMember, StageEvent, EventStatus
 
@@ -39,95 +43,98 @@ async def list_employees(
     filters: EmployeeListFilters,
     db: AsyncSession,
 ) -> EmployeeListResponse:
-    # ── Resolve Microsoft Graph credentials ──────────────────────────────────
-    tenant_id = ""
-    client_id = ""
-    client_secret = ""
+    page = max(1, filters.page)
+    page_size = max(1, min(100, filters.page_size))
 
-    settings_result = await db.execute(
-        select(MicrosoftIntegrationSetting).where(
-            MicrosoftIntegrationSetting.organization_id == UUID(organization_id),
-            MicrosoftIntegrationSetting.is_enabled.is_(True),
+    # ── Base query: active members joined with User + Role ────────────────
+    query = (
+        select(Member, User, Role)
+        .join(User, Member.userId == User.id)
+        .outerjoin(Role, Member.roleId == Role.id)
+        .where(
+            Member.organizationId == organization_id,
+            Member.status == "ACTIVE",
         )
     )
-    settings = settings_result.scalar_one_or_none()
-    if settings:
-        tenant_id = settings.tenant_id
-        client_id = settings.client_id
-        client_secret = settings.client_secret_ciphertext
-    else:
-        from app.shared.config import get_settings as get_app_settings
-        env = get_app_settings()
-        if env.azure_tenant_id and env.azure_client_id and env.azure_client_secret:
-            tenant_id = env.azure_tenant_id
-            client_id = env.azure_client_id
-            client_secret = env.azure_client_secret
 
-    items: list[EmployeeListItem] = []
-
-    if not (tenant_id and client_id and client_secret):
-        return EmployeeListResponse(items=[], total=0, page=1, page_size=filters.page_size, total_pages=0)
-
-    # ── Fetch users live from Microsoft Graph API ────────────────────────────
-    page_size = max(1, min(100, filters.page_size))
-    page = max(1, filters.page)
-
-    try:
-        logger.info("Fetching Microsoft Graph users for org %s", organization_id)
-        tm = TokenManager(tenant_id, client_id, client_secret)
-        client = MicrosoftGraphClient(tm)
-        graph_users = await client.get_users()
-        logger.info("Fetched %d users from Microsoft Graph", len(graph_users))
-    except Exception as e:
-        logger.error("Failed to fetch Microsoft Graph users: %s", e)
-        return EmployeeListResponse(items=[], total=0, page=1, page_size=page_size, total_pages=0)
-
-    # ── Look up default "Employee" role for this org ─────────────────────────
-    default_role: RoleBriefResponse | None = None
-    role_result = await db.execute(
-        select(Role)
-        .where(Role.organizationId == organization_id)
-        .order_by(Role.name.asc())
-    )
-    all_roles: list[Role] = list(role_result.scalars().all())
-    for r in all_roles:
-        if r.name.lower() == "employee":
-            default_role = RoleBriefResponse(id=r.id, name=r.name)
-            break
-    if default_role is None and all_roles:
-        default_role = RoleBriefResponse(id=all_roles[0].id, name=all_roles[0].name)
-
-    # ── Search filter (client-side on fetched users) ─────────────────────────
-    filtered = graph_users
+    # ── Search filter ──────────────────────────────────────────────────────
     if filters.search:
-        term = filters.search.strip().lower()
-        filtered = [
-            u for u in filtered
-            if term in (u.display_name or "").lower()
-            or term in (u.email or "").lower()
-            or term in (u.user_principal_name or "").lower()
-        ]
+        term = f"%{filters.search.strip()}%"
+        query = query.where(
+            or_(User.name.ilike(term), User.email.ilike(term))
+        )
 
-    total = len(filtered)
+    # ── Role filter ────────────────────────────────────────────────────────
+    if filters.role_id:
+        query = query.where(Member.roleId == filters.role_id)
+
+    # ── Attendance status filter ───────────────────────────────────────────
+    if filters.attendance_status:
+        today = date.today()
+        query = query.join(
+            AttendanceRecord,
+            (AttendanceRecord.employeeId == Member.id)
+            & (AttendanceRecord.date == today)
+            & (AttendanceRecord.status == filters.attendance_status),
+        )
+
+    # ── Count total before pagination ───────────────────────────────────────
+    count_query = select(sa_func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
     total_pages = max(1, -(-total // page_size))
 
-    # ── Paginate ─────────────────────────────────────────────────────────────
-    offset = (page - 1) * page_size
-    page_users = filtered[offset:offset + page_size]
+    # ── Paginate ───────────────────────────────────────────────────────────
+    offset_val = (page - 1) * page_size
+    query = query.order_by(User.name.asc()).offset(offset_val).limit(page_size)
+    result = await db.execute(query)
+    rows = result.all()
 
-    # ── Build response items ─────────────────────────────────────────────────
-    for gu in page_users:
+    # ── Batch fetch today's attendance ──────────────────────────────────────
+    today = date.today()
+    member_ids = [m.id for m, _, _ in rows]
+    attendance_rows: dict[str, AttendanceRecord] = {}
+    if member_ids:
+        att_result = await db.execute(
+            select(AttendanceRecord).where(
+                AttendanceRecord.employeeId.in_(member_ids),
+                AttendanceRecord.date == today,
+            )
+        )
+        for ar in att_result.scalars().all():
+            attendance_rows[ar.employeeId] = ar
+
+    # ── Batch fetch Microsoft sync status ──────────────────────────────────
+    user_ids = [u.id for _, u, _ in rows]
+    synced_user_ids: set[str] = set()
+    if user_ids:
+        acct_result = await db.execute(
+            select(Account.userId).where(
+                Account.providerId == "microsoft",
+                Account.userId.in_(user_ids),
+            )
+        )
+        synced_user_ids = {row[0] for row in acct_result}
+
+    # ── Build response items ───────────────────────────────────────────────
+    items: list[EmployeeListItem] = []
+    for member, user, role in rows:
+        att = attendance_rows.get(member.id)
         items.append(
             EmployeeListItem(
-                member_id=gu.graph_id,
-                user_id='',
-                name=gu.display_name or gu.email or gu.user_principal_name or 'Unknown',
-                email=gu.email or gu.user_principal_name or '',
-                image=None,
-                role=default_role,
-                joined_at='',
-                attendance_today=AttendanceTodayResponse(status='NO_RECORD'),
-                microsoft_synced=True,
+                member_id=member.id,
+                user_id=user.id,
+                name=user.name or user.email or "Unknown",
+                email=user.email or "",
+                image=user.image,
+                role=RoleBriefResponse(id=role.id, name=role.name) if role else None,
+                joined_at=member.createdAt.isoformat() if member.createdAt else "",
+                attendance_today=AttendanceTodayResponse(
+                    status=att.status if att else "NO_RECORD",
+                    clock_in=att.clockIn.isoformat() if att and att.clockIn else None,
+                    clock_out=att.clockOut.isoformat() if att and att.clockOut else None,
+                ),
+                microsoft_synced=user.id in synced_user_ids,
             )
         )
 
@@ -138,6 +145,11 @@ async def list_employees(
         page_size=page_size,
         total_pages=total_pages,
     )
+
+
+async def list_departments_for_org(organization_id: str, db: AsyncSession) -> list[dict]:
+    """Return all departments for filter dropdown (placeholder until department module is complete)."""
+    return []
 
 
 async def list_roles_for_org(organization_id: str, db: AsyncSession) -> list[dict]:
@@ -160,7 +172,12 @@ async def preview_employee_delete(
     """Preview what will happen when an employee is deleted."""
     from sqlalchemy import func, select
 
-    member = await db.get(Member, member_id)
+    result = await db.execute(
+        select(Member)
+        .options(joinedload(Member.user))
+        .where(Member.id == member_id)
+    )
+    member = result.unique().scalar_one_or_none()
     if member is None or member.organizationId != organization_id:
         raise HTTPException(status_code=404, detail="Employee not found")
 
@@ -199,7 +216,12 @@ async def delete_employee(
     """Delete an employee, unassigning all their interviews and removing team memberships."""
     from sqlalchemy import select
 
-    member = await db.get(Member, member_id)
+    result = await db.execute(
+        select(Member)
+        .options(joinedload(Member.user))
+        .where(Member.id == member_id)
+    )
+    member = result.unique().scalar_one_or_none()
     if member is None or member.organizationId != organization_id:
         raise HTTPException(status_code=404, detail="Employee not found")
 
@@ -255,7 +277,12 @@ async def deactivate_employee(
 ) -> EmployeeDeactivateResponse:
     """Set a member's status to INACTIVE (soft-delete)."""
 
-    member = await db.get(Member, member_id)
+    result = await db.execute(
+        select(Member)
+        .options(joinedload(Member.user))
+        .where(Member.id == member_id)
+    )
+    member = result.unique().scalar_one_or_none()
     if member is None or member.organizationId != organization_id:
         raise HTTPException(status_code=404, detail="Employee not found")
 
@@ -271,4 +298,41 @@ async def deactivate_employee(
         name=user_name,
         email=member.user.email if member.user else "",
         status=member.status,
+    )
+
+
+async def update_employee_role(
+    organization_id: str,
+    member_id: str,
+    role_id: str,
+    db: AsyncSession,
+) -> UpdateEmployeeRoleResponse:
+    result = await db.execute(
+        select(Member)
+        .options(joinedload(Member.user))
+        .where(Member.id == member_id)
+    )
+    member = result.unique().scalar_one_or_none()
+    if not member or member.organizationId != organization_id:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    result = await db.execute(
+        select(Role).where(Role.id == role_id, Role.organizationId == organization_id)
+    )
+    role = result.scalar_one_or_none()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    member.roleId = role_id
+    db.add(member)
+    await db.commit()
+    await db.refresh(member)
+
+    user_name = member.user.name or member.user.email or "" if member.user else ""
+
+    return UpdateEmployeeRoleResponse(
+        member_id=member.id,
+        name=user_name,
+        role_id=role_id,
+        role_name=role.name,
     )

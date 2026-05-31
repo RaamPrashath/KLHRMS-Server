@@ -9,7 +9,6 @@ from app.integrations.microsoft_graph.schema import ConnectionTestResult, Micros
 from app.modules.microsoft_graph.controller import MicrosoftGraphController
 from app.modules.microsoft_graph.schema import (
     MicrosoftSettingsResponse,
-    MicrosoftSettingsSaveRequest,
     SyncRunListItem,
     SyncRunResponse,
     SyncStatusResponse,
@@ -43,9 +42,9 @@ async def get_settings(
 
 @router.put("/settings", response_model=MicrosoftSettingsResponse)
 async def save_settings(
-    body: MicrosoftSettingsSaveRequest,
     ctx: Annotated[MemberContext, Depends(ORG_EDIT)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    body: TestConnectionRequest,
 ):
     try:
         controller = _get_controller(db)

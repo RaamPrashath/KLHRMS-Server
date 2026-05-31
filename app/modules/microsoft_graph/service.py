@@ -22,7 +22,6 @@ from app.modules.microsoft_graph.schema import (
     SyncStatusResponse,
 )
 from app.shared.config import get_settings
-from app.shared.encryption import decrypt as decrypt_secret, encrypt as encrypt_secret
 
 logger = logging.getLogger("klhrms.microsoft.graph.service")
 
@@ -37,15 +36,11 @@ class MicrosoftIntegrationService:
     async def _get_credentials(self, org_id: str) -> dict[str, str]:
         """Resolve credentials: DB settings first, env var fallback."""
         db_settings = await self._repo.get_settings(org_id)
-        if db_settings and db_settings.is_enabled:
-            try:
-                plain = decrypt_secret(db_settings.client_secret_ciphertext)
-            except Exception:
-                raise MicrosoftGraphConfigurationError("Failed to decrypt client secret")
+        if db_settings and db_settings.is_enabled and db_settings.client_secret:
             return {
                 "tenant_id": db_settings.tenant_id,
                 "client_id": db_settings.client_id,
-                "client_secret": plain,
+                "client_secret": db_settings.client_secret,
             }
         env = get_settings()
         if env.azure_tenant_id and env.azure_client_id and env.azure_client_secret:
@@ -62,32 +57,6 @@ class MicrosoftIntegrationService:
         tm = TokenManager(creds["tenant_id"], creds["client_id"], creds["client_secret"])
         return MicrosoftGraphClient(tm)
 
-    async def _resolve_credentials_for_save(
-        self,
-        org_id: str,
-        tenant_id: str,
-        client_id: str,
-        client_secret: str,
-    ) -> tuple[str, str, str]:
-        existing = await self._repo.get_settings(org_id)
-
-        resolved_tenant_id = tenant_id.strip() or (existing.tenant_id if existing else "")
-        resolved_client_id = client_id.strip() or (existing.client_id if existing else "")
-
-        if client_secret.strip():
-            resolved_client_secret_ciphertext = encrypt_secret(client_secret.strip())
-        elif existing and existing.client_secret_ciphertext:
-            resolved_client_secret_ciphertext = existing.client_secret_ciphertext
-        else:
-            resolved_client_secret_ciphertext = ""
-
-        if not resolved_tenant_id or not resolved_client_id or not resolved_client_secret_ciphertext:
-            raise MicrosoftGraphConfigurationError(
-                "Tenant ID, Client ID, and Client Secret are required before saving Microsoft Graph settings"
-            )
-
-        return resolved_tenant_id, resolved_client_id, resolved_client_secret_ciphertext
-
     # ── Settings ───────────────────────────────────────────────────────────────
 
     async def get_settings(self, org_id: str) -> MicrosoftSettingsResponse:
@@ -96,7 +65,7 @@ class MicrosoftIntegrationService:
             return MicrosoftSettingsResponse(
                 tenant_id=db_settings.tenant_id,
                 client_id=db_settings.client_id,
-                client_secret_configured=bool(db_settings.client_secret_ciphertext),
+                client_secret=db_settings.client_secret or "",
                 is_enabled=db_settings.is_enabled,
                 last_sync_at=db_settings.last_sync_at,
                 last_sync_status=db_settings.last_sync_status,
@@ -106,30 +75,31 @@ class MicrosoftIntegrationService:
         return MicrosoftSettingsResponse(
             tenant_id=env.azure_tenant_id or "",
             client_id=env.azure_client_id or "",
-            client_secret_configured=bool(env.azure_client_secret),
+            client_secret=env.azure_client_secret or "",
             is_enabled=bool(env.azure_tenant_id),
         )
 
     async def save_settings(
         self, org_id: str, tenant_id: str, client_id: str, client_secret: str
     ) -> MicrosoftSettingsResponse:
-        resolved_tenant_id, resolved_client_id, ciphertext = await self._resolve_credentials_for_save(
-            org_id,
-            tenant_id,
-            client_id,
-            client_secret,
-        )
+        existing = await self._repo.get_settings(org_id)
+        resolved_tenant = tenant_id.strip() or (existing.tenant_id if existing else "")
+        resolved_client = client_id.strip() or (existing.client_id if existing else "")
+        resolved_secret = client_secret.strip() or (existing.client_secret if existing else "")
+
+        if not resolved_tenant or not resolved_client or not resolved_secret:
+            raise MicrosoftGraphConfigurationError(
+                "Tenant ID, Client ID, and Client Secret are required"
+            )
+
         setting = await self._repo.upsert_settings(
-            org_id,
-            resolved_tenant_id,
-            resolved_client_id,
-            ciphertext,
+            org_id, resolved_tenant, resolved_client, resolved_secret,
         )
         await self._db.commit()
         return MicrosoftSettingsResponse(
             tenant_id=setting.tenant_id,
             client_id=setting.client_id,
-            client_secret_configured=bool(ciphertext),
+            client_secret=setting.client_secret or "",
             is_enabled=setting.is_enabled,
         )
 
@@ -141,23 +111,24 @@ class MicrosoftIntegrationService:
             is_configured=db_settings.is_enabled,
             tenant_id=db_settings.tenant_id,
             client_id=db_settings.client_id,
-            client_secret_configured=bool(db_settings.client_secret_ciphertext),
+            client_secret_configured=bool(db_settings.client_secret),
             last_sync_at=db_settings.last_sync_at,
             last_sync_status=db_settings.last_sync_status,
             last_sync_summary=db_settings.last_sync_summary,
         )
 
-    # ── Connection Test ────────────────────────────────────────────────────────
+    # ── Connection Test (no DB writes) ────────────────────────────────────────
 
     async def test_connection(
         self, org_id: str, tenant_id: str = "", client_id: str = "", client_secret: str = ""
     ) -> ConnectionTestResult:
-        if tenant_id or client_id or client_secret:
-            await self.save_settings(org_id, tenant_id, client_id, client_secret)
-        creds = await self._get_credentials(org_id)
-        client = self._build_graph_client(creds)
-        result = await client.test_connection()
-        return result
+        if tenant_id and client_id and client_secret:
+            tm = TokenManager(tenant_id.strip(), client_id.strip(), client_secret.strip())
+            client = MicrosoftGraphClient(tm)
+        else:
+            creds = await self._get_credentials(org_id)
+            client = self._build_graph_client(creds)
+        return await client.test_connection()
 
     # ── Organization ───────────────────────────────────────────────────────────
 
@@ -196,7 +167,6 @@ class MicrosoftIntegrationService:
                 org_id,
             )
 
-            # First pass: upsert all employees
             for gu in graph_users:
                 try:
                     _user, member, identity_created = await self._repo.upsert_user_member_from_graph(
@@ -311,4 +281,3 @@ class MicrosoftIntegrationService:
             started_at=run.started_at,
             completed_at=run.completed_at,
         )
-
