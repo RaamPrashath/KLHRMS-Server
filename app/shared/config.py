@@ -65,6 +65,11 @@ class Settings(BaseSettings):
         alias="CORS_ORIGINS",
     )
 
+    cors_origin_regex: str = Field(
+        default=r"https://.*\.vercel\.app",
+        alias="CORS_ORIGIN_REGEX",
+    )
+
     allowed_hosts: str = Field(
         default="localhost,127.0.0.1,testserver",
         alias="ALLOWED_HOSTS",
@@ -194,6 +199,11 @@ class Settings(BaseSettings):
             for origin in self.cors_origins.split(",")
             if origin.strip()
         ]
+
+    @property
+    def cors_origin_regex_value(self) -> str | None:
+        value = self.cors_origin_regex.strip()
+        return value or None
 
     @property
     def allowed_hosts_list(self) -> list[str]:
