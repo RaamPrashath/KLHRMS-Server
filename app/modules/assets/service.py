@@ -904,6 +904,7 @@ def _my_ticket_response(log: AssetMaintenanceLog) -> MyTicketResponse:
         status=log.status,
         serviceDate=log.serviceDate.isoformat() if log.serviceDate else "",
         createdAt=log.createdAt.isoformat() if log.createdAt else "",
+        updatedAt=log.updatedAt.isoformat() if log.updatedAt else "",
     )
 
 
@@ -934,6 +935,9 @@ def _maintenance_ticket_response(log: AssetMaintenanceLog) -> MaintenanceTicketR
         createdAt=log.createdAt.isoformat() if log.createdAt else "",
         loggedByMemberId=log.loggedByMemberId,
         loggedByName=log.loggedByMember.user.name
+        if log.loggedByMember and log.loggedByMember.user
+        else None,
+        loggedByEmail=log.loggedByMember.user.email
         if log.loggedByMember and log.loggedByMember.user
         else None,
         assetLifecycleStatus=asset_lifecycle_status,
