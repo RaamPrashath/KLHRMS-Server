@@ -45,6 +45,7 @@ class EmployeeListItem(BaseModel):
     role: Optional[RoleBriefResponse] = None
     joined_at: str  # ISO datetime string
     attendance_today: AttendanceTodayResponse
+    microsoft_synced: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -89,6 +90,20 @@ class EmployeeDeleteResponse(BaseModel):
     member_id: str
     unassigned_interviews: int
     removed_team_memberships: int
+
+
+# ─── Employee Role Update ──────────────────────────────────────────
+
+
+class UpdateEmployeeRoleRequest(BaseModel):
+    role_id: str
+
+
+class UpdateEmployeeRoleResponse(BaseModel):
+    member_id: str
+    name: str
+    role_id: str
+    role_name: str
 
 
 # ─── Employee Deactivate ──────────────────────────────────────────

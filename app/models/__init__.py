@@ -55,5 +55,11 @@ from app.models.team import Team
 from app.models.team_member import TeamMember
 from app.models.user import User
 from app.models.verification import Verification
+from app.models.employee import Employee
+from app.models.employee_group import EmployeeGroup
+from app.models.employee_group_membership import EmployeeGroupMembership
+from app.models.microsoft_integration_setting import MicrosoftIntegrationSetting
+from app.models.microsoft_sync_log import MicrosoftSyncLog
+from app.models.microsoft_sync_run import MicrosoftSyncRun
 from app.models.weekly_plan import WeeklyPlan
 from app.models.work_hour_policy import WorkHourPolicy

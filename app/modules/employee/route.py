@@ -30,6 +30,7 @@ from app.modules.employee.controller import (
     handle_list_employees,
     handle_list_roles,
     handle_preview_employee_delete,
+    handle_update_employee_role,
 )
 from app.modules.employee.schema import (
     EmployeeDeactivateResponse,
@@ -37,6 +38,8 @@ from app.modules.employee.schema import (
     EmployeeDeleteResponse,
     EmployeeListFilters,
     EmployeeListResponse,
+    UpdateEmployeeRoleRequest,
+    UpdateEmployeeRoleResponse,
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
@@ -102,6 +105,16 @@ async def deactivate_employee(
     db: AsyncSession = Depends(get_db),
 ) -> EmployeeDeactivateResponse:
     return await handle_deactivate_employee(ctx, member_id, db)
+
+
+@router.patch("/{member_id}/role", response_model=UpdateEmployeeRoleResponse)
+async def update_employee_role(
+    member_id: str,
+    body: UpdateEmployeeRoleRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("employees", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> UpdateEmployeeRoleResponse:
+    return await handle_update_employee_role(ctx, member_id, body, db)
 
 
 @router.delete("/{member_id}", response_model=EmployeeDeleteResponse)

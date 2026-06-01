@@ -166,6 +166,22 @@ class Settings(BaseSettings):
         alias="SECONDARY_RECEIVER",
     )
 
+    # ── Microsoft Graph API ──────────────────────────
+    azure_tenant_id: str = Field(
+        default=os.getenv("AZURE_TENANT_ID", ""),
+        alias="AZURE_TENANT_ID",
+    )
+
+    azure_client_id: str = Field(
+        default=os.getenv("AZURE_CLIENT_ID", ""),
+        alias="AZURE_CLIENT_ID",
+    )
+
+    azure_client_secret: str = Field(
+        default=os.getenv("AZURE_CLIENT_SECRET", ""),
+        alias="AZURE_CLIENT_SECRET",
+    )
+
     @field_validator("database_url", mode="before")
     @classmethod
     def validate_database_url(cls, value: str) -> str:

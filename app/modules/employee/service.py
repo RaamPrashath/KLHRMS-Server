@@ -7,14 +7,17 @@ All queries are scoped by organizationId.
 
 from __future__ import annotations
 
-import datetime as dt
+import logging
+from datetime import date
 from typing import Optional
+from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import or_, func as sa_func, select
 from sqlalchemy.orm import joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.account import Account
 from app.models.attendance_record import AttendanceRecord
 from app.models.member import Member
 from app.models.role import Role
@@ -28,23 +31,11 @@ from app.modules.employee.schema import (
     EmployeeListItem,
     EmployeeListResponse,
     RoleBriefResponse,
+    UpdateEmployeeRoleResponse,
 )
 from app.models.recruitment import StageEventParticipant, HiringTeamMember, StageEvent, EventStatus
 
-
-def _attendance_status_for_record(record: AttendanceRecord | None) -> AttendanceTodayResponse:
-    """Map an AttendanceRecord ORM row to the response DTO."""
-    if record is None:
-        return AttendanceTodayResponse(status="NO_RECORD")
-
-    clock_in_str = record.clockIn.isoformat() if record.clockIn else None
-    clock_out_str = record.clockOut.isoformat() if record.clockOut else None
-
-    return AttendanceTodayResponse(
-        status=record.status,
-        clock_in=clock_in_str,
-        clock_out=clock_out_str,
-    )
+logger = logging.getLogger("klhrms.employee.service")
 
 
 async def list_employees(
@@ -52,128 +43,100 @@ async def list_employees(
     filters: EmployeeListFilters,
     db: AsyncSession,
 ) -> EmployeeListResponse:
-    """
-    Return a paginated list of employees for the given organization.
-
-    Joins:
-      Member → User (name, email, image)
-      Member → Role (name)
-      Member → DepartmentMember → Department (name)
-      Member → AttendanceRecord for today (status, clock_in, clock_out)
-
-    Filters:
-      search          — case-insensitive match on user name or email
-      department_id   — filter by department
-      role_id         — filter by role
-      attendance_status — filter by today's attendance status
-    """
-    today = dt.date.today()
-
-    # ── Base query: Members in this org with eager-loaded relations ────────────
-    base_q = (
-        select(Member)
-        .where(Member.organizationId == organization_id)
-        .options(
-            joinedload(Member.user),
-            joinedload(Member.role),
-        )
-    )
-
-    # ── Search filter ──────────────────────────────────────────────────────────
-    if filters.search:
-        term = f"%{filters.search.strip()}%"
-        base_q = base_q.join(User, Member.userId == User.id).where(
-            or_(
-                func.lower(User.name).like(func.lower(term)),
-                func.lower(User.email).like(func.lower(term)),
-            )
-        )
-    else:
-        # Always join user so we can order by name
-        base_q = base_q.join(User, Member.userId == User.id)
-
-    # ── Department filter ──────────────────────────────────────────────────────
-    # (department table not yet migrated — filter skipped)
-
-    # ── Role filter ────────────────────────────────────────────────────────────
-    if filters.role_id:
-        base_q = base_q.where(Member.roleId == filters.role_id)
-
-    # ── Count total (before pagination) ───────────────────────────────────────
-    count_q = select(func.count()).select_from(base_q.subquery())
-    total_result = await db.execute(count_q)
-    total: int = total_result.scalar_one()
-
-    # ── Pagination ─────────────────────────────────────────────────────────────
     page = max(1, filters.page)
     page_size = max(1, min(100, filters.page_size))
-    offset = (page - 1) * page_size
 
-    members_result = await db.execute(
-        base_q.order_by(User.name.asc()).offset(offset).limit(page_size)
-    )
-    members: list[Member] = list(
-        members_result.scalars().unique().all()
-    )
-
-    if not members:
-        return EmployeeListResponse(
-            items=[],
-            total=total,
-            page=page,
-            page_size=page_size,
-            total_pages=max(1, -(-total // page_size)),
-        )
-
-    # ── Fetch today's attendance for all returned members in one query ─────────
-    member_ids = [m.id for m in members]
-    attendance_result = await db.execute(
-        select(AttendanceRecord).where(
-            AttendanceRecord.organizationId == organization_id,
-            AttendanceRecord.employeeId.in_(member_ids),
-            AttendanceRecord.date == today,
+    # ── Base query: active members joined with User + Role ────────────────
+    query = (
+        select(Member, User, Role)
+        .join(User, Member.userId == User.id)
+        .outerjoin(Role, Member.roleId == Role.id)
+        .where(
+            Member.organizationId == organization_id,
+            Member.status == "ACTIVE",
         )
     )
-    attendance_rows: list[AttendanceRecord] = list(
-        attendance_result.scalars().all()
-    )
-    attendance_map: dict[str, AttendanceRecord] = {r.employeeId: r for r in attendance_rows}
 
-    # ── Attendance status filter (post-fetch) ──────────────────────────────────
-    # We apply this after fetching to avoid a complex subquery join.
-    # For large orgs this should be moved to a SQL-level filter.
+    # ── Search filter ──────────────────────────────────────────────────────
+    if filters.search:
+        term = f"%{filters.search.strip()}%"
+        query = query.where(
+            or_(User.name.ilike(term), User.email.ilike(term))
+        )
+
+    # ── Role filter ────────────────────────────────────────────────────────
+    if filters.role_id:
+        query = query.where(Member.roleId == filters.role_id)
+
+    # ── Attendance status filter ───────────────────────────────────────────
     if filters.attendance_status:
-        target_status = filters.attendance_status.upper()
-        filtered_members: list[Member] = []
-        for m in members:
-            record = attendance_map.get(m.id)
-            actual_status = record.status if record else "NO_RECORD"
-            if actual_status == target_status:
-                filtered_members.append(m)
-        members = filtered_members
+        today = date.today()
+        query = query.join(
+            AttendanceRecord,
+            (AttendanceRecord.employeeId == Member.id)
+            & (AttendanceRecord.date == today)
+            & (AttendanceRecord.status == filters.attendance_status),
+        )
 
-    # ── Build response items ───────────────────────────────────────────────────
+    # ── Count total before pagination ───────────────────────────────────────
+    count_query = select(sa_func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+    total_pages = max(1, -(-total // page_size))
+
+    # ── Paginate ───────────────────────────────────────────────────────────
+    offset_val = (page - 1) * page_size
+    query = query.order_by(User.name.asc()).offset(offset_val).limit(page_size)
+    result = await db.execute(query)
+    rows = result.all()
+
+    # ── Batch fetch today's attendance ──────────────────────────────────────
+    today = date.today()
+    member_ids = [m.id for m, _, _ in rows]
+    attendance_rows: dict[str, AttendanceRecord] = {}
+    if member_ids:
+        att_result = await db.execute(
+            select(AttendanceRecord).where(
+                AttendanceRecord.employeeId.in_(member_ids),
+                AttendanceRecord.date == today,
+            )
+        )
+        for ar in att_result.scalars().all():
+            attendance_rows[ar.employeeId] = ar
+
+    # ── Batch fetch Microsoft sync status ──────────────────────────────────
+    user_ids = [u.id for _, u, _ in rows]
+    synced_user_ids: set[str] = set()
+    if user_ids:
+        acct_result = await db.execute(
+            select(Account.userId).where(
+                Account.providerId == "microsoft",
+                Account.userId.in_(user_ids),
+            )
+        )
+        synced_user_ids = {row[0] for row in acct_result}
+
+    # ── Build response items ───────────────────────────────────────────────
     items: list[EmployeeListItem] = []
-    for member in members:
-        user: User = member.user
-        role: Role | None = member.role
-
-        attendance_today = _attendance_status_for_record(attendance_map.get(member.id))
-
+    for member, user, role in rows:
+        att = attendance_rows.get(member.id)
         items.append(
             EmployeeListItem(
                 member_id=member.id,
                 user_id=user.id,
-                name=user.name or user.email,
-                email=user.email,
+                name=user.name or user.email or "Unknown",
+                email=user.email or "",
                 image=user.image,
                 role=RoleBriefResponse(id=role.id, name=role.name) if role else None,
-                joined_at=member.createdAt.isoformat(),
-                attendance_today=attendance_today,
+                joined_at=member.createdAt.isoformat() if member.createdAt else "",
+                attendance_today=AttendanceTodayResponse(
+                    status=att.status if att else "NO_RECORD",
+                    clock_in=att.clockIn.isoformat() if att and att.clockIn else None,
+                    clock_out=att.clockOut.isoformat() if att and att.clockOut else None,
+                ),
+                microsoft_synced=user.id in synced_user_ids,
             )
         )
-
-    total_pages = max(1, -(-total // page_size))
 
     return EmployeeListResponse(
         items=items,
@@ -182,6 +145,11 @@ async def list_employees(
         page_size=page_size,
         total_pages=total_pages,
     )
+
+
+async def list_departments_for_org(organization_id: str, db: AsyncSession) -> list[dict]:
+    """Return all departments for filter dropdown (placeholder until department module is complete)."""
+    return []
 
 
 async def list_roles_for_org(organization_id: str, db: AsyncSession) -> list[dict]:
@@ -204,7 +172,12 @@ async def preview_employee_delete(
     """Preview what will happen when an employee is deleted."""
     from sqlalchemy import func, select
 
-    member = await db.get(Member, member_id)
+    result = await db.execute(
+        select(Member)
+        .options(joinedload(Member.user))
+        .where(Member.id == member_id)
+    )
+    member = result.unique().scalar_one_or_none()
     if member is None or member.organizationId != organization_id:
         raise HTTPException(status_code=404, detail="Employee not found")
 
@@ -243,7 +216,12 @@ async def delete_employee(
     """Delete an employee, unassigning all their interviews and removing team memberships."""
     from sqlalchemy import select
 
-    member = await db.get(Member, member_id)
+    result = await db.execute(
+        select(Member)
+        .options(joinedload(Member.user))
+        .where(Member.id == member_id)
+    )
+    member = result.unique().scalar_one_or_none()
     if member is None or member.organizationId != organization_id:
         raise HTTPException(status_code=404, detail="Employee not found")
 
@@ -299,7 +277,12 @@ async def deactivate_employee(
 ) -> EmployeeDeactivateResponse:
     """Set a member's status to INACTIVE (soft-delete)."""
 
-    member = await db.get(Member, member_id)
+    result = await db.execute(
+        select(Member)
+        .options(joinedload(Member.user))
+        .where(Member.id == member_id)
+    )
+    member = result.unique().scalar_one_or_none()
     if member is None or member.organizationId != organization_id:
         raise HTTPException(status_code=404, detail="Employee not found")
 
@@ -315,4 +298,41 @@ async def deactivate_employee(
         name=user_name,
         email=member.user.email if member.user else "",
         status=member.status,
+    )
+
+
+async def update_employee_role(
+    organization_id: str,
+    member_id: str,
+    role_id: str,
+    db: AsyncSession,
+) -> UpdateEmployeeRoleResponse:
+    result = await db.execute(
+        select(Member)
+        .options(joinedload(Member.user))
+        .where(Member.id == member_id)
+    )
+    member = result.unique().scalar_one_or_none()
+    if not member or member.organizationId != organization_id:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    result = await db.execute(
+        select(Role).where(Role.id == role_id, Role.organizationId == organization_id)
+    )
+    role = result.scalar_one_or_none()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    member.roleId = role_id
+    db.add(member)
+    await db.commit()
+    await db.refresh(member)
+
+    user_name = member.user.name or member.user.email or "" if member.user else ""
+
+    return UpdateEmployeeRoleResponse(
+        member_id=member.id,
+        name=user_name,
+        role_id=role_id,
+        role_name=role.name,
     )
