@@ -70,18 +70,11 @@ class ClockOutRequest(BaseModel):
         default=None,
         description="Explicit clock-out timestamp (UTC). Defaults to now.",
     )
-    work_log_text: str = Field(
-        ...,
-        min_length=20,
+    work_log_text: str | None = Field(
+        default=None,
         max_length=1000,
-        description="Mandatory daily work-log narrative saved with the clock-out action.",
+        description="Optional daily work-log narrative saved with the clock-out action.",
     )
-
-    @model_validator(mode="after")
-    def validate_work_log_text(self) -> "ClockOutRequest":
-        if len(self.work_log_text.strip()) < 20:
-            raise ValueError("work_log_text must be at least 20 non-space characters")
-        return self
 
 
 class ManualDayEntryRequest(BaseModel):

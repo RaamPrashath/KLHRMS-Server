@@ -1000,7 +1000,7 @@ async def get_stage_workspace(
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
     if stage.stageType != StageType.INTERVIEW:
-        raise HTTPException(status_code=409, detail="Only interview stages have a workspace")
+        raise HTTPException(status_code=409, detail="Stage is not an interview stage")
     assignment_team_id = None
     team_members = []
     job_posting_id = stage.jobPosting.id if stage.jobPosting else None
@@ -1028,7 +1028,7 @@ async def get_stage_workspace_by_job_slug(
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
     if stage.stageType != StageType.INTERVIEW:
-        raise HTTPException(status_code=409, detail="Only interview stages have a workspace")
+        raise HTTPException(status_code=409, detail="Stage is not an interview stage")
     assignment_team_id = None
     team_members = []
     primary_team = await repository.get_primary_hiring_team(

@@ -210,8 +210,18 @@ async def list_leave_balances(
     year: int | None = Query(default=None),
     member_id: str | None = Query(default=None, alias="memberId"),
     leave_type_id: str | None = Query(default=None, alias="leaveTypeId"),
+    search: str | None = Query(default=None, max_length=255),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200, alias="pageSize"),
 ) -> LeaveBalanceListResponse:
-    filters = LeaveBalanceFilters(year=year, member_id=member_id, leave_type_id=leave_type_id)
+    filters = LeaveBalanceFilters(
+        year=year,
+        member_id=member_id,
+        leave_type_id=leave_type_id,
+        search=search,
+        page=page,
+        page_size=page_size,
+    )
     return await handle_list_leave_balances(access, db, filters)
 
 
