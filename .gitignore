@@ -126,6 +126,7 @@ skills-lock.json
 
 
 .env.*
+!.env.example
 .agents
 .kiro
 .windsurf

@@ -455,7 +455,7 @@ class ResendEmailService:
         candidate_token: str,
         is_reschedule: bool = False,
     ) -> None:
-        base_url = "http://localhost:3000"
+        base_url = self.settings.public_app_url.rstrip("/")
         slot_url = f"{base_url}/interview/{candidate_token}"
 
         subject = (

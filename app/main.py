@@ -12,8 +12,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.modules.ai_scoring.route import router as ai_scoring_router
 from app.modules.access_control.route import router as access_control_router
+from app.modules.ai_scoring.route import router as ai_scoring_router
 from app.modules.assets.route import router as assets_router
 from app.modules.attendance.route import router as attendance_router
 from app.modules.candidates.public_route import router as candidates_public_router
@@ -27,10 +27,10 @@ from app.modules.leave.route import router as leave_router
 from app.modules.microsoft_graph.route import router as microsoft_graph_router
 from app.modules.offers.public_route import router as public_offers_router
 from app.modules.offers.route import router as offers_router
-from app.modules.procurement.route import router as procurement_router
-from app.modules.projects.route import router as projects_router
 from app.modules.onboarding.public_route import router as public_onboarding_router
 from app.modules.onboarding.route import router as onboarding_router
+from app.modules.procurement.route import router as procurement_router
+from app.modules.projects.route import router as projects_router
 from app.modules.role.route import router as role_router
 from app.modules.user.route import router as user_router
 from app.modules.weekly_plan.router import router as weekly_plan_router
@@ -66,7 +66,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins_list,
+    allow_origin_regex=settings.cors_origin_regex_value,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
