@@ -27,6 +27,8 @@ class AttendanceRecord(Base):
 
     status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="ABSENT")
 
+    isRemote: Mapped[bool] = mapped_column(nullable=False, default=False)
+
     enteredByManagerId: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     createdAt: Mapped[datetime] = mapped_column(

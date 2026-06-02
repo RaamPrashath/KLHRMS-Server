@@ -132,7 +132,9 @@ class Settings(BaseSettings):
     )
 
     resend_from_email: str = Field(
-        default=os.getenv("RESEND_FROM_EMAIL", "KL HRMS <onboarding@resend.dev>"),
+        # Resend's onboarding@resend.dev is a sandbox sender. It is useful before a
+        # domain is verified, but Resend only delivers it to the account owner's email.
+        default=os.getenv("RESEND_FROM_EMAIL", "Kovan Labs <onboarding@resend.dev>"),
         alias="RESEND_FROM_EMAIL",
     )
 

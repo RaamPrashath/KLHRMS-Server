@@ -133,7 +133,7 @@ class AttendanceListFilters(BaseModel):
     date_to: dt.date | None = Field(default=None, description="Inclusive end date.")
     status: AttendanceStatus | None = Field(default=None)
     page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=20, ge=1, le=200)
+    page_size: int = Field(default=50, ge=1, le=5000)
 
     @model_validator(mode="after")
     def validate_date_range(self) -> "AttendanceListFilters":
@@ -165,6 +165,7 @@ class AttendanceRecordResponse(BaseModel):
     total_hours: float | None = Field(alias="totalHours")
     overtime_hours: float | None = Field(alias="overtimeHours")
     status: str
+    is_remote: bool = Field(default=False, alias="isRemote")
     entered_by_manager_id: str | None = Field(alias="enteredByManagerId")
     created_at: dt.datetime = Field(alias="createdAt")
     # Populated for org-scope list queries; null for self-scope responses.
@@ -334,7 +335,7 @@ class WorkLogReportFilters(BaseModel):
     employee_id: str | None = Field(default=None, max_length=36)
     employee_name: str | None = Field(default=None, max_length=255)
     page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=20, ge=1, le=200)
+    page_size: int = Field(default=50, ge=1, le=100)
 
     @model_validator(mode="after")
     def validate_date_range(self) -> "WorkLogReportFilters":

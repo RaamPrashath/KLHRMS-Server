@@ -212,7 +212,7 @@ async def get_my_attendance(
     date_to: dt.date | None = Query(default=None),
     status_filter: AttendanceStatus | None = Query(default=None, alias="status"),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=200),
+    page_size: int = Query(default=50, ge=1, le=5000),
 ) -> AttendanceListResponse:
     filters = AttendanceListFilters(
         date_from=date_from,
@@ -253,7 +253,7 @@ async def list_attendance(
     date_to: dt.date | None = Query(default=None),
     status_filter: AttendanceStatus | None = Query(default=None, alias="status"),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=200),
+    page_size: int = Query(default=50, ge=1, le=5000),
 ) -> AttendanceListResponse:
     filters = AttendanceListFilters(
         target_member_id=target_member_id,
@@ -432,7 +432,7 @@ async def list_work_log_reports(
     employee_id: str | None = Query(default=None),
     employee_name: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=200),
+    page_size: int = Query(default=50, ge=1, le=100),
 ) -> WorkLogReportListResponse:
     filters = WorkLogReportFilters(
         date_from=date_from,
