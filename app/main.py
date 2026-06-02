@@ -16,6 +16,7 @@ from app.modules.access_control.route import router as access_control_router
 from app.modules.ai_scoring.route import router as ai_scoring_router
 from app.modules.assets.route import router as assets_router
 from app.modules.attendance.route import router as attendance_router
+from app.modules.attendance_report.route import router as attendance_report_router
 from app.modules.candidates.public_route import router as candidates_public_router
 from app.modules.candidates.route import router as candidates_router
 from app.modules.departments.route import router as departments_router
@@ -82,6 +83,7 @@ app.include_router(onboarding_router)
 app.include_router(public_onboarding_router)
 app.include_router(role_router)
 app.include_router(attendance_router)
+app.include_router(attendance_report_router)
 app.include_router(candidates_public_router)
 app.include_router(candidates_router)
 app.include_router(ai_scoring_router)
