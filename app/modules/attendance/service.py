@@ -549,6 +549,7 @@ async def _upsert_day_row(
     project_id: str | None = None,
     project_task_id: str | None = None,
     description: str | None = None,
+    is_remote: bool = False,
     commit: bool = True,
 ) -> AttendanceRecord:
     """
@@ -574,6 +575,7 @@ async def _upsert_day_row(
         existing.overtimeHours = overtime_hours
         existing.status = status
         existing.enteredByManagerId = entered_by_manager_id
+        existing.isRemote = is_remote
         record = existing
     else:
         record = AttendanceRecord(
@@ -590,6 +592,7 @@ async def _upsert_day_row(
             overtimeHours=overtime_hours,
             status=status,
             enteredByManagerId=entered_by_manager_id,
+            isRemote=is_remote,
         )
         db.add(record)
 
@@ -717,6 +720,7 @@ async def clock_in(
         overtime_hours=None,
         status="PRESENT",
         entered_by_manager_id=None,
+        is_remote=(validation_result.actual_location == "REMOTE"),
         commit=False,
     )
 
@@ -1001,7 +1005,7 @@ async def get_my_attendance(
     date_to: date | None = None,
     status_filter: str | None = None,
     page: int = 1,
-    page_size: int = 20,
+    page_size: int = 50,
 ) -> tuple[list[tuple[AttendanceRecord, str | None]], int]:
     """
     Return paginated attendance rows for the calling member only.
@@ -1054,7 +1058,7 @@ async def list_attendance(
     date_to: date | None = None,
     status_filter: str | None = None,
     page: int = 1,
-    page_size: int = 20,
+    page_size: int = 50,
 ) -> tuple[list[tuple[AttendanceRecord, str | None]], int]:
     """
     Return paginated attendance rows respecting scope.
