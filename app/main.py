@@ -32,6 +32,7 @@ from app.modules.onboarding.public_route import router as public_onboarding_rout
 from app.modules.onboarding.route import router as onboarding_router
 from app.modules.procurement.route import router as procurement_router
 from app.modules.projects.route import router as projects_router
+from app.modules.resume_parser.route import router as resume_parser_router
 from app.modules.role.route import router as role_router
 from app.modules.user.route import router as user_router
 from app.modules.weekly_plan.router import router as weekly_plan_router
@@ -95,6 +96,7 @@ app.include_router(projects_router)
 app.include_router(access_control_router)
 app.include_router(assets_router)
 app.include_router(procurement_router)
+app.include_router(resume_parser_router)
 app.include_router(departments_router)
 app.include_router(holiday_sync_router)
 app.include_router(weekly_plan_router, prefix=settings.api_v1_prefix)
