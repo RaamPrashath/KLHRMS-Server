@@ -24,7 +24,7 @@ Example:
 }
 
 Valid scopes (ordered hierarchy):
-  none < self < team < department < organization
+  none < self < department < organization
 
 Standard actions:
   view, create, edit, delete
@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +48,17 @@ from pydantic import BaseModel, Field, model_validator
 #   { module: { action: scope } }
 # e.g. { "attendance": { "view": "organization", "create": "self", "edit": "self", "delete": "none" } }
 PermissionsDict = dict[str, dict[str, str]]
+VALID_PERMISSION_SCOPES = {"none", "self", "department", "organization"}
+
+
+def _validate_permission_scopes(permissions: PermissionsDict | None) -> PermissionsDict | None:
+    if permissions is None:
+        return None
+    for module, actions in permissions.items():
+        for action, scope in actions.items():
+            if scope not in VALID_PERMISSION_SCOPES:
+                raise ValueError(f"Invalid permission scope for {module}.{action}")
+    return permissions
 
 
 # ---------------------------------------------------------------------------
@@ -59,10 +70,20 @@ class RoleCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     permissions: PermissionsDict
 
+    @field_validator("permissions")
+    @classmethod
+    def validate_permissions(cls, value: PermissionsDict) -> PermissionsDict:
+        return _validate_permission_scopes(value) or value
+
 
 class RoleUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     permissions: PermissionsDict | None = None
+
+    @field_validator("permissions")
+    @classmethod
+    def validate_permissions(cls, value: PermissionsDict | None) -> PermissionsDict | None:
+        return _validate_permission_scopes(value)
 
     @model_validator(mode="after")
     def at_least_one_field(self) -> "RoleUpdateRequest":

@@ -23,10 +23,9 @@ class Team(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    department = relationship("Department", back_populates="teams")
+    department = relationship("Department")
     lead_member = relationship("Member", foreign_keys=[leadMemberId])
     members = relationship("TeamMember", back_populates="team", cascade="all, delete-orphan")
-    projects = relationship("Project", back_populates="team")
 
     __table_args__ = (
         UniqueConstraint("organizationId", "departmentId", "name", name="team_organizationId_departmentId_name_key"),

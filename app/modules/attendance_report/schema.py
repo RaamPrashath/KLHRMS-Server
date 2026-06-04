@@ -47,7 +47,6 @@ class AttendanceReportRow(BaseModel):
     clockOut: datetime | None = None
     totalHours: float | None = None
     departmentName: str | None = None
-    teamName: str | None = None
     projectName: str | None = None
     taskName: str | None = None
     clockOutDescription: str | None = None

@@ -363,7 +363,7 @@ However, if a role is in use (has members assigned), consider preventing deletio
 The permissions JSON is free-form, but should be validated:
 - Module keys should match known HRMS modules
 - Action keys should be valid for the module
-- Scope values should be one of: `none`, `self`, `team`, `department`, `organization`
+- Scope values should be one of: `none`, `self`, `department`, `organization`
 
 Currently, validation is lenient to allow flexibility. Consider adding strict validation if needed.
 

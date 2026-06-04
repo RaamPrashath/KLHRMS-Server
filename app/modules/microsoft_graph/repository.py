@@ -36,6 +36,31 @@ class MicrosoftGraphRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_settings_presence(self, org_id: str) -> dict | None:
+        result = await self._db.execute(
+            select(
+                MicrosoftIntegrationSetting.is_enabled,
+                MicrosoftIntegrationSetting.tenant_id.is_not(None),
+                MicrosoftIntegrationSetting.client_id.is_not(None),
+                MicrosoftIntegrationSetting.client_secret.is_not(None),
+                MicrosoftIntegrationSetting.last_sync_at,
+                MicrosoftIntegrationSetting.last_sync_status,
+                MicrosoftIntegrationSetting.last_sync_summary,
+            ).where(MicrosoftIntegrationSetting.organization_id == UUID(org_id))
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return {
+            "is_enabled": row[0],
+            "has_tenant_id": row[1],
+            "has_client_id": row[2],
+            "has_client_secret": row[3],
+            "last_sync_at": row[4],
+            "last_sync_status": row[5],
+            "last_sync_summary": row[6],
+        }
+
     async def upsert_settings(
         self,
         org_id: str,
@@ -193,6 +218,23 @@ class MicrosoftGraphRepository:
             select(User).where(User.email == email)
         )
         return result.scalar_one_or_none()
+
+    async def update_user_microsoft_image(self, user_id: str, image_url: str) -> None:
+        result = await self._db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if user is None:
+            return
+
+        existing_image = (user.image or "").strip()
+        if existing_image and "/microsoft-graph/profile-photos/" not in existing_image:
+            return
+
+        if existing_image == image_url:
+            return
+
+        user.image = image_url
+        user.updatedAt = datetime.now(timezone.utc)
+        await self._db.flush()
 
     async def get_microsoft_account(self, microsoft_id: str) -> Account | None:
         result = await self._db.execute(

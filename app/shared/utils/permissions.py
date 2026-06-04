@@ -37,6 +37,9 @@ def get_permission_scope(
     if not isinstance(scope, str) or not scope:
         return None
 
+    if scope == "team":
+        return "department"
+
     return scope
 
 

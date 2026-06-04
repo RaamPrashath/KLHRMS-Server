@@ -41,7 +41,6 @@ class ProjectTaskCreateRequest(BaseModel):
 
 class ProjectUpsertRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    teamId: str | None = None
     clientName: str | None = Field(default=None, max_length=255)
     budget: float | None = Field(default=None, ge=0)
     budgetedHours: float | None = Field(default=None, ge=0)
@@ -92,8 +91,6 @@ class ProjectCapacitySummary(BaseModel):
 class ProjectSummary(BaseModel):
     id: str
     name: str
-    teamId: str | None
-    teamName: str | None
     clientName: str | None
     budget: float | None
     budgetedHours: float | None
@@ -131,4 +128,3 @@ class ProjectLookupOption(BaseModel):
 class ProjectMetaResponse(BaseModel):
     members: list[ProjectLookupOption]
     departments: list[ProjectLookupOption]
-    teams: list[ProjectLookupOption]

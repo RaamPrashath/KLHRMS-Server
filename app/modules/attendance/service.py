@@ -32,8 +32,6 @@ from app.models.department_member import DepartmentMember
 from app.models.member import Member
 from app.models.project import Project
 from app.models.project_task import ProjectTask
-from app.models.team import Team
-from app.models.team_member import TeamMember
 from app.models.user import User
 from app.models.weekly_plan import WeeklyPlan
 from app.models.work_hour_policy import WorkHourPolicy
@@ -97,7 +95,6 @@ class WorkLogReportRowData:
     clock_out: datetime | None
     total_hours: float | None
     department_name: str | None
-    team_name: str | None
     project_name: str | None
     task_name: str | None
     daily_work_log: str | None
@@ -1837,18 +1834,7 @@ def _build_work_log_report_selects(
         )
         .scalar_subquery()
     )
-    team_name_subquery = (
-        select(func.min(Team.name))
-        .select_from(TeamMember)
-        .join(Team, Team.id == TeamMember.teamId)
-        .where(
-            TeamMember.memberId == AttendanceRecord.employeeId,
-            Team.organizationId == organization_id,
-        )
-        .scalar_subquery()
-    )
-
-    return notes_subquery, department_name_subquery, team_name_subquery
+    return notes_subquery, department_name_subquery
 
 
 def _apply_work_log_report_filters(
@@ -1858,7 +1844,6 @@ def _apply_work_log_report_filters(
     date_from: date | None,
     date_to: date | None,
     department_id: str | None,
-    team_id: str | None,
     employee_id: str | None,
     employee_name: str | None,
 ):
@@ -1880,14 +1865,6 @@ def _apply_work_log_report_filters(
                 )
             )
         )
-    if team_id is not None:
-        query = query.where(
-            AttendanceRecord.employeeId.in_(
-                select(TeamMember.memberId).where(
-                    TeamMember.teamId == team_id,
-                )
-            )
-        )
     return query
 
 
@@ -1898,13 +1875,12 @@ async def list_work_log_reports(
     date_from: date | None,
     date_to: date | None,
     department_id: str | None,
-    team_id: str | None,
     employee_id: str | None,
     employee_name: str | None,
     page: int,
     page_size: int,
 ) -> tuple[list[WorkLogReportRowData], int, WorkLogReportSummaryData]:
-    notes_subquery, department_name_subquery, team_name_subquery = _build_work_log_report_selects(
+    notes_subquery, department_name_subquery = _build_work_log_report_selects(
         organization_id
     )
 
@@ -1919,7 +1895,6 @@ async def list_work_log_reports(
             AttendanceRecord.clockOut,
             AttendanceRecord.totalHours,
             department_name_subquery.label("departmentName"),
-            team_name_subquery.label("teamName"),
             Project.name.label("projectName"),
             ProjectTask.name.label("taskName"),
             notes_subquery.label("dailyWorkLog"),
@@ -1935,7 +1910,6 @@ async def list_work_log_reports(
         date_from=date_from,
         date_to=date_to,
         department_id=department_id,
-        team_id=team_id,
         employee_id=employee_id,
         employee_name=employee_name,
     )
@@ -1956,7 +1930,6 @@ async def list_work_log_reports(
         date_from=date_from,
         date_to=date_to,
         department_id=department_id,
-        team_id=team_id,
         employee_id=employee_id,
         employee_name=employee_name,
     )
@@ -1980,7 +1953,6 @@ async def list_work_log_reports(
             clock_out=row.clockOut,
             total_hours=row.totalHours,
             department_name=row.departmentName,
-            team_name=row.teamName,
             project_name=row.projectName,
             task_name=row.taskName,
             daily_work_log=row.dailyWorkLog,
@@ -2004,7 +1976,7 @@ async def get_work_log_report_detail(
     organization_id: str,
     attendance_record_id: str,
 ) -> WorkLogReportRowData | None:
-    notes_subquery, department_name_subquery, team_name_subquery = _build_work_log_report_selects(
+    notes_subquery, department_name_subquery = _build_work_log_report_selects(
         organization_id
     )
     query = (
@@ -2018,7 +1990,6 @@ async def get_work_log_report_detail(
             AttendanceRecord.clockOut,
             AttendanceRecord.totalHours,
             department_name_subquery.label("departmentName"),
-            team_name_subquery.label("teamName"),
             Project.name.label("projectName"),
             ProjectTask.name.label("taskName"),
             notes_subquery.label("dailyWorkLog"),
@@ -2045,7 +2016,6 @@ async def get_work_log_report_detail(
         clock_out=row.clockOut,
         total_hours=row.totalHours,
         department_name=row.departmentName,
-        team_name=row.teamName,
         project_name=row.projectName,
         task_name=row.taskName,
         daily_work_log=row.dailyWorkLog,
@@ -2059,11 +2029,10 @@ async def export_work_log_reports(
     date_from: date | None,
     date_to: date | None,
     department_id: str | None,
-    team_id: str | None,
     employee_id: str | None,
     employee_name: str | None,
 ) -> list[WorkLogReportRowData]:
-    notes_subquery, department_name_subquery, team_name_subquery = _build_work_log_report_selects(
+    notes_subquery, department_name_subquery = _build_work_log_report_selects(
         organization_id
     )
     query = (
@@ -2077,7 +2046,6 @@ async def export_work_log_reports(
             AttendanceRecord.clockOut,
             AttendanceRecord.totalHours,
             department_name_subquery.label("departmentName"),
-            team_name_subquery.label("teamName"),
             Project.name.label("projectName"),
             ProjectTask.name.label("taskName"),
             notes_subquery.label("dailyWorkLog"),
@@ -2093,7 +2061,6 @@ async def export_work_log_reports(
         date_from=date_from,
         date_to=date_to,
         department_id=department_id,
-        team_id=team_id,
         employee_id=employee_id,
         employee_name=employee_name,
     ).order_by(AttendanceRecord.date.desc(), User.name.asc())
@@ -2110,7 +2077,6 @@ async def export_work_log_reports(
             clock_out=row.clockOut,
             total_hours=row.totalHours,
             department_name=row.departmentName,
-            team_name=row.teamName,
             project_name=row.projectName,
             task_name=row.taskName,
             daily_work_log=row.dailyWorkLog,

@@ -19,6 +19,7 @@ from app.models.attendance_record import AttendanceRecord
 from app.models.attendance_work_log import AttendanceWorkLog
 from app.models.base import Base
 from app.models.department import Department
+from app.models.department_head import DepartmentHead
 from app.models.department_member import DepartmentMember
 from app.models.employee import Employee
 from app.models.employee_group import EmployeeGroup
@@ -58,9 +59,9 @@ from app.models.recruitment import (
 )
 from app.models.resume_parser import ResumeParserHistory
 from app.models.role import Role
-from app.models.session import Session
 from app.models.team import Team
 from app.models.team_member import TeamMember
+from app.models.session import Session
 from app.models.user import User
 from app.models.verification import Verification
 from app.models.weekly_plan import WeeklyPlan

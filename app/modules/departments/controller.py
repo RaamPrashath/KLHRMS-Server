@@ -8,15 +8,16 @@ from app.modules.departments.schema import (
     DepartmentMetaResponse,
     DepartmentSummary,
     DepartmentUpsertRequest,
-    TeamMemberAssignRequest,
-    TeamSummary,
-    TeamUpsertRequest,
 )
 from app.shared.deps.organization_member import MemberContext
 
 
 async def handle_list_departments(ctx: MemberContext, db: AsyncSession, search: str | None) -> DepartmentListResponse:
     return await service.list_departments(db, ctx, search)
+
+
+async def handle_get_department(ctx: MemberContext, db: AsyncSession, department_id: str) -> DepartmentSummary:
+    return await service.get_department_by_id(db, ctx, department_id)
 
 
 async def handle_get_meta(ctx: MemberContext, db: AsyncSession) -> DepartmentMetaResponse:
@@ -37,27 +38,21 @@ async def handle_delete_department(ctx: MemberContext, db: AsyncSession, departm
     await service.deactivate_department(db, ctx, department_id)
 
 
-async def handle_create_team(
-    ctx: MemberContext, db: AsyncSession, department_id: str, payload: TeamUpsertRequest
-) -> DepartmentSummary:
-    return await service.upsert_team(db, ctx, department_id, payload)
+async def handle_add_member(ctx: MemberContext, db: AsyncSession, department_id: str, member_id: str) -> DepartmentSummary:
+    return await service.add_department_member(db, ctx, department_id, member_id)
 
 
-async def handle_update_team(
-    ctx: MemberContext, db: AsyncSession, department_id: str, team_id: str, payload: TeamUpsertRequest
-) -> DepartmentSummary:
-    return await service.upsert_team(db, ctx, department_id, payload, team_id)
+async def handle_bulk_assign_members(ctx: MemberContext, db: AsyncSession, department_id: str, member_ids: list[str]) -> DepartmentSummary:
+    return await service.bulk_assign_department_members(db, ctx, department_id, member_ids)
 
 
-async def handle_delete_team(ctx: MemberContext, db: AsyncSession, department_id: str, team_id: str) -> DepartmentSummary:
-    return await service.deactivate_team(db, ctx, department_id, team_id)
+async def handle_remove_member(ctx: MemberContext, db: AsyncSession, department_id: str, target_member_id: str) -> DepartmentSummary:
+    return await service.remove_department_member(db, ctx, department_id, target_member_id)
 
 
-async def handle_assign_team_member(
-    ctx: MemberContext, db: AsyncSession, team_id: str, payload: TeamMemberAssignRequest
-) -> TeamSummary:
-    return await service.assign_team_member(db, ctx, team_id, payload)
+async def handle_assign_head(ctx: MemberContext, db: AsyncSession, department_id: str, head_member_id: str) -> DepartmentSummary:
+    return await service.assign_department_head(db, ctx, department_id, head_member_id)
 
 
-async def handle_remove_team_member(ctx: MemberContext, db: AsyncSession, team_id: str, member_id: str) -> TeamSummary:
-    return await service.remove_team_member(db, ctx, team_id, member_id)
+async def handle_remove_head(ctx: MemberContext, db: AsyncSession, department_id: str, head_member_id: str) -> DepartmentSummary:
+    return await service.remove_department_head(db, ctx, department_id, head_member_id)

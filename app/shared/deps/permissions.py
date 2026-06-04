@@ -14,12 +14,11 @@ Scopes
 ------
 "organization" — member can act on any resource in the org.
 "department"   — member can act on resources in their department(s).
-"team"         — member can act on resources in their team(s).
 "self"         — member can only act on their own resource.
 
 require_permission(module, action, allow_self=False)
-  allow_self=True  → accepts any non-none scope (self, team, department, organization).
-  allow_self=False → accepts only team, department, and organization scopes (not self).
+  allow_self=True  → accepts any non-none scope (self, department, organization).
+  allow_self=False → accepts only department and organization scopes (not self).
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ def require_any_permission(
     Factory that returns a FastAPI dependency enforcing that the resolved
     member has ANY of the given (module, action) permissions.
 
-    Accepts any non-none scope (self, team, department, organization).
+    Accepts any non-none scope (self, department, organization).
     """
     def _dependency(
         ctx: MemberContext = Depends(get_member_context),
@@ -69,7 +68,7 @@ def require_permission(
     Factory that returns a FastAPI dependency enforcing that the resolved
     member has the given module/action permission.
 
-    allow_self=False (default): accepts "team", "department", or "organization".
+    allow_self=False (default): accepts "department" or "organization".
     allow_self=True:            also accepts "self" scope.
 
     Raises HTTPException(403) if:

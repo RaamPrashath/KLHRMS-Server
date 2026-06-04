@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
 from app.models.attendance_record import AttendanceRecord
+from app.models.employee import Employee
 from app.models.member import Member
 from app.models.role import Role
 from app.models.user import User
@@ -48,9 +49,14 @@ async def list_employees(
 
     # ── Base query: active members joined with User + Role ────────────────
     query = (
-        select(Member, User, Role)
+        select(Member, User, Role, Employee)
         .join(User, Member.userId == User.id)
         .outerjoin(Role, Member.roleId == Role.id)
+        .outerjoin(
+            Employee,
+            (Employee.member_id == Member.id)
+            & (Employee.organization_id == UUID(organization_id)),
+        )
         .where(
             Member.organizationId == organization_id,
             Member.status == "ACTIVE",
@@ -92,7 +98,7 @@ async def list_employees(
 
     # ── Batch fetch today's attendance ──────────────────────────────────────
     today = date.today()
-    member_ids = [m.id for m, _, _ in rows]
+    member_ids = [m.id for m, _, _, _ in rows]
     attendance_rows: dict[str, AttendanceRecord] = {}
     if member_ids:
         att_result = await db.execute(
@@ -105,7 +111,7 @@ async def list_employees(
             attendance_rows[ar.employeeId] = ar
 
     # ── Batch fetch Microsoft sync status ──────────────────────────────────
-    user_ids = [u.id for _, u, _ in rows]
+    user_ids = [u.id for _, u, _, _ in rows]
     synced_user_ids: set[str] = set()
     if user_ids:
         acct_result = await db.execute(
@@ -118,15 +124,16 @@ async def list_employees(
 
     # ── Build response items ───────────────────────────────────────────────
     items: list[EmployeeListItem] = []
-    for member, user, role in rows:
+    for member, user, role, employee in rows:
         att = attendance_rows.get(member.id)
+        image = user.image or (employee.profile_photo_url if employee else None)
         items.append(
             EmployeeListItem(
                 member_id=member.id,
                 user_id=user.id,
                 name=user.name or user.email or "Unknown",
                 email=user.email or "",
-                image=user.image,
+                image=image,
                 role=RoleBriefResponse(id=role.id, name=role.name) if role else None,
                 joined_at=member.createdAt.isoformat() if member.createdAt else "",
                 attendance_today=AttendanceTodayResponse(

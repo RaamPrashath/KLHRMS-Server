@@ -95,7 +95,6 @@ async def get_attendance_report(
                 clockOut=row.clock_out,
                 totalHours=row.total_hours,
                 departmentName=row.department_name,
-                teamName=row.team_name,
                 projectName=row.project_name,
                 taskName=row.task_name,
                 clockOutDescription=row.clock_out_description,

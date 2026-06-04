@@ -24,6 +24,7 @@ from app.modules.microsoft_graph.schema import (
 from app.shared.config import get_settings
 
 logger = logging.getLogger("klhrms.microsoft.graph.service")
+MASKED_CREDENTIAL = "xxxx"
 
 
 class MicrosoftIntegrationService:
@@ -60,22 +61,22 @@ class MicrosoftIntegrationService:
     # ── Settings ───────────────────────────────────────────────────────────────
 
     async def get_settings(self, org_id: str) -> MicrosoftSettingsResponse:
-        db_settings = await self._repo.get_settings(org_id)
+        db_settings = await self._repo.get_settings_presence(org_id)
         if db_settings:
             return MicrosoftSettingsResponse(
-                tenant_id=db_settings.tenant_id,
-                client_id=db_settings.client_id,
-                client_secret=db_settings.client_secret or "",
-                is_enabled=db_settings.is_enabled,
-                last_sync_at=db_settings.last_sync_at,
-                last_sync_status=db_settings.last_sync_status,
-                last_sync_summary=db_settings.last_sync_summary,
+                tenant_id=MASKED_CREDENTIAL if db_settings["has_tenant_id"] else "",
+                client_id=MASKED_CREDENTIAL if db_settings["has_client_id"] else "",
+                client_secret=MASKED_CREDENTIAL if db_settings["has_client_secret"] else "",
+                is_enabled=db_settings["is_enabled"],
+                last_sync_at=db_settings["last_sync_at"],
+                last_sync_status=db_settings["last_sync_status"],
+                last_sync_summary=db_settings["last_sync_summary"],
             )
         env = get_settings()
         return MicrosoftSettingsResponse(
-            tenant_id=env.azure_tenant_id or "",
-            client_id=env.azure_client_id or "",
-            client_secret=env.azure_client_secret or "",
+            tenant_id=MASKED_CREDENTIAL if env.azure_tenant_id else "",
+            client_id=MASKED_CREDENTIAL if env.azure_client_id else "",
+            client_secret=MASKED_CREDENTIAL if env.azure_client_secret else "",
             is_enabled=bool(env.azure_tenant_id),
         )
 
@@ -83,9 +84,18 @@ class MicrosoftIntegrationService:
         self, org_id: str, tenant_id: str, client_id: str, client_secret: str
     ) -> MicrosoftSettingsResponse:
         existing = await self._repo.get_settings(org_id)
-        resolved_tenant = tenant_id.strip() or (existing.tenant_id if existing else "")
-        resolved_client = client_id.strip() or (existing.client_id if existing else "")
-        resolved_secret = client_secret.strip() or (existing.client_secret if existing else "")
+        resolved_tenant = self._resolve_credential_value(
+            tenant_id,
+            existing.tenant_id if existing else "",
+        )
+        resolved_client = self._resolve_credential_value(
+            client_id,
+            existing.client_id if existing else "",
+        )
+        resolved_secret = self._resolve_credential_value(
+            client_secret,
+            existing.client_secret if existing else "",
+        )
 
         if not resolved_tenant or not resolved_client or not resolved_secret:
             raise MicrosoftGraphConfigurationError(
@@ -97,33 +107,56 @@ class MicrosoftIntegrationService:
         )
         await self._db.commit()
         return MicrosoftSettingsResponse(
-            tenant_id=setting.tenant_id,
-            client_id=setting.client_id,
-            client_secret=setting.client_secret or "",
+            tenant_id=MASKED_CREDENTIAL if setting.tenant_id else "",
+            client_id=MASKED_CREDENTIAL if setting.client_id else "",
+            client_secret=MASKED_CREDENTIAL if setting.client_secret else "",
             is_enabled=setting.is_enabled,
         )
 
     async def get_sync_status(self, org_id: str) -> SyncStatusResponse:
-        db_settings = await self._repo.get_settings(org_id)
+        db_settings = await self._repo.get_settings_presence(org_id)
         if not db_settings:
             return SyncStatusResponse(is_configured=False)
         return SyncStatusResponse(
-            is_configured=db_settings.is_enabled,
-            tenant_id=db_settings.tenant_id,
-            client_id=db_settings.client_id,
-            client_secret_configured=bool(db_settings.client_secret),
-            last_sync_at=db_settings.last_sync_at,
-            last_sync_status=db_settings.last_sync_status,
-            last_sync_summary=db_settings.last_sync_summary,
+            is_configured=db_settings["is_enabled"],
+            tenant_id=MASKED_CREDENTIAL if db_settings["has_tenant_id"] else "",
+            client_id=MASKED_CREDENTIAL if db_settings["has_client_id"] else "",
+            client_secret_configured=db_settings["has_client_secret"],
+            last_sync_at=db_settings["last_sync_at"],
+            last_sync_status=db_settings["last_sync_status"],
+            last_sync_summary=db_settings["last_sync_summary"],
         )
+
+    def _resolve_credential_value(self, value: str, existing_value: str = "") -> str:
+        stripped = value.strip()
+        if stripped == MASKED_CREDENTIAL:
+            return existing_value or ""
+        return stripped or existing_value or ""
 
     # ── Connection Test (no DB writes) ────────────────────────────────────────
 
     async def test_connection(
         self, org_id: str, tenant_id: str = "", client_id: str = "", client_secret: str = ""
     ) -> ConnectionTestResult:
-        if tenant_id and client_id and client_secret:
-            tm = TokenManager(tenant_id.strip(), client_id.strip(), client_secret.strip())
+        if tenant_id or client_id or client_secret:
+            existing = await self._repo.get_settings(org_id)
+            resolved_tenant = self._resolve_credential_value(
+                tenant_id,
+                existing.tenant_id if existing else "",
+            )
+            resolved_client = self._resolve_credential_value(
+                client_id,
+                existing.client_id if existing else "",
+            )
+            resolved_secret = self._resolve_credential_value(
+                client_secret,
+                existing.client_secret if existing else "",
+            )
+            if not resolved_tenant or not resolved_client or not resolved_secret:
+                raise MicrosoftGraphConfigurationError(
+                    "Tenant ID, Client ID, and Client Secret are required"
+                )
+            tm = TokenManager(resolved_tenant, resolved_client, resolved_secret)
             client = MicrosoftGraphClient(tm)
         else:
             creds = await self._get_credentials(org_id)
@@ -176,6 +209,14 @@ class MicrosoftIntegrationService:
                     )
                     data = self._map_graph_user(gu)
                     data["member_id"] = str(member.id)
+                    data["profile_photo_url"] = self._build_profile_photo_url(
+                        org_id,
+                        gu.graph_id,
+                    )
+                    await self._repo.update_user_microsoft_image(
+                        _user.id,
+                        data["profile_photo_url"],
+                    )
                     _, employee_created = await self._repo.upsert_employee(org_id, data)
                     if identity_created or employee_created:
                         created_count += 1
@@ -238,6 +279,22 @@ class MicrosoftIntegrationService:
             "status": "ACTIVE" if gu.account_enabled else "INACTIVE",
             "synced_at": datetime.now(timezone.utc),
         }
+
+    def _build_profile_photo_url(self, org_id: str, microsoft_id: str) -> str:
+        return f"/microsoft-graph/profile-photos/{org_id}/{microsoft_id}"
+
+    async def get_profile_photo_bytes(
+        self,
+        org_id: str,
+        microsoft_id: str,
+    ) -> bytes | None:
+        employee = await self._repo.find_employee_by_microsoft_id(org_id, microsoft_id)
+        if employee is None or not employee.profile_photo_url:
+            return None
+
+        creds = await self._get_credentials(org_id)
+        client = self._build_graph_client(creds)
+        return await client.get_user_photo_bytes(microsoft_id)
 
     # ── Sync Runs ──────────────────────────────────────────────────────────────
 

@@ -18,7 +18,7 @@ class TeamMember(Base):
     joinedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     team = relationship("Team", back_populates="members")
-    member = relationship("Member", back_populates="teamMemberships")
+    member = relationship("Member")
 
     __table_args__ = (
         UniqueConstraint("teamId", "memberId", name="team_member_teamId_memberId_key"),
