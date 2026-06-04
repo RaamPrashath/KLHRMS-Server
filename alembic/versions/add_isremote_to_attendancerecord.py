@@ -1,7 +1,7 @@
 """add isRemote column to attendanceRecord
 
 Revision ID: b7d8e9f0a1b2
-Revises: 05aedd93e08d
+Revises: a0b1c2d3e4f5
 Create Date: 2026-06-02 10:00:00.000000
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 revision: str = "b7d8e9f0a1b2"
-down_revision: Union[str, None] = "05aedd93e08d"
+down_revision: Union[str, None] = "a0b1c2d3e4f5"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -77,6 +77,10 @@ from app.modules.procurement.schema import (
     ProcurementReplacementTicketOption,
     ProcurementSnapshotRead,
 )
+from app.modules.notifications.service import (
+    NotificationCreateInput,
+    create_notification_batch,
+)
 from app.integrations.storage.supabase_storage import (
     SupabaseStorageError,
     create_private_file_signed_url,
@@ -1786,6 +1790,47 @@ async def issue_procurement_purchase_order(
     saved = await _load_requisition(db, ctx.organization.id, requisition.id)
     if saved is None:
         raise HTTPException(status_code=404, detail="Procurement requisition not found")
+    recipient_members: list[Member] = []
+    if saved.raisedBy is not None:
+        recipient_members.append(saved.raisedBy)
+    if recipient is not None:
+        recipient_members.append(recipient)
+    recipient_members.append(ctx.member)
+
+    seen_recipient_ids: set[str] = set()
+    notifications: list[NotificationCreateInput] = []
+    for member in recipient_members:
+        if member.id in seen_recipient_ids:
+            continue
+        seen_recipient_ids.add(member.id)
+        notifications.append(
+            NotificationCreateInput(
+                organization_id=ctx.organization.id,
+                member_id=member.id,
+                type="PROCUREMENT_PURCHASE_ORDER_SENT" if purchase_order.status == "SENT" else "PROCUREMENT_PURCHASE_ORDER_GENERATED",
+                category="procurement",
+                title=(
+                    f"Purchase order {po_number} was sent"
+                    if purchase_order.status == "SENT"
+                    else f"Purchase order {po_number} was generated"
+                ),
+                message=(
+                    f"{generated_by_name} {('sent' if purchase_order.status == 'SENT' else 'generated')} "
+                    f"the purchase order for {requisition.assetName or requisition.requestType.title()}."
+                ),
+                action_url=f"/{org.slug}/procurement/purchase-orders/{requisition.id}",
+                entity_type="PROCUREMENT_PURCHASE_ORDER",
+                entity_id=purchase_order.id,
+                metadata={
+                    "poNumber": po_number,
+                    "requisitionId": requisition.id,
+                    "requisitionLabel": _requisition_label(requisition),
+                    "status": purchase_order.status,
+                },
+            )
+        )
+    await create_notification_batch(db, notifications)
+    await db.commit()
     if email_error:
         raise HTTPException(status_code=502, detail=email_error)
     return ProcurementPurchaseOrderIssueResponse(
@@ -1829,6 +1874,32 @@ async def submit_procurement_requisition(
         raise HTTPException(status_code=404, detail="Procurement requisition not found")
     org = await _get_org(db, ctx.organization.id)
     if org is not None:
+        await create_notification_batch(
+            db,
+            [
+                NotificationCreateInput(
+                    organization_id=ctx.organization.id,
+                    member_id=approver.id,
+                    type="PROCUREMENT_APPROVAL_REQUEST",
+                    category="procurement",
+                    title="Purchase requisition awaiting your approval",
+                    message=(
+                        f"{_member_display_name(ctx.member) or 'A requester'} submitted "
+                        f"{_requisition_label(saved)} for finance approval."
+                    ),
+                    action_url=f"/{org.slug}/procurement?requisition={saved.id}",
+                    entity_type="PROCUREMENT_REQUISITION",
+                    entity_id=saved.id,
+                    metadata={
+                        "requisitionId": saved.id,
+                        "requestNumber": saved.requestNumber,
+                        "requestType": saved.requestType,
+                    },
+                )
+                for approver in approvers
+            ],
+        )
+        await db.commit()
         await send_procurement_requisition_submitted(saved, org.slug, approvers, _member_display_name(ctx.member) or "Admin")
     return _serialize_requisition(saved, ctx.member)
 
@@ -1876,6 +1947,27 @@ async def approve_procurement_requisition(
         raise HTTPException(status_code=404, detail="Procurement requisition not found")
     org = await _get_org(db, ctx.organization.id)
     if org is not None and saved.raisedBy is not None:
+        await create_notification_batch(
+            db,
+            [
+                NotificationCreateInput(
+                    organization_id=ctx.organization.id,
+                    member_id=saved.raisedBy.id,
+                    type="PROCUREMENT_APPROVED",
+                    category="procurement",
+                    title="Your purchase requisition was approved",
+                    message=(
+                        f"{_requisition_label(saved)} for {saved.assetName or saved.requestType.title()} "
+                        f"was approved by {_member_display_name(ctx.member) or 'Finance'}."
+                    ),
+                    action_url=f"/{org.slug}/procurement?requisition={saved.id}",
+                    entity_type="PROCUREMENT_REQUISITION",
+                    entity_id=saved.id,
+                    metadata={"decision": "APPROVED", "requisitionId": saved.id},
+                )
+            ],
+        )
+        await db.commit()
         await send_procurement_requisition_decided(
             saved,
             org.slug,
@@ -1922,6 +2014,27 @@ async def reject_procurement_requisition(
         raise HTTPException(status_code=404, detail="Procurement requisition not found")
     org = await _get_org(db, ctx.organization.id)
     if org is not None and saved.raisedBy is not None:
+        await create_notification_batch(
+            db,
+            [
+                NotificationCreateInput(
+                    organization_id=ctx.organization.id,
+                    member_id=saved.raisedBy.id,
+                    type="PROCUREMENT_REJECTED",
+                    category="procurement",
+                    title="Your purchase requisition was rejected",
+                    message=(
+                        f"{_requisition_label(saved)} for {saved.assetName or saved.requestType.title()} "
+                        f"was rejected by {_member_display_name(ctx.member) or 'Finance'}."
+                    ),
+                    action_url=f"/{org.slug}/procurement?requisition={saved.id}",
+                    entity_type="PROCUREMENT_REQUISITION",
+                    entity_id=saved.id,
+                    metadata={"decision": "REJECTED", "requisitionId": saved.id},
+                )
+            ],
+        )
+        await db.commit()
         await send_procurement_requisition_decided(
             saved,
             org.slug,

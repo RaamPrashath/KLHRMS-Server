@@ -29,6 +29,7 @@ from app.models.microsoft_integration_setting import MicrosoftIntegrationSetting
 from app.models.microsoft_sync_log import MicrosoftSyncLog
 from app.models.microsoft_sync_run import MicrosoftSyncRun
 from app.models.monthly_plan import MonthlyPlan
+from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.procurement_purchase_order_template import ProcurementPurchaseOrderTemplate
 from app.models.project import Project

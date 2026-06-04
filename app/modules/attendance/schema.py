@@ -162,6 +162,7 @@ class AttendanceRecordResponse(BaseModel):
     record_date: dt.date = Field(alias="date")
     clock_in: dt.datetime | None = Field(alias="clockIn")
     clock_out: dt.datetime | None = Field(alias="clockOut")
+    description: str | None = None
     total_hours: float | None = Field(alias="totalHours")
     overtime_hours: float | None = Field(alias="overtimeHours")
     status: str

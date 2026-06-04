@@ -26,6 +26,7 @@ from app.modules.holiday_sync.route import router as holiday_sync_router
 from app.modules.jobs.route import router as jobs_router
 from app.modules.leave.route import router as leave_router
 from app.modules.microsoft_graph.route import router as microsoft_graph_router
+from app.modules.notifications.route import router as notifications_router
 from app.modules.offers.public_route import router as public_offers_router
 from app.modules.offers.route import router as offers_router
 from app.modules.onboarding.public_route import router as public_onboarding_router
@@ -103,6 +104,7 @@ app.include_router(weekly_plan_router, prefix=settings.api_v1_prefix)
 app.include_router(hiring_teams_router)
 app.include_router(employee_router)
 app.include_router(microsoft_graph_router)
+app.include_router(notifications_router)
 app.include_router(user_router)
 
 

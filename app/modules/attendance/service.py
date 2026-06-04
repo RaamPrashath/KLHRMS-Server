@@ -858,22 +858,28 @@ async def clock_out(
             entered_by_manager_id=None,
             commit=False,
         )
+        segment_description = active_description
+        is_terminal_segment = seg.day == segments[-1].day
+        if not segment_description and is_terminal_segment and normalized_work_log_text:
+            segment_description = normalized_work_log_text
+            record.description = normalized_work_log_text
+            await db.flush()
         await _insert_clock_session_work_log_if_missing(
             db=db,
             record=record,
             segment=seg,
             project_id=active_project_id,
             project_task_id=active_project_task_id,
-            description=active_description,
+            description=segment_description,
         )
-        if seg.day == segments[-1].day and normalized_work_log_text:
+        if is_terminal_segment and normalized_work_log_text and not active_description:
             await _upsert_terminal_session_work_log_text(
                 db=db,
                 record=record,
                 segment=seg,
                 project_id=active_project_id,
                 project_task_id=active_project_task_id,
-                description=active_description,
+                description=segment_description,
                 work_log_text=normalized_work_log_text,
             )
         written.append(record)

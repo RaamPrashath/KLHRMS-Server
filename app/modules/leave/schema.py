@@ -126,7 +126,7 @@ class LeaveRequestFilters(BaseModel):
     to_date: dt.date | None = Field(default=None, alias="toDate")
     year: int | None = None
     page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=20, ge=1, le=200)
+    page_size: int = Field(default=20, ge=1, le=500)
 
     model_config = {"populate_by_name": True}
 
@@ -137,7 +137,7 @@ class LeaveBalanceFilters(BaseModel):
     leave_type_id: str | None = Field(default=None, alias="leaveTypeId")
     search: str | None = Field(default=None, max_length=255)
     page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=20, ge=1, le=200)
+    page_size: int = Field(default=20, ge=1, le=500)
 
     model_config = {"populate_by_name": True}
 
@@ -158,7 +158,7 @@ class HolidayListFilters(BaseModel):
     month: int | None = Field(default=None, ge=1, le=12)
     search: str | None = Field(default=None, max_length=255)
     page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=20, ge=1, le=200)
+    page_size: int = Field(default=20, ge=1, le=500)
 
     model_config = {"populate_by_name": True}
 
@@ -276,3 +276,37 @@ class LeaveCalendarResponse(BaseModel):
     leave_requests: list[LeaveRequestResponse] = Field(alias="leaveRequests")
 
     model_config = {"populate_by_name": True}
+
+
+# ─── Leave Summary ─────────────────────────────────────────────────────────────
+
+
+class LeaveSummaryFilters(BaseModel):
+    pass
+
+
+class LeaveSummaryRequestItem(BaseModel):
+    id: str
+    leave_type_name: str = Field(alias="leaveTypeName")
+    start_date: dt.date = Field(alias="startDate")
+    end_date: dt.date = Field(alias="endDate")
+    days: float
+
+    model_config = {"populate_by_name": True}
+
+
+class EmployeeLeaveSummary(BaseModel):
+    member_id: str = Field(alias="memberId")
+    name: str | None
+    email: str | None
+    total_days: float = Field(alias="totalDays")
+    items: list[LeaveSummaryRequestItem]
+
+    model_config = {"populate_by_name": True}
+
+
+class LeaveSummaryListResponse(BaseModel):
+    items: list[EmployeeLeaveSummary]
+    total: int
+    page: int
+    page_size: int

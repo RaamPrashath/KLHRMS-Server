@@ -30,7 +30,11 @@ from app.modules.leave.schema import (
     LeaveTypeResponse,
     LeaveTypeUpdateRequest,
     MemberSummaryResponse,
+    EmployeeLeaveSummary,
+    LeaveSummaryRequestItem,
+    LeaveSummaryListResponse,
 )
+from app.modules.notifications.service import NotificationCreateInput, create_notification_batch
 from app.shared.deps.organization_member import MemberContext
 
 
@@ -267,6 +271,24 @@ async def handle_approve_leave_request(
         leave_request_id,
         body.approver_comment,
     )
+    await create_notification_batch(
+        db,
+        [
+            NotificationCreateInput(
+                organization_id=access.organization.id,
+                member_id=item.memberId,
+                type="LEAVE_APPROVED",
+                category="leave",
+                title="Your leave request was approved",
+                message=f"{item.leave_type.name} leave from {item.startDate.isoformat()} to {item.endDate.isoformat()} was approved.",
+                action_url=f"/{access.organization.slug}/leaves/requests",
+                entity_type="LEAVE_REQUEST",
+                entity_id=item.id,
+                metadata={"status": "APPROVED", "leaveType": item.leave_type.name},
+            )
+        ],
+    )
+    await db.commit()
     return _leave_request_response(item)
 
 
@@ -283,6 +305,24 @@ async def handle_reject_leave_request(
         leave_request_id,
         body.approver_comment,
     )
+    await create_notification_batch(
+        db,
+        [
+            NotificationCreateInput(
+                organization_id=access.organization.id,
+                member_id=item.memberId,
+                type="LEAVE_REJECTED",
+                category="leave",
+                title="Your leave request was rejected",
+                message=f"{item.leave_type.name} leave from {item.startDate.isoformat()} to {item.endDate.isoformat()} was rejected.",
+                action_url=f"/{access.organization.slug}/leaves/requests",
+                entity_type="LEAVE_REQUEST",
+                entity_id=item.id,
+                metadata={"status": "REJECTED", "leaveType": item.leave_type.name},
+            )
+        ],
+    )
+    await db.commit()
     return _leave_request_response(item)
 
 
@@ -362,4 +402,48 @@ async def handle_get_leave_calendar(
     return LeaveCalendarResponse(
         holidays=[_holiday_response(item) for item in holidays],
         leaveRequests=[_leave_request_response(item) for item in leave_requests],
+    )
+
+
+def _leave_summary_request_item(req: LeaveRequest) -> LeaveSummaryRequestItem:
+    return LeaveSummaryRequestItem(
+        id=req.id,
+        leaveTypeName=req.leave_type.name if req.leave_type else "Unknown",
+        startDate=req.startDate,
+        endDate=req.endDate,
+        days=req.days,
+    )
+
+
+def _employee_leave_summary(
+    member_id: str,
+    name: str | None,
+    email: str | None,
+    total_days: float,
+    items: list[LeaveRequest],
+) -> EmployeeLeaveSummary:
+    return EmployeeLeaveSummary(
+        memberId=member_id,
+        name=name,
+        email=email,
+        totalDays=total_days,
+        items=[_leave_summary_request_item(req) for req in items],
+    )
+
+
+async def handle_get_leave_summary(
+    access: LeaveAccessContext,
+    db: AsyncSession,
+) -> LeaveSummaryListResponse:
+    rows = await service.get_leave_summary(
+        db,
+        access.organization.id,
+        access.member.id,
+        access.permission_scope,
+    )
+    return LeaveSummaryListResponse(
+        items=[_employee_leave_summary(*row) for row in rows],
+        total=len(rows),
+        page=1,
+        page_size=len(rows) or 1,
     )

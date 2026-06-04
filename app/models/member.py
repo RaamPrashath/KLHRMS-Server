@@ -124,6 +124,7 @@ class Member(Base):
         "AssetPurchaseOrder",
         foreign_keys="[AssetPurchaseOrder.recipientMemberId]",
     )
+    notifications = relationship("Notification", back_populates="member", cascade="all, delete-orphan")
 
     __table_args__ = (
         UniqueConstraint("organizationId", "userId", name="member_organizationId_userId_key"),
