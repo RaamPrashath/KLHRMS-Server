@@ -1,1 +1,1 @@
-"""Department and team management module."""
+"""Department management module."""

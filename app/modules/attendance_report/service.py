@@ -15,8 +15,6 @@ from app.models.member import Member
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.project_task import ProjectTask
-from app.models.team import Team
-from app.models.team_member import TeamMember
 from app.models.user import User
 from app.modules.attendance_report.schema import (
     AttendanceReportEmployeeOption,
@@ -43,7 +41,6 @@ class AttendanceReportRowData:
     clock_out: datetime | None
     total_hours: float | None
     department_name: str | None
-    team_name: str | None
     project_name: str | None
     task_name: str | None
     clock_out_description: str | None
@@ -87,19 +84,6 @@ def _department_name_subquery(organization_id: str):
         .where(
             DepartmentMember.memberId == AttendanceRecord.employeeId,
             Department.organizationId == organization_id,
-        )
-        .scalar_subquery()
-    )
-
-
-def _team_name_subquery(organization_id: str):
-    return (
-        select(func.min(Team.name))
-        .select_from(TeamMember)
-        .join(Team, Team.id == TeamMember.teamId)
-        .where(
-            TeamMember.memberId == AttendanceRecord.employeeId,
-            Team.organizationId == organization_id,
         )
         .scalar_subquery()
     )
@@ -211,7 +195,6 @@ async def list_attendance_report(
     page_size: int,
 ) -> tuple[list[AttendanceReportRowData], int, AttendanceReportSummaryData]:
     department_name = _department_name_subquery(organization_id)
-    team_name = _team_name_subquery(organization_id)
     clock_out_description = _clock_out_description_subquery(organization_id)
 
     base_query = (
@@ -225,7 +208,6 @@ async def list_attendance_report(
             AttendanceRecord.clockOut,
             AttendanceRecord.totalHours,
             department_name.label("departmentName"),
-            team_name.label("teamName"),
             Project.name.label("projectName"),
             ProjectTask.name.label("taskName"),
             clock_out_description.label("clockOutDescription"),
@@ -280,7 +262,6 @@ async def list_attendance_report(
             clock_out=row.clockOut,
             total_hours=row.totalHours,
             department_name=row.departmentName,
-            team_name=row.teamName,
             project_name=row.projectName,
             task_name=row.taskName,
             clock_out_description=row.clockOutDescription,

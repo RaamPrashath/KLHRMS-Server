@@ -1,7 +1,7 @@
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.microsoft_graph.exceptions import MicrosoftGraphConfigurationError
@@ -103,6 +103,19 @@ async def get_sync_status(
 ):
     controller = _get_controller(db)
     return await controller.get_sync_status(str(ctx.organization.id))
+
+
+@router.get("/profile-photos/{org_id}/{microsoft_id}", include_in_schema=False)
+async def get_profile_photo(
+    org_id: str,
+    microsoft_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    service = MicrosoftIntegrationService(db)
+    photo = await service.get_profile_photo_bytes(org_id, microsoft_id)
+    if photo is None:
+        raise HTTPException(404, "Profile photo not found")
+    return Response(content=photo, media_type="image/jpeg")
 
 
 @router.get("/sync-runs", response_model=list[SyncRunListItem])

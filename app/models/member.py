@@ -34,7 +34,6 @@ class Member(Base):
     user = relationship("User", back_populates="members")
     role = relationship("Role", foreign_keys="[Member.roleId]", primaryjoin="Member.roleId == Role.id", overlaps="organization,members")
     departmentMembers = relationship("DepartmentMember", back_populates="member")
-    teamMemberships = relationship("TeamMember", back_populates="member")
 
     leave_requests = relationship("LeaveRequest", foreign_keys="[LeaveRequest.memberId]", back_populates="member")
     approved_leave_requests = relationship("LeaveRequest", foreign_keys="[LeaveRequest.approvedById]", back_populates="approved_by")
@@ -119,10 +118,12 @@ class Member(Base):
     generatedPurchaseOrders = relationship(
         "AssetPurchaseOrder",
         foreign_keys="[AssetPurchaseOrder.generatedByMemberId]",
+        overlaps="generatedBy",
     )
     receivedPurchaseOrders = relationship(
         "AssetPurchaseOrder",
         foreign_keys="[AssetPurchaseOrder.recipientMemberId]",
+        overlaps="recipient",
     )
 
     __table_args__ = (

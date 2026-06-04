@@ -57,9 +57,9 @@ from app.models.recruitment import (
 )
 from app.models.resume_parser import ResumeParserHistory
 from app.models.role import Role
-from app.models.session import Session
 from app.models.team import Team
 from app.models.team_member import TeamMember
+from app.models.session import Session
 from app.models.user import User
 from app.models.verification import Verification
 from app.models.weekly_plan import WeeklyPlan

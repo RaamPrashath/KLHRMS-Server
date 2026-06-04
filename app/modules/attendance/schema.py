@@ -331,7 +331,6 @@ class WorkLogReportFilters(BaseModel):
     date_from: dt.date | None = Field(default=None)
     date_to: dt.date | None = Field(default=None)
     department_id: str | None = Field(default=None, max_length=36)
-    team_id: str | None = Field(default=None, max_length=36)
     employee_id: str | None = Field(default=None, max_length=36)
     employee_name: str | None = Field(default=None, max_length=255)
     page: int = Field(default=1, ge=1)
@@ -360,7 +359,6 @@ class WorkLogReportRow(BaseModel):
     clockOut: dt.datetime | None
     totalHours: float | None
     departmentName: str | None = None
-    teamName: str | None = None
     projectName: str | None = None
     taskName: str | None = None
     dailyWorkLogPreview: str | None = None
@@ -385,7 +383,6 @@ class WorkLogReportDetailResponse(BaseModel):
     clockOut: dt.datetime | None
     totalHours: float | None
     departmentName: str | None = None
-    teamName: str | None = None
     projectName: str | None = None
     taskName: str | None = None
     dailyWorkLog: str | None = None

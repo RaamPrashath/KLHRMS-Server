@@ -24,6 +24,7 @@ class FakeRepo:
         self.upsert_settings_args: tuple[str, str, str, str] | None = None
         self.upsert_payloads: list[dict[str, object]] = []
         self.identity_payloads: list[dict[str, object]] = []
+        self.user_image_updates: list[tuple[str, str]] = []
         self.summary_args: tuple[str, str, dict[str, int] | None] | None = None
         self.finalize_args: dict[str, int] | None = None
         self.default_role = SimpleNamespace(id="role-employee", name="Employee")
@@ -43,18 +44,31 @@ class FakeRepo:
     async def get_settings(self, org_id: str) -> object | None:
         return self._existing_settings
 
+    async def get_settings_presence(self, org_id: str) -> dict | None:
+        if self._existing_settings is None:
+            return None
+        return {
+            "is_enabled": self._existing_settings.is_enabled,
+            "has_tenant_id": bool(getattr(self._existing_settings, "tenant_id", "")),
+            "has_client_id": bool(getattr(self._existing_settings, "client_id", "")),
+            "has_client_secret": bool(getattr(self._existing_settings, "client_secret", "")),
+            "last_sync_at": getattr(self._existing_settings, "last_sync_at", None),
+            "last_sync_status": getattr(self._existing_settings, "last_sync_status", None),
+            "last_sync_summary": getattr(self._existing_settings, "last_sync_summary", None),
+        }
+
     async def upsert_settings(
         self,
         org_id: str,
         tenant_id: str,
         client_id: str,
-        client_secret_ciphertext: str,
+        client_secret: str,
     ) -> SimpleNamespace:
-        self.upsert_settings_args = (org_id, tenant_id, client_id, client_secret_ciphertext)
+        self.upsert_settings_args = (org_id, tenant_id, client_id, client_secret)
         setting = SimpleNamespace(
             tenant_id=tenant_id,
             client_id=client_id,
-            client_secret_ciphertext=client_secret_ciphertext,
+            client_secret=client_secret,
             is_enabled=True,
             last_sync_at=None,
             last_sync_status=None,
@@ -104,6 +118,20 @@ class FakeRepo:
         self.upsert_payloads.append(data)
         return SimpleNamespace(id="employee-1"), True
 
+    async def find_employee_by_microsoft_id(
+        self,
+        org_id: str,
+        microsoft_id: str,
+    ) -> SimpleNamespace | None:
+        return SimpleNamespace(
+            id="employee-1",
+            microsoft_id=microsoft_id,
+            profile_photo_url=f"/microsoft-graph/profile-photos/{org_id}/{microsoft_id}",
+        )
+
+    async def update_user_microsoft_image(self, user_id: str, image_url: str) -> None:
+        self.user_image_updates.append((user_id, image_url))
+
     async def finalize_sync_run(
         self,
         run: SimpleNamespace,
@@ -149,12 +177,8 @@ def _build_service(existing_settings: object | None = None) -> tuple[MicrosoftIn
 
 
 @pytest.mark.asyncio
-async def test_save_settings_persists_encrypted_credentials_and_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_save_settings_persists_credentials_and_commits() -> None:
     service, fake_repo, fake_db = _build_service()
-    monkeypatch.setattr(
-        "app.modules.microsoft_graph.service.encrypt_secret",
-        lambda value: f"encrypted::{value}",
-    )
 
     response = await service.save_settings("org-1", "tenant-1", "client-1", "secret-1")
 
@@ -162,13 +186,62 @@ async def test_save_settings_persists_encrypted_credentials_and_commits(monkeypa
         "org-1",
         "tenant-1",
         "client-1",
-        "encrypted::secret-1",
+        "secret-1",
     )
     assert fake_db.committed is True
-    assert response.tenant_id == "tenant-1"
-    assert response.client_id == "client-1"
-    assert response.client_secret_configured is True
+    assert response.tenant_id == "xxxx"
+    assert response.client_id == "xxxx"
+    assert response.client_secret == "xxxx"
     assert response.is_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_get_settings_masks_persisted_credentials() -> None:
+    service, _fake_repo, _fake_db = _build_service(
+        SimpleNamespace(
+            tenant_id="tenant-1",
+            client_id="client-1",
+            client_secret="secret-1",
+            is_enabled=True,
+            last_sync_at=None,
+            last_sync_status=None,
+            last_sync_summary=None,
+        )
+    )
+
+    response = await service.get_settings("org-1")
+
+    assert response.tenant_id == "xxxx"
+    assert response.client_id == "xxxx"
+    assert response.client_secret == "xxxx"
+
+
+@pytest.mark.asyncio
+async def test_save_settings_treats_masked_values_as_unchanged() -> None:
+    service, fake_repo, fake_db = _build_service(
+        SimpleNamespace(
+            tenant_id="tenant-1",
+            client_id="client-1",
+            client_secret="secret-1",
+            is_enabled=True,
+            last_sync_at=None,
+            last_sync_status=None,
+            last_sync_summary=None,
+        )
+    )
+
+    response = await service.save_settings("org-1", "xxxx", "xxxx", "xxxx")
+
+    assert fake_repo.upsert_settings_args == (
+        "org-1",
+        "tenant-1",
+        "client-1",
+        "secret-1",
+    )
+    assert fake_db.committed is True
+    assert response.tenant_id == "xxxx"
+    assert response.client_id == "xxxx"
+    assert response.client_secret == "xxxx"
 
 
 @pytest.mark.asyncio
@@ -258,5 +331,8 @@ async def test_sync_employees_creates_auth_identity_bundle_and_employee_link() -
     assert payload["synced_at"].tzinfo is not None
     assert "mobile_phone" not in payload
     assert "office_location" not in payload
-    assert "profile_photo_url" not in payload
+    assert payload["profile_photo_url"] == "/microsoft-graph/profile-photos/org-1/graph-user-1"
+    assert fake_repo.user_image_updates == [
+        ("user-1", "/microsoft-graph/profile-photos/org-1/graph-user-1")
+    ]
     assert "manager_id" not in payload

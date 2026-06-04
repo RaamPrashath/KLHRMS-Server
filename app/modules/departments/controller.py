@@ -8,9 +8,6 @@ from app.modules.departments.schema import (
     DepartmentMetaResponse,
     DepartmentSummary,
     DepartmentUpsertRequest,
-    TeamMemberAssignRequest,
-    TeamSummary,
-    TeamUpsertRequest,
 )
 from app.shared.deps.organization_member import MemberContext
 
@@ -36,28 +33,3 @@ async def handle_update_department(
 async def handle_delete_department(ctx: MemberContext, db: AsyncSession, department_id: str) -> None:
     await service.deactivate_department(db, ctx, department_id)
 
-
-async def handle_create_team(
-    ctx: MemberContext, db: AsyncSession, department_id: str, payload: TeamUpsertRequest
-) -> DepartmentSummary:
-    return await service.upsert_team(db, ctx, department_id, payload)
-
-
-async def handle_update_team(
-    ctx: MemberContext, db: AsyncSession, department_id: str, team_id: str, payload: TeamUpsertRequest
-) -> DepartmentSummary:
-    return await service.upsert_team(db, ctx, department_id, payload, team_id)
-
-
-async def handle_delete_team(ctx: MemberContext, db: AsyncSession, department_id: str, team_id: str) -> DepartmentSummary:
-    return await service.deactivate_team(db, ctx, department_id, team_id)
-
-
-async def handle_assign_team_member(
-    ctx: MemberContext, db: AsyncSession, team_id: str, payload: TeamMemberAssignRequest
-) -> TeamSummary:
-    return await service.assign_team_member(db, ctx, team_id, payload)
-
-
-async def handle_remove_team_member(ctx: MemberContext, db: AsyncSession, team_id: str, member_id: str) -> TeamSummary:
-    return await service.remove_team_member(db, ctx, team_id, member_id)

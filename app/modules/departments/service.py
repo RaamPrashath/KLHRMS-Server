@@ -7,22 +7,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.models.department import Department
+from app.models.department_member import DepartmentMember
 from app.models.member import Member
-from app.models.project import Project
-from app.models.team import Team
-from app.models.team_member import TeamMember
 from app.models.user import User
 from app.modules.departments.schema import (
+    DepartmentMemberSummary,
     DepartmentListResponse,
     DepartmentMetaResponse,
     DepartmentProjectSummary,
     DepartmentSummary,
     DepartmentUpsertRequest,
     LookupOption,
-    TeamMemberAssignRequest,
-    TeamMemberSummary,
-    TeamSummary,
-    TeamUpsertRequest,
 )
 from app.shared.deps.organization_member import MemberContext
 
@@ -52,38 +47,15 @@ def _member_name(member: Member | None) -> str | None:
 
 
 def _department_to_summary(department: Department, member_id: str | None = None) -> DepartmentSummary:
-    teams = [
-        _team_to_summary(team)
-        for team in department.teams
-        if team.status == "ACTIVE" and (member_id is None or any(item.memberId == member_id for item in team.members))
-    ]
-    member_ids = {member.memberId for team in teams for member in team.members}
-    return DepartmentSummary(
-        id=department.id,
-        name=department.name,
-        parentDepartmentId=department.parentDepartmentId,
-        headMemberId=department.headMemberId,
-        headMemberName=_member_name(getattr(department, "head_member", None)),
-        status=department.status,
-        teamCount=len(teams),
-        memberCount=len(member_ids),
-        projectCount=sum(team.projectCount for team in teams),
-        teams=teams,
-        createdAt=department.createdAt,
-        updatedAt=department.updatedAt,
-    )
-
-
-def _team_to_summary(team: Team) -> TeamSummary:
     members = [
-        TeamMemberSummary(
+        DepartmentMemberSummary(
             id=item.id,
             memberId=item.memberId,
             name=item.member.user.name if item.member and item.member.user else None,
             email=item.member.user.email if item.member and item.member.user else None,
-            role=item.role,
         )
-        for item in team.members
+        for item in department.members
+        if member_id is None or item.memberId == member_id
     ]
     projects = [
         DepartmentProjectSummary(
@@ -93,23 +65,22 @@ def _team_to_summary(team: Team) -> TeamSummary:
             billable=project.billable,
             memberCount=len(project.members),
         )
-        for project in team.projects
+        for project in getattr(department, "projects", [])
         if project.deletedAt is None
     ]
-    return TeamSummary(
-        id=team.id,
-        departmentId=team.departmentId,
-        name=team.name,
-        description=team.description,
-        leadMemberId=team.leadMemberId,
-        leadMemberName=_member_name(team.lead_member),
-        status=team.status,
+    return DepartmentSummary(
+        id=department.id,
+        name=department.name,
+        parentDepartmentId=department.parentDepartmentId,
+        headMemberId=department.headMemberId,
+        headMemberName=_member_name(getattr(department, "head_member", None)),
+        status=department.status,
         memberCount=len(members),
         projectCount=len(projects),
         members=members,
         projects=projects,
-        createdAt=team.createdAt,
-        updatedAt=team.updatedAt,
+        createdAt=department.createdAt,
+        updatedAt=department.updatedAt,
     )
 
 
@@ -147,18 +118,15 @@ async def list_departments(
         query = query.where(Department.name.ilike(term))
     if scope == "self":
         query = (
-            query.join(Team, Team.departmentId == Department.id)
-            .join(TeamMember, TeamMember.teamId == Team.id)
-            .where(TeamMember.memberId == ctx.member.id, Team.status == "ACTIVE")
+            query.join(DepartmentMember, DepartmentMember.departmentId == Department.id)
+            .where(DepartmentMember.memberId == ctx.member.id)
             .distinct()
         )
 
     total_result = await db.execute(select(func.count()).select_from(query.order_by(None).subquery()))
     result = await db.execute(
-        query.options(joinedload(Department.teams).joinedload(Team.members).joinedload(TeamMember.member).joinedload(Member.user))
+        query.options(joinedload(Department.members).joinedload(DepartmentMember.member).joinedload(Member.user))
         .options(joinedload(Department.head_member).joinedload(Member.user))
-        .options(joinedload(Department.teams).joinedload(Team.lead_member).joinedload(Member.user))
-        .options(joinedload(Department.teams).joinedload(Team.projects).joinedload(Project.members))
         .order_by(Department.name.asc())
     )
     departments = result.unique().scalars().all()
@@ -198,103 +166,7 @@ async def upsert_department(
 async def deactivate_department(db: AsyncSession, ctx: MemberContext, department_id: str) -> None:
     department = await _validate_department(db, ctx, department_id)
     department.status = "INACTIVE"
-    teams_result = await db.execute(select(Team).where(Team.departmentId == department_id, Team.organizationId == ctx.organization.id))
-    for team in teams_result.scalars().all():
-        team.status = "INACTIVE"
     await db.commit()
-
-
-async def upsert_team(
-    db: AsyncSession,
-    ctx: MemberContext,
-    department_id: str,
-    payload: TeamUpsertRequest,
-    team_id: str | None = None,
-) -> DepartmentSummary:
-    await _validate_department(db, ctx, department_id)
-    await _validate_member(db, ctx, payload.leadMemberId)
-    team: Team | None = None
-    if team_id:
-        result = await db.execute(
-            select(Team).where(
-                Team.id == team_id,
-                Team.departmentId == department_id,
-                Team.organizationId == ctx.organization.id,
-                Team.status == "ACTIVE",
-            )
-        )
-        team = result.scalar_one_or_none()
-        if team is None:
-            raise HTTPException(status_code=404, detail="Team not found")
-    else:
-        team = Team(organizationId=ctx.organization.id, departmentId=department_id)
-        db.add(team)
-
-    team.name = payload.name.strip()
-    team.description = payload.description.strip() if payload.description else None
-    team.leadMemberId = payload.leadMemberId
-    team.status = payload.status
-    await db.commit()
-    departments = await list_departments(db, ctx)
-    return next(item for item in departments.items if item.id == department_id)
-
-
-async def deactivate_team(db: AsyncSession, ctx: MemberContext, department_id: str, team_id: str) -> DepartmentSummary:
-    result = await db.execute(
-        select(Team).where(
-            Team.id == team_id,
-            Team.departmentId == department_id,
-            Team.organizationId == ctx.organization.id,
-            Team.status == "ACTIVE",
-        )
-    )
-    team = result.scalar_one_or_none()
-    if team is None:
-        raise HTTPException(status_code=404, detail="Team not found")
-    team.status = "INACTIVE"
-    projects_result = await db.execute(select(Project).where(Project.teamId == team_id, Project.organizationId == ctx.organization.id))
-    for project in projects_result.scalars().all():
-        project.teamId = None
-    await db.commit()
-    departments = await list_departments(db, ctx)
-    return next(item for item in departments.items if item.id == department_id)
-
-
-async def assign_team_member(
-    db: AsyncSession,
-    ctx: MemberContext,
-    team_id: str,
-    payload: TeamMemberAssignRequest,
-) -> TeamSummary:
-    team_result = await db.execute(select(Team).where(Team.id == team_id, Team.organizationId == ctx.organization.id, Team.status == "ACTIVE"))
-    team = team_result.scalar_one_or_none()
-    if team is None:
-        raise HTTPException(status_code=404, detail="Team not found")
-    await _validate_member(db, ctx, payload.memberId)
-    existing_result = await db.execute(select(TeamMember).where(TeamMember.teamId == team_id, TeamMember.memberId == payload.memberId))
-    existing = existing_result.scalar_one_or_none()
-    if existing is None:
-        db.add(TeamMember(teamId=team_id, memberId=payload.memberId, role=payload.role.strip() if payload.role else None))
-    else:
-        existing.role = payload.role.strip() if payload.role else None
-    await db.commit()
-    departments = await list_departments(db, ctx)
-    return next(team_item for dept in departments.items for team_item in dept.teams if team_item.id == team_id)
-
-
-async def remove_team_member(db: AsyncSession, ctx: MemberContext, team_id: str, member_id: str) -> TeamSummary:
-    result = await db.execute(
-        select(TeamMember)
-        .join(Team, Team.id == TeamMember.teamId)
-        .where(TeamMember.teamId == team_id, TeamMember.memberId == member_id, Team.organizationId == ctx.organization.id)
-    )
-    membership = result.scalar_one_or_none()
-    if membership is None:
-        raise HTTPException(status_code=404, detail="Team member assignment not found")
-    await db.delete(membership)
-    await db.commit()
-    departments = await list_departments(db, ctx)
-    return next(team_item for dept in departments.items for team_item in dept.teams if team_item.id == team_id)
 
 
 async def get_department_meta(db: AsyncSession, ctx: MemberContext) -> DepartmentMetaResponse:

@@ -13,8 +13,6 @@ from app.models.member import Member
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.project_task import ProjectTask
-from app.models.team import Team
-from app.models.team_member import TeamMember
 from app.models.user import User
 from app.modules.projects.schema import (
     ProjectCapacitySummary,
@@ -85,7 +83,6 @@ async def list_projects(
     query = (
         base_query.options(joinedload(Project.members).joinedload(ProjectMember.member).joinedload(Member.user))
         .options(joinedload(Project.tasks))
-        .options(joinedload(Project.team))
         .order_by(Project.updatedAt.desc(), Project.createdAt.desc())
         .offset((filters.page - 1) * filters.page_size)
         .limit(filters.page_size)
@@ -100,8 +97,6 @@ async def list_projects(
             ProjectSummary(
                 id=project.id,
                 name=project.name,
-                teamId=project.teamId,
-                teamName=project.team.name if project.team else None,
                 clientName=project.clientName,
                 budget=_to_float(project.budget),
                 budgetedHours=_to_float(project.budgetedHours),
@@ -130,7 +125,6 @@ async def get_project(db: AsyncSession, ctx: MemberContext, project_id: str) -> 
             Project.organizationId == ctx.organization.id,
             Project.deletedAt.is_(None),
         )
-        .options(joinedload(Project.team))
         .options(joinedload(Project.members).joinedload(ProjectMember.member).joinedload(Member.user))
         .options(joinedload(Project.tasks))
     )
@@ -164,8 +158,6 @@ async def get_project(db: AsyncSession, ctx: MemberContext, project_id: str) -> 
     return ProjectDetailResponse(
         id=project.id,
         name=project.name,
-        teamId=project.teamId,
-        teamName=project.team.name if project.team else None,
         clientName=project.clientName,
         budget=_to_float(project.budget),
         budgetedHours=_to_float(project.budgetedHours),
@@ -207,19 +199,7 @@ async def upsert_project(
         project = Project(organizationId=ctx.organization.id)
         db.add(project)
 
-    if payload.teamId:
-        team_result = await db.execute(
-            select(Team).where(
-                Team.id == payload.teamId,
-                Team.organizationId == ctx.organization.id,
-                Team.status == "ACTIVE",
-            )
-        )
-        if team_result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Team not found")
-
     project.name = payload.name.strip()
-    project.teamId = payload.teamId
     project.clientName = payload.clientName.strip() if payload.clientName else None
     project.budget = payload.budget
     project.budgetedHours = payload.budgetedHours
@@ -405,21 +385,12 @@ async def get_project_meta(db: AsyncSession, ctx: MemberContext) -> ProjectMetaR
         .where(Department.organizationId == ctx.organization.id, Department.status == "ACTIVE")
         .order_by(Department.name.asc())
     )
-    teams_query = (
-        select(Team.id, Team.name)
-        .where(Team.organizationId == ctx.organization.id, Team.status == "ACTIVE")
-        .order_by(Team.name.asc())
-    )
-    if scope == "self":
-        teams_query = teams_query.join(TeamMember, TeamMember.teamId == Team.id).where(TeamMember.memberId == ctx.member.id)
-    teams_result = await db.execute(teams_query)
     members = [
         ProjectLookupOption(id=member_id, label=name or email or member_id, email=email)
         for member_id, name, email in members_result.all()
     ]
     departments = [ProjectLookupOption(id=dept_id, label=name) for dept_id, name in departments_result.all()]
-    teams = [ProjectLookupOption(id=team_id, label=name) for team_id, name in teams_result.all()]
-    return ProjectMetaResponse(members=members, departments=departments, teams=teams)
+    return ProjectMetaResponse(members=members, departments=departments)
 
 
 async def list_projects_for_attendance(
