@@ -19,6 +19,7 @@ from app.models.attendance_record import AttendanceRecord
 from app.models.attendance_work_log import AttendanceWorkLog
 from app.models.base import Base
 from app.models.department import Department
+from app.models.department_head import DepartmentHead
 from app.models.department_member import DepartmentMember
 from app.models.employee import Employee
 from app.models.employee_group import EmployeeGroup

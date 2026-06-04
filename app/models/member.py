@@ -34,6 +34,7 @@ class Member(Base):
     user = relationship("User", back_populates="members")
     role = relationship("Role", foreign_keys="[Member.roleId]", primaryjoin="Member.roleId == Role.id", overlaps="organization,members")
     departmentMembers = relationship("DepartmentMember", back_populates="member")
+    departmentHeads = relationship("DepartmentHead", back_populates="member", cascade="all, delete-orphan")
 
     leave_requests = relationship("LeaveRequest", foreign_keys="[LeaveRequest.memberId]", back_populates="member")
     approved_leave_requests = relationship("LeaveRequest", foreign_keys="[LeaveRequest.approvedById]", back_populates="approved_by")

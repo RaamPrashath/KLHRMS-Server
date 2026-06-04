@@ -43,6 +43,14 @@ class DepartmentMemberSummary(BaseModel):
     email: str | None
 
 
+class DepartmentHeadSummary(BaseModel):
+    id: str
+    memberId: str
+    name: str | None
+    email: str | None
+    assignedAt: datetime
+
+
 class DepartmentSummary(BaseModel):
     id: str
     name: str
@@ -53,6 +61,7 @@ class DepartmentSummary(BaseModel):
     memberCount: int
     projectCount: int
     members: list[DepartmentMemberSummary]
+    heads: list[DepartmentHeadSummary]
     projects: list[DepartmentProjectSummary]
     createdAt: datetime
     updatedAt: datetime
@@ -66,3 +75,11 @@ class DepartmentListResponse(BaseModel):
 class DepartmentMetaResponse(BaseModel):
     members: list[LookupOption]
     departments: list[LookupOption]
+
+
+class BulkMembersRequest(BaseModel):
+    memberIds: list[str]
+
+
+class HeadAssignRequest(BaseModel):
+    headMemberId: str

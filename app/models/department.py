@@ -43,6 +43,7 @@ class Department(Base):
         back_populates="parent",
     )
     members = relationship("DepartmentMember", back_populates="department")
+    heads = relationship("DepartmentHead", back_populates="department", cascade="all, delete-orphan")
     head_member = relationship(
         "Member",
         foreign_keys="[Department.headMemberId]",

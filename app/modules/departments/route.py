@@ -6,17 +6,25 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.departments.controller import (
+    handle_add_member,
+    handle_assign_head,
+    handle_bulk_assign_members,
     handle_create_department,
     handle_delete_department,
+    handle_get_department,
     handle_get_meta,
     handle_list_departments,
+    handle_remove_head,
+    handle_remove_member,
     handle_update_department,
 )
 from app.modules.departments.schema import (
+    BulkMembersRequest,
     DepartmentListResponse,
     DepartmentMetaResponse,
     DepartmentSummary,
     DepartmentUpsertRequest,
+    HeadAssignRequest,
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
@@ -41,6 +49,15 @@ async def get_department_meta(
     db: DbSession,
 ) -> DepartmentMetaResponse:
     return await handle_get_meta(access, db)
+
+
+@router.get("/{department_id}", response_model=DepartmentSummary)
+async def get_department(
+    department_id: str,
+    access: Annotated[MemberContext, Depends(require_permission("departments", "view", allow_self=True))],
+    db: DbSession,
+) -> DepartmentSummary:
+    return await handle_get_department(access, db, department_id)
 
 
 @router.post("", response_model=DepartmentSummary, status_code=status.HTTP_201_CREATED)
@@ -71,3 +88,58 @@ async def delete_department(
     await handle_delete_department(access, db, department_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+
+# ── Member management ──────────────────────────────────────────────────────────
+
+
+@router.post("/{department_id}/members", response_model=DepartmentSummary)
+async def add_department_member(
+    department_id: str,
+    body: HeadAssignRequest,
+    access: Annotated[MemberContext, Depends(require_permission("departments", "edit"))],
+    db: DbSession,
+) -> DepartmentSummary:
+    return await handle_add_member(access, db, department_id, body.headMemberId)
+
+
+@router.post("/{department_id}/members/bulk", response_model=DepartmentSummary)
+async def bulk_assign_members(
+    department_id: str,
+    body: BulkMembersRequest,
+    access: Annotated[MemberContext, Depends(require_permission("departments", "edit"))],
+    db: DbSession,
+) -> DepartmentSummary:
+    return await handle_bulk_assign_members(access, db, department_id, body.memberIds)
+
+
+@router.delete("/{department_id}/members/{member_id}", response_model=DepartmentSummary)
+async def remove_department_member(
+    department_id: str,
+    member_id: str,
+    access: Annotated[MemberContext, Depends(require_permission("departments", "edit"))],
+    db: DbSession,
+) -> DepartmentSummary:
+    return await handle_remove_member(access, db, department_id, member_id)
+
+
+# ── Head management ────────────────────────────────────────────────────────────
+
+
+@router.post("/{department_id}/heads", response_model=DepartmentSummary)
+async def assign_department_head(
+    department_id: str,
+    body: HeadAssignRequest,
+    access: Annotated[MemberContext, Depends(require_permission("departments", "edit"))],
+    db: DbSession,
+) -> DepartmentSummary:
+    return await handle_assign_head(access, db, department_id, body.headMemberId)
+
+
+@router.delete("/{department_id}/heads/{member_id}", response_model=DepartmentSummary)
+async def remove_department_head(
+    department_id: str,
+    member_id: str,
+    access: Annotated[MemberContext, Depends(require_permission("departments", "edit"))],
+    db: DbSession,
+) -> DepartmentSummary:
+    return await handle_remove_head(access, db, department_id, member_id)
