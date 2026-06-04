@@ -28,6 +28,7 @@ from app.models.member import Member
 from app.models.organization import Organization
 from app.models.role import Role
 from app.models.user import User
+from app.modules.notifications.service import NotificationCreateInput, create_notification_batch
 from app.shared.notifications.email import send_asset_warranty_expiry_alert
 from app.modules.assets.schema import (
     ASSET_CONDITIONS,
@@ -299,6 +300,69 @@ def _should_manage_assets(role: Role | None) -> bool:
     if assets_permissions.get("edit") == "organization":
         return True
     return "admin" in (role.name or "").strip().lower()
+
+
+async def _notify_general_helpdesk_admins(
+    db: AsyncSession,
+    ctx: MemberContext,
+    ticket: AssetMaintenanceLog,
+) -> None:
+    if ticket.ticketMode != "GENERAL_HELP_REQUEST":
+        return
+
+    admins = await _members_with_asset_admin_scope(db, ctx.organization.id)
+    title = ticket.subject or _to_title(ticket.maintenanceType)
+    await create_notification_batch(
+        db,
+        [
+            NotificationCreateInput(
+                organization_id=ctx.organization.id,
+                member_id=member.id,
+                type="HELPDESK_REQUEST_CREATED",
+                category="helpdesk",
+                title="New helpdesk request needs attention",
+                message=f"{title} was submitted and is now waiting in the shared queue.",
+                action_url=f"/{ctx.organization.slug}/maintenance",
+                entity_type="HELPDESK_TICKET",
+                entity_id=ticket.id,
+                metadata={"ticketId": ticket.ticketId, "status": ticket.status},
+            )
+            for member in admins
+            if member.id != ctx.member.id
+        ],
+    )
+
+
+async def _notify_general_helpdesk_requester_if_completed(
+    db: AsyncSession,
+    ctx: MemberContext,
+    ticket: AssetMaintenanceLog,
+    previous_status: str | None,
+) -> None:
+    if ticket.ticketMode != "GENERAL_HELP_REQUEST":
+        return
+    if previous_status == "COMPLETED" or ticket.status != "COMPLETED":
+        return
+    if not ticket.loggedByMemberId:
+        return
+
+    await create_notification_batch(
+        db,
+        [
+            NotificationCreateInput(
+                organization_id=ctx.organization.id,
+                member_id=ticket.loggedByMemberId,
+                type="HELPDESK_REQUEST_COMPLETED",
+                category="helpdesk",
+                title="Your helpdesk request was resolved",
+                message=f"{ticket.subject or _to_title(ticket.maintenanceType)} was marked as completed.",
+                action_url=f"/{ctx.organization.slug}/helpdesk",
+                entity_type="HELPDESK_TICKET",
+                entity_id=ticket.id,
+                metadata={"ticketId": ticket.ticketId, "status": ticket.status},
+            )
+        ],
+    )
 
 
 async def _ensure_tracking_unit(db: AsyncSession, asset: Asset) -> AssetUnit:
@@ -2167,6 +2231,8 @@ async def create_helpdesk_ticket(
         .options(joinedload(AssetMaintenanceLog.asset))
     )
     created = result.unique().scalar_one()
+    await _notify_general_helpdesk_admins(db, ctx, created)
+    await db.commit()
     return _my_ticket_response(created)
 
 
@@ -2243,6 +2309,7 @@ async def update_maintenance_record(
 ) -> AssetDetailResponse:
     asset = await _get_asset_or_404(db, ctx.organization.id, asset_id)
     log = await _get_maintenance_or_404(db, asset_id, maintenance_id)
+    previous_status = log.status
 
     log.status = payload.status
     log.expectedCompletionDate = payload.expectedCompletionDate or log.expectedCompletionDate
@@ -2290,6 +2357,8 @@ async def update_maintenance_record(
                 else:
                     asset.status = payload.nextAssetStatus or "AVAILABLE"
             await db.commit()
+            await _notify_general_helpdesk_requester_if_completed(db, ctx, log, previous_status)
+            await db.commit()
             return await get_asset(db, ctx, asset.id)
         if payload.nextAssetStatus:
             if log.assetUnitId:
@@ -2315,6 +2384,8 @@ async def update_maintenance_record(
         else:
             asset.status = payload.nextAssetStatus or "DAMAGED"
 
+    await db.commit()
+    await _notify_general_helpdesk_requester_if_completed(db, ctx, log, previous_status)
     await db.commit()
     return await get_asset(db, ctx, asset.id)
 
@@ -2343,6 +2414,7 @@ async def update_maintenance_record_by_id(
         await update_maintenance_record(db, ctx, log.assetId, maintenance_id, payload)
         return
 
+    previous_status = log.status
     log.status = payload.status
     log.expectedCompletionDate = payload.expectedCompletionDate or log.expectedCompletionDate
     log.completedDate = payload.completedDate
@@ -2350,6 +2422,8 @@ async def update_maintenance_record_by_id(
     if payload.notes:
         log.notes = payload.notes.strip()
 
+    await db.commit()
+    await _notify_general_helpdesk_requester_if_completed(db, ctx, log, previous_status)
     await db.commit()
 
 

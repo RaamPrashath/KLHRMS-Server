@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import contains_eager, joinedload
 
 from app.models.base import generate_uuid
 from app.models.leave import Holiday, LeaveBalance, LeaveRequest, LeaveType
@@ -39,6 +39,34 @@ class LeaveBalanceRow:
 
 def _utcnow() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
+
+
+def _year_bounds(year: int) -> tuple[dt.date, dt.date]:
+    start = dt.date(year, 1, 1)
+    end = dt.date(year + 1, 1, 1)
+    return start, end
+
+
+async def _get_approved_leave_days(
+    db: AsyncSession,
+    organization_id: str,
+    member_id: str,
+    leave_type_id: str,
+    year: int,
+) -> float:
+    year_start, next_year_start = _year_bounds(year)
+    result = await db.execute(
+        select(func.coalesce(func.sum(LeaveRequest.days), 0.0)).where(
+            LeaveRequest.organizationId == organization_id,
+            LeaveRequest.memberId == member_id,
+            LeaveRequest.leaveTypeId == leave_type_id,
+            LeaveRequest.status == LeaveRequestStatus.APPROVED.value,
+            LeaveRequest.deletedAt.is_(None),
+            LeaveRequest.startDate >= year_start,
+            LeaveRequest.startDate < next_year_start,
+        )
+    )
+    return float(result.scalar_one() or 0.0)
 
 
 async def resolve_target_member(db: AsyncSession, organization_id: str, member_id: str) -> Member:
@@ -451,6 +479,13 @@ async def _get_or_create_leave_balance(
         return balance
 
     now = _utcnow()
+    approved_used = await _get_approved_leave_days(
+        db,
+        organization_id,
+        member_id,
+        leave_type.id,
+        year,
+    )
     balance = LeaveBalance(
         id=generate_uuid(),
         organizationId=organization_id,
@@ -458,8 +493,8 @@ async def _get_or_create_leave_balance(
         leaveTypeId=leave_type.id,
         year=year,
         allocated=leave_type.quota,
-        used=0,
-        remaining=leave_type.quota,
+        used=approved_used,
+        remaining=leave_type.quota - approved_used,
         carriedForward=0,
         lapsed=0,
         createdAt=now,
@@ -573,22 +608,28 @@ async def approve_leave_request(
 
     leave_type = await get_leave_type_or_404(db, organization_id, leave_request.leaveTypeId)
     now = _utcnow()
-    if leave_type.isPaid:
-        balance = await _get_or_create_leave_balance(
-            db,
-            organization_id,
-            leave_request.memberId,
-            leave_type,
-            leave_request.startDate.year,
-        )
-        new_used = balance.used + leave_request.days
-        new_remaining = balance.allocated + balance.carriedForward - new_used - balance.lapsed
-        if new_remaining < 0:
-            raise HTTPException(status_code=400, detail="Approving this request would make the leave balance negative")
+    balance = await _get_or_create_leave_balance(
+        db,
+        organization_id,
+        leave_request.memberId,
+        leave_type,
+        leave_request.startDate.year,
+    )
+    current_used = await _get_approved_leave_days(
+        db,
+        organization_id,
+        leave_request.memberId,
+        leave_type.id,
+        leave_request.startDate.year,
+    )
+    new_used = current_used + leave_request.days
+    new_remaining = balance.allocated + balance.carriedForward - new_used - balance.lapsed
+    if new_remaining < 0:
+        raise HTTPException(status_code=400, detail="Approving this request would make the leave balance negative")
 
-        balance.used = new_used
-        balance.remaining = new_remaining
-        balance.updatedAt = now
+    balance.used = new_used
+    balance.remaining = new_remaining
+    balance.updatedAt = now
 
     leave_request.status = LeaveRequestStatus.APPROVED.value
     leave_request.approvedById = approver_member_id
@@ -699,12 +740,36 @@ async def list_leave_balances(
         (b.memberId, b.leaveTypeId): b for b in existing_result.scalars().all()
     }
 
+    approved_usage_result = await db.execute(
+        select(
+            LeaveRequest.memberId,
+            LeaveRequest.leaveTypeId,
+            func.coalesce(func.sum(LeaveRequest.days), 0.0),
+        )
+        .where(
+            LeaveRequest.organizationId == organization_id,
+            LeaveRequest.status == LeaveRequestStatus.APPROVED.value,
+            LeaveRequest.deletedAt.is_(None),
+            LeaveRequest.startDate >= dt.date(year, 1, 1),
+            LeaveRequest.startDate < dt.date(year + 1, 1, 1),
+            LeaveRequest.memberId.in_(member_ids),
+            LeaveRequest.leaveTypeId.in_(lt_ids),
+        )
+        .group_by(LeaveRequest.memberId, LeaveRequest.leaveTypeId)
+    )
+    approved_usage: dict[tuple[str, str], float] = {
+        (member_id, leave_type_id): float(total or 0.0)
+        for member_id, leave_type_id, total in approved_usage_result.all()
+    }
+
     # ── 4. Build synthetic rows for every (member × leave_type) ──────────────
     rows: list[LeaveBalanceRow] = []
     for member in members:
         for lt in leave_types:
             balance = existing_balances.get((member.id, lt.id))
             if balance is not None:
+                actual_used = approved_usage.get((member.id, lt.id), 0.0)
+                actual_remaining = balance.allocated + balance.carriedForward - actual_used - balance.lapsed
                 rows.append(
                     LeaveBalanceRow(
                         id=balance.id,
@@ -713,8 +778,8 @@ async def list_leave_balances(
                         leaveTypeId=balance.leaveTypeId,
                         year=balance.year,
                         allocated=balance.allocated,
-                        used=balance.used,
-                        remaining=balance.remaining,
+                        used=actual_used,
+                        remaining=actual_remaining,
                         carriedForward=balance.carriedForward,
                         lapsed=balance.lapsed,
                         createdAt=balance.createdAt,
@@ -724,6 +789,7 @@ async def list_leave_balances(
                     )
                 )
             else:
+                actual_used = approved_usage.get((member.id, lt.id), 0.0)
                 rows.append(
                     LeaveBalanceRow(
                         id=f"virtual-{member.id}-{lt.id}",
@@ -732,8 +798,8 @@ async def list_leave_balances(
                         leaveTypeId=lt.id,
                         year=year,
                         allocated=lt.quota,
-                        used=0.0,
-                        remaining=lt.quota,
+                        used=actual_used,
+                        remaining=lt.quota - actual_used,
                         carriedForward=0.0,
                         lapsed=0.0,
                         createdAt=_now,
@@ -794,19 +860,33 @@ async def upsert_leave_balance(
     balance = result.scalar_one_or_none()
     now = _utcnow()
     if balance is None:
+        approved_used = await _get_approved_leave_days(
+            db,
+            organization_id,
+            member_id,
+            leave_type.id,
+            year,
+        )
         balance = LeaveBalance(
             id=generate_uuid(),
             organizationId=organization_id,
             memberId=member_id,
             leaveTypeId=leave_type.id,
             year=year,
-            used=0,
+            used=approved_used,
             createdAt=now,
             updatedAt=now,
         )
         db.add(balance)
 
-    remaining = allocated + carried_forward - balance.used - lapsed
+    actual_used = await _get_approved_leave_days(
+        db,
+        organization_id,
+        member_id,
+        leave_type.id,
+        year,
+    )
+    remaining = allocated + carried_forward - actual_used - lapsed
     if remaining < 0:
         raise HTTPException(
             status_code=400,
@@ -814,6 +894,7 @@ async def upsert_leave_balance(
         )
 
     balance.allocated = allocated
+    balance.used = actual_used
     balance.carriedForward = carried_forward
     balance.lapsed = lapsed
     balance.remaining = remaining
@@ -890,3 +971,56 @@ async def get_leave_calendar(
     )
     leave_requests = leave_requests_result.unique().scalars().all()
     return holidays, leave_requests
+
+
+async def get_leave_summary(
+    db: AsyncSession,
+    organization_id: str,
+    actor_member_id: str,
+    permission_scope: str,
+) -> list[tuple[str, str | None, str | None, float, list[LeaveRequest]]]:
+    member_query = (
+        select(Member)
+        .join(Member.user)
+        .options(contains_eager(Member.user))
+        .where(Member.organizationId == organization_id)
+    )
+    if permission_scope == "self":
+        member_query = member_query.where(Member.id == actor_member_id)
+
+    members_result = await db.execute(member_query)
+    all_members = members_result.unique().scalars().all()
+
+    requests_query = (
+        select(LeaveRequest)
+        .options(
+            joinedload(LeaveRequest.member).joinedload(Member.user),
+            joinedload(LeaveRequest.leave_type),
+        )
+        .where(
+            LeaveRequest.organizationId == organization_id,
+            LeaveRequest.deletedAt.is_(None),
+            LeaveRequest.status == LeaveRequestStatus.APPROVED.value,
+        )
+    )
+
+    requests_result = await db.execute(
+        requests_query.order_by(LeaveRequest.memberId, LeaveRequest.startDate.asc())
+    )
+    all_requests = requests_result.unique().scalars().all()
+
+    leave_map: dict[str, list[LeaveRequest]] = {}
+    for req in all_requests:
+        leave_map.setdefault(req.memberId, []).append(req)
+
+    rows: list[tuple[str, str | None, str | None, float, list[LeaveRequest]]] = []
+    for member in all_members:
+        member_id = member.id
+        name = member.user.name if member.user else None
+        email = member.user.email if member.user else None
+        items = leave_map.get(member_id, [])
+        total_days = sum(req.days for req in items)
+        rows.append((member_id, name, email, total_days, items))
+
+    rows.sort(key=lambda x: (x[1] or x[2] or "").lower())
+    return rows

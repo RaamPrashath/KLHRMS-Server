@@ -17,6 +17,7 @@ from app.modules.leave.controller import (
     handle_delete_holiday,
     handle_get_leave_calendar,
     handle_get_leave_request,
+    handle_get_leave_summary,
     handle_list_holidays,
     handle_list_leave_balances,
     handle_list_leave_requests,
@@ -44,6 +45,7 @@ from app.modules.leave.schema import (
     LeaveRequestFilters,
     LeaveRequestListResponse,
     LeaveRequestResponse,
+    LeaveSummaryListResponse,
     LeaveTypeCreateRequest,
     LeaveTypeResponse,
     LeaveTypeUpdateRequest,
@@ -89,7 +91,7 @@ async def list_holidays(
     month: int | None = Query(default=None, ge=1, le=12),
     search: str | None = Query(default=None, max_length=255),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=200, alias="pageSize"),
+    page_size: int = Query(default=20, ge=1, le=500, alias="pageSize"),
 ) -> HolidayListResponse:
     filters = HolidayListFilters(
         year=year,
@@ -141,7 +143,7 @@ async def list_leave_requests(
     to_date: dt.date | None = Query(default=None, alias="toDate"),
     year: int | None = Query(default=None),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=200),
+    page_size: int = Query(default=20, ge=1, le=500),
 ) -> LeaveRequestListResponse:
     filters = LeaveRequestFilters(
         status=status_filter,
@@ -212,7 +214,7 @@ async def list_leave_balances(
     leave_type_id: str | None = Query(default=None, alias="leaveTypeId"),
     search: str | None = Query(default=None, max_length=255),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=200, alias="pageSize"),
+    page_size: int = Query(default=20, ge=1, le=500, alias="pageSize"),
 ) -> LeaveBalanceListResponse:
     filters = LeaveBalanceFilters(
         year=year,
@@ -232,6 +234,14 @@ async def upsert_leave_balance(
     db: AsyncSession = Depends(get_db),
 ) -> LeaveBalanceResponse:
     return await handle_upsert_leave_balance(access, db, body)
+
+
+@router.get("/summary", response_model=LeaveSummaryListResponse, status_code=status.HTTP_200_OK)
+async def get_leave_summary(
+    access: Annotated[LeaveAccessContext, Depends(require_leave_permission("approve"))],
+    db: AsyncSession = Depends(get_db),
+) -> LeaveSummaryListResponse:
+    return await handle_get_leave_summary(access, db)
 
 
 @router.get("/calendar", response_model=LeaveCalendarResponse, status_code=status.HTTP_200_OK)
