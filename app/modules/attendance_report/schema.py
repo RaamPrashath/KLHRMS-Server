@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -64,3 +65,24 @@ class AttendanceReportListResponse(BaseModel):
     page: int
     page_size: int
     summary: AttendanceReportSummary
+
+
+AttendanceReportExportFormat = Literal["xlsx", "pdf"]
+AttendanceReportExportMode = Literal["report", "timesheet"]
+
+
+class AttendanceReportExportEmployee(BaseModel):
+    id: str
+    name: str
+    email: str | None = None
+
+
+class AttendanceReportExportRequest(BaseModel):
+    format: AttendanceReportExportFormat
+    mode: AttendanceReportExportMode
+    title: str = Field(default="Attendance Report", max_length=160)
+    periodLabel: str = Field(default="", max_length=160)
+    dateColumns: list[date] = Field(default_factory=list)
+    employees: list[AttendanceReportExportEmployee] = Field(default_factory=list)
+    rows: list[AttendanceReportRow] = Field(default_factory=list)
+    force8: bool = False

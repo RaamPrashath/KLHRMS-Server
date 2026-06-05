@@ -30,16 +30,27 @@ from app.modules.attendance.controller import (
     handle_clock_out,
     handle_delete_bulk_work_logs_day,
     handle_delete_day_entry,
+    handle_export_work_log_reports,
     handle_get_attendance_day,
     handle_get_bulk_work_logs_day,
-    handle_get_work_log_report_detail,
     handle_get_bulk_work_logs_range,
     handle_get_my_attendance,
-    handle_export_work_log_reports,
-    handle_list_work_log_reports,
+    handle_get_work_log_report_detail,
     handle_list_attendance,
+    handle_list_work_log_reports,
     handle_upsert_bulk_work_logs,
     handle_upsert_manual_day,
+)
+from app.modules.attendance.export_schema import AttendanceExportRequest
+from app.modules.attendance.export_service import (
+    generate_csv,
+    generate_csv_pivot,
+    generate_pdf,
+    generate_pdf_pivot,
+    generate_work_log_report_csv,
+    generate_work_log_report_xlsx,
+    generate_xlsx,
+    generate_xlsx_pivot,
 )
 from app.modules.attendance.schema import (
     AttendanceListFilters,
@@ -58,17 +69,6 @@ from app.modules.attendance.schema import (
     WorkLogReportDetailResponse,
     WorkLogReportFilters,
     WorkLogReportListResponse,
-)
-from app.modules.attendance.export_schema import AttendanceExportRequest
-from app.modules.attendance.export_service import (
-    generate_work_log_report_csv,
-    generate_work_log_report_xlsx,
-    generate_csv,
-    generate_csv_pivot,
-    generate_pdf,
-    generate_pdf_pivot,
-    generate_xlsx,
-    generate_xlsx_pivot,
 )
 from app.shared.database import get_db
 from app.shared.deps.attendance_permissions import (
@@ -309,14 +309,14 @@ async def get_attendance_day(
         "Save one or more days of bulk attendance work logs for the calling member. "
         "Each day replaces all existing logs for that date (overwrite semantics). "
         "An empty logs list for a day deletes that day's entry. "
-        "Requires attendance.create permission."
+        "Requires timesheet.create permission."
     ),
 )
 async def upsert_bulk_work_logs(
     body: BulkUpsertRequest,
     access: Annotated[
         AttendanceAccessContext,
-        Depends(require_attendance_permission("create")),
+        Depends(require_attendance_permission("create", module="timesheet")),
     ],
     db: AsyncSession = Depends(get_db),
 ) -> BulkUpsertResponse:
@@ -337,13 +337,13 @@ async def upsert_bulk_work_logs(
         "Fetch the calling member's attendance days and child work logs "
         "for a date range. Results are sorted by date ascending, logs by "
         "startTime ascending. "
-        "Requires attendance.view permission."
+        "Requires timesheet.view permission."
     ),
 )
 async def get_bulk_work_logs_range(
     access: Annotated[
         AttendanceAccessContext,
-        Depends(require_attendance_permission("view")),
+        Depends(require_attendance_permission("view", module="timesheet")),
     ],
     db: AsyncSession = Depends(get_db),
     date_from: dt.date = Query(..., alias="from", description="Inclusive start date (YYYY-MM-DD)."),
@@ -368,13 +368,13 @@ async def get_bulk_work_logs_range(
     description=(
         "Fetch one date's attendance record and all child work logs "
         "for the calling member. Returns day: null if no entry exists. "
-        "Requires attendance.view permission."
+        "Requires timesheet.view permission."
     ),
 )
 async def get_bulk_work_logs_day(
     access: Annotated[
         AttendanceAccessContext,
-        Depends(require_attendance_permission("view")),
+        Depends(require_attendance_permission("view", module="timesheet")),
     ],
     db: AsyncSession = Depends(get_db),
     day: dt.date = Query(..., description="Calendar date to fetch (YYYY-MM-DD)."),
@@ -395,13 +395,13 @@ async def get_bulk_work_logs_day(
     description=(
         "Delete the calling member's attendance record and all child work logs "
         "for the specified date. Returns 404 if no entry exists. "
-        "Requires attendance.delete permission."
+        "Requires timesheet.delete permission."
     ),
 )
 async def delete_bulk_work_logs_day(
     access: Annotated[
         AttendanceAccessContext,
-        Depends(require_attendance_permission("delete")),
+        Depends(require_attendance_permission("delete", module="timesheet")),
     ],
     db: AsyncSession = Depends(get_db),
     day: dt.date = Query(..., description="Calendar date to delete (YYYY-MM-DD)."),
