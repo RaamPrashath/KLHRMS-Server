@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import date, datetime
 from typing import Any
 
 import httpx
@@ -11,7 +12,9 @@ from app.integrations.microsoft_graph.exceptions import (
 )
 from app.integrations.microsoft_graph.schema import (
     ConnectionTestResult,
+    MicrosoftDirectReport,
     MicrosoftGroup,
+    MicrosoftManager,
     MicrosoftOrganization,
     MicrosoftUser,
 )
@@ -24,8 +27,17 @@ MAX_RETRIES = 3
 BASE_DELAY = 1.0
 
 SELECT_USER_FIELDS = (
-    "id,displayName,userPrincipalName,mail,employeeId,"
-    "department,jobTitle,accountEnabled"
+    "id,displayName,givenName,surname,userPrincipalName,mail,employeeId,"
+    "department,jobTitle,mobilePhone,businessPhones,officeLocation,"
+    "streetAddress,city,state,postalCode,country,companyName,"
+    "employeeType,employeeHireDate,usageLocation,userType,"
+    "preferredLanguage,accountEnabled,createdDateTime"
+)
+
+SELECT_MANAGER_FIELDS = "id,displayName,userPrincipalName,mail,jobTitle,department"
+
+SELECT_DIRECT_REPORT_FIELDS = (
+    "id,displayName,jobTitle,department,mail,accountEnabled"
 )
 
 
@@ -126,29 +138,108 @@ class MicrosoftGraphClient:
 
     async def get_users(self) -> list[MicrosoftUser]:
         raw = await self.get_all_pages(f"/users?$select={SELECT_USER_FIELDS}&$top=100")
-        return [
-            MicrosoftUser(
-                graph_id=u.get("id", ""),
-                display_name=u.get("displayName", ""),
-                user_principal_name=u.get("userPrincipalName"),
-                email=u.get("mail"),
-                employee_id=u.get("employeeId"),
-                department=u.get("department"),
-                job_title=u.get("jobTitle"),
-                mobile_phone=u.get("mobilePhone"),
-                office_location=u.get("officeLocation"),
-                account_enabled=u.get("accountEnabled", True),
-            )
-            for u in raw
-        ]
+        return [self._map_user(u) for u in raw]
 
-    async def get_user_manager(self, user_id: str) -> dict[str, Any] | None:
+    def _map_user(self, u: dict[str, Any]) -> MicrosoftUser:
+        return MicrosoftUser(
+            graph_id=u.get("id", ""),
+            display_name=u.get("displayName", ""),
+            given_name=u.get("givenName"),
+            surname=u.get("surname"),
+            user_principal_name=u.get("userPrincipalName"),
+            email=u.get("mail"),
+            employee_id=u.get("employeeId"),
+            department=u.get("department"),
+            job_title=u.get("jobTitle"),
+            mobile_phone=u.get("mobilePhone"),
+            business_phones=u.get("businessPhones") or None,
+            office_location=u.get("officeLocation"),
+            street_address=u.get("streetAddress"),
+            city=u.get("city"),
+            state=u.get("state"),
+            postal_code=u.get("postalCode"),
+            country=u.get("country"),
+            company_name=u.get("companyName"),
+            employee_type=u.get("employeeType"),
+            employee_hire_date=self._parse_date(u.get("employeeHireDate")),
+            usage_location=u.get("usageLocation"),
+            user_type=u.get("userType"),
+            preferred_language=u.get("preferredLanguage"),
+            account_enabled=u.get("accountEnabled", True),
+            created_date_time=self._parse_datetime(u.get("createdDateTime")),
+        )
+
+    @staticmethod
+    def _parse_date(value: Any) -> date | None:
+        if not value:
+            return None
         try:
-            return await self.get(f"/users/{user_id}/manager")
+            if isinstance(value, date) and not isinstance(value, datetime):
+                return value
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+
+    async def get_user(self, user_id: str) -> MicrosoftUser | None:
+        try:
+            data = await self.get(
+                f"/users/{user_id}?$select={SELECT_USER_FIELDS}"
+            )
         except MicrosoftGraphApiError as e:
             if e.status_code == 404:
                 return None
             raise
+        return self._map_user(data)
+
+    async def get_user_manager(self, user_id: str) -> MicrosoftManager | None:
+        try:
+            data = await self.get(
+                f"/users/{user_id}/manager?$select={SELECT_MANAGER_FIELDS}"
+            )
+        except MicrosoftGraphApiError as e:
+            if e.status_code == 404:
+                return None
+            raise
+        return MicrosoftManager(
+            graph_id=data.get("id", ""),
+            display_name=data.get("displayName", ""),
+            user_principal_name=data.get("userPrincipalName"),
+            job_title=data.get("jobTitle"),
+            mail=data.get("mail"),
+            department=data.get("department"),
+        )
+
+    async def get_user_direct_reports(
+        self, user_id: str
+    ) -> list[MicrosoftDirectReport]:
+        try:
+            raw = await self.get_all_pages(
+                f"/users/{user_id}/directReports?$select={SELECT_DIRECT_REPORT_FIELDS}"
+            )
+        except MicrosoftGraphApiError as e:
+            if e.status_code == 404:
+                return []
+            raise
+        return [
+            MicrosoftDirectReport(
+                graph_id=r.get("id", ""),
+                display_name=r.get("displayName", ""),
+                job_title=r.get("jobTitle"),
+                department=r.get("department"),
+                mail=r.get("mail"),
+                account_enabled=r.get("accountEnabled", True),
+            )
+            for r in raw
+        ]
 
     async def get_user_photo_bytes(self, user_id: str) -> bytes | None:
         try:

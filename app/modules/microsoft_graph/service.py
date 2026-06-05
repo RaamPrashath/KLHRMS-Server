@@ -10,6 +10,7 @@ from app.integrations.microsoft_graph.exceptions import (
 from app.integrations.microsoft_graph.graph_client import MicrosoftGraphClient
 from app.integrations.microsoft_graph.schema import (
     ConnectionTestResult,
+    MicrosoftManager,
     MicrosoftOrganization,
     MicrosoftUser,
 )
@@ -25,6 +26,8 @@ from app.shared.config import get_settings
 
 logger = logging.getLogger("klhrms.microsoft.graph.service")
 MASKED_CREDENTIAL = "xxxx"
+
+MANAGER_CHAIN_MAX_DEPTH = 12
 
 
 class MicrosoftIntegrationService:
@@ -218,6 +221,52 @@ class MicrosoftIntegrationService:
                         data["profile_photo_url"],
                     )
                     _, employee_created = await self._repo.upsert_employee(org_id, data)
+                    await self._repo.link_employee_to_user(
+                        org_id, gu.graph_id, _user.id
+                    )
+
+                    try:
+                        manager_chain = await self._build_manager_chain(client, gu.graph_id)
+                        if manager_chain:
+                            data["manager_chain"] = manager_chain
+                            direct_manager = manager_chain[0] if manager_chain else None
+                            if direct_manager and direct_manager.get("graph_id"):
+                                manager_emp = await self._repo.find_employee_by_microsoft_id(
+                                    org_id, direct_manager["graph_id"]
+                                )
+                                if manager_emp is not None:
+                                    data["manager_id"] = manager_emp.id
+                    except Exception as chain_err:
+                        logger.warning(
+                            "Manager chain lookup failed for %s: %s",
+                            gu.email or gu.graph_id,
+                            chain_err,
+                        )
+
+                    if any(
+                        data.get(k) is not None
+                        for k in (
+                            "manager_chain",
+                            "manager_id",
+                            "given_name",
+                            "surname",
+                            "business_phones",
+                            "street_address",
+                            "city",
+                            "state",
+                            "postal_code",
+                            "country",
+                            "company_name",
+                            "employee_type",
+                            "employee_hire_date",
+                            "usage_location",
+                            "user_type",
+                            "preferred_language",
+                            "created_date_time",
+                        )
+                    ):
+                        await self._repo.update_employee_profile(org_id, gu.graph_id, data)
+
                     if identity_created or employee_created:
                         created_count += 1
                     else:
@@ -270,15 +319,65 @@ class MicrosoftIntegrationService:
         return {
             "microsoft_id": gu.graph_id,
             "display_name": gu.display_name,
+            "given_name": gu.given_name,
+            "surname": gu.surname,
             "user_principal_name": gu.user_principal_name,
             "email": gu.email or gu.user_principal_name,
             "employee_id": gu.employee_id,
             "department_name": gu.department,
             "job_title": gu.job_title,
+            "mobile_phone": gu.mobile_phone,
+            "business_phones": gu.business_phones,
+            "office_location": gu.office_location,
+            "street_address": gu.street_address,
+            "city": gu.city,
+            "state": gu.state,
+            "postal_code": gu.postal_code,
+            "country": gu.country,
+            "company_name": gu.company_name,
+            "employee_type": gu.employee_type,
+            "employee_hire_date": gu.employee_hire_date,
+            "usage_location": gu.usage_location,
+            "user_type": gu.user_type,
+            "preferred_language": gu.preferred_language,
             "account_enabled": gu.account_enabled,
             "status": "ACTIVE" if gu.account_enabled else "INACTIVE",
+            "created_date_time": gu.created_date_time,
             "synced_at": datetime.now(timezone.utc),
         }
+
+    async def _build_manager_chain(
+        self, client: MicrosoftGraphClient, graph_id: str
+    ) -> list[dict[str, Any]]:
+        """Walk up the manager chain starting from the given user.
+
+        Returns a list ordered from direct manager upward.
+        """
+        chain: list[dict[str, Any]] = []
+        visited: set[str] = set()
+        current_id: str | None = graph_id
+        for _ in range(MANAGER_CHAIN_MAX_DEPTH):
+            if not current_id or current_id in visited:
+                break
+            visited.add(current_id)
+            try:
+                manager = await client.get_user_manager(current_id)
+            except Exception:
+                break
+            if manager is None or not manager.graph_id:
+                break
+            chain.append(
+                {
+                    "graph_id": manager.graph_id,
+                    "display_name": manager.display_name,
+                    "user_principal_name": manager.user_principal_name,
+                    "job_title": manager.job_title,
+                    "department": manager.department,
+                    "mail": manager.mail,
+                }
+            )
+            current_id = manager.graph_id
+        return chain
 
     def _build_profile_photo_url(self, org_id: str, microsoft_id: str) -> str:
         return f"/microsoft-graph/profile-photos/{org_id}/{microsoft_id}"

@@ -199,6 +199,35 @@ class MicrosoftGraphRepository:
         await self._db.flush()
         return emp, True
 
+    async def update_employee_profile(
+        self, org_id: str, microsoft_id: str, data: dict
+    ) -> None:
+        """Apply non-null profile fields onto an existing employee row.
+
+        Unlike `upsert_employee`, this only writes the keys provided in `data`
+        and skips None values so partial refreshes don't blank out fields.
+        """
+        employee = await self.find_employee_by_microsoft_id(org_id, microsoft_id)
+        if employee is None:
+            return
+        for key, value in data.items():
+            if key == "microsoft_id":
+                continue
+            if value is None:
+                continue
+            if hasattr(employee, key):
+                setattr(employee, key, value)
+        await self._db.flush()
+
+    async def link_employee_to_user(
+        self, org_id: str, microsoft_id: str, user_id: str
+    ) -> None:
+        employee = await self.find_employee_by_microsoft_id(org_id, microsoft_id)
+        if employee is None:
+            return
+        employee.user_id = user_id
+        await self._db.flush()
+
     # ── Auth identities ───────────────────────────────────────────────────────
 
     async def get_default_member_role(self, org_id: str) -> Role | None:
