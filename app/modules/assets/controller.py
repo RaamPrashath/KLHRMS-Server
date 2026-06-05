@@ -52,6 +52,7 @@ from app.modules.assets.service import (
     delete_category_field,
     export_asset_report,
     export_asset_report_pdf,
+    export_asset_report_xlsx,
     get_swap_preview,
     get_asset,
     get_employee_asset_view,
@@ -251,6 +252,12 @@ async def handle_export_report_pdf(
     ctx: MemberContext, db: AsyncSession, payload: AssetReportRequest
 ) -> bytes:
     return await export_asset_report_pdf(db, ctx, payload)
+
+
+async def handle_export_report_xlsx(
+    ctx: MemberContext, db: AsyncSession, payload: AssetReportRequest
+) -> bytes:
+    return await export_asset_report_xlsx(db, ctx, payload)
 
 
 # ── Asset ID CRUD handlers ────────────────────────────────────────────────────

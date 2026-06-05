@@ -20,6 +20,7 @@ from app.modules.assets.controller import (
     handle_delete_category_field,
     handle_export_report,
     handle_export_report_pdf,
+    handle_export_report_xlsx,
     handle_get_asset,
     handle_get_brand_model_analytics,
     handle_get_dashboard,
@@ -399,6 +400,31 @@ async def export_asset_report_pdf_route(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{report_type.lower()}-report.pdf"'},
+    )
+
+
+@router.get("/report.xlsx")
+async def export_asset_report_xlsx_route(
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+    report_type: str = Query(alias="report_type"),
+    member_id: str | None = Query(default=None, alias="member_id"),
+) -> Response:
+    xlsx_bytes = await handle_export_report_xlsx(
+        access,
+        db,
+        AssetReportRequest(reportType=report_type, memberId=member_id),
+    )
+    return Response(
+        content=xlsx_bytes,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": f'attachment; filename="{report_type.lower()}-report.xlsx"'
+        },
     )
 
 

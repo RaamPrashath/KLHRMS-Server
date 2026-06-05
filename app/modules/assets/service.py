@@ -8,8 +8,21 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import HTTPException
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
+from reportlab.platypus import (
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 from sqlalchemy import Select, extract, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
@@ -194,6 +207,9 @@ async def _ensure_laptop_os_field(
 
 
 def _resolve_asset_brand(asset: Asset) -> str:
+    if asset.brand and asset.brand.strip():
+        return asset.brand.strip()
+
     brand_field_names = {"brand", "manufacturer", "make"}
     for field_value in asset.customFieldValues or []:
         field_name = _normalize_key(
@@ -504,6 +520,7 @@ async def _build_swap_preview(
         currentCondition=log.conditionBeforeMaintenance or asset.condition,
         assignedMemberId=active_assignment.memberId if active_assignment else None,
         assignedMemberName=assigned_member_name,
+        brand=asset.brand,
         model=asset.model,
         operationalCriticalityTier=log.operationalCriticalityTier,
         estimatedDowntimeHours=downtime_hours,
@@ -547,43 +564,183 @@ async def _generate_ticket_id(db: AsyncSession) -> str:
 
 def _csv_to_pdf_bytes(report_type: str, csv_text: str) -> bytes:
     rows = list(csv.reader(io.StringIO(csv_text)))
+    if not rows:
+        rows = [["(no data)"]]
+
     buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=A4)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=12 * mm,
+        rightMargin=12 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm,
+        title=f"{_to_title(report_type)} Report",
+    )
 
-    page_width, page_height = A4
-    margin = 36
-    line_height = 13
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "Title",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=16,
+        leading=20,
+        spaceAfter=4,
+        textColor=colors.HexColor("#111827"),
+    )
+    meta_style = ParagraphStyle(
+        "Meta",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#6b7280"),
+        spaceAfter=10,
+    )
+    cell_style = ParagraphStyle(
+        "Cell",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor("#111827"),
+    )
+    header_style = ParagraphStyle(
+        "Header",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=8.5,
+        leading=10,
+        textColor=colors.whitesmoke,
+    )
 
-    def draw_header() -> float:
-        y_cursor = page_height - margin
-        pdf.setFont("Helvetica-Bold", 14)
-        pdf.drawString(margin, y_cursor, f"{_to_title(report_type)} Report")
-        y_cursor -= 16
-        pdf.setFont("Helvetica", 9)
-        pdf.drawString(
-            margin, y_cursor, f"Generated at: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
+    story: list = [
+        Paragraph(f"{_to_title(report_type)} Report", title_style),
+        Paragraph(
+            f"Generated at {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+            meta_style,
+        ),
+        Spacer(1, 4),
+    ]
+
+    header = [Paragraph(str(col), header_style) for col in rows[0]]
+    body = [
+        [Paragraph((str(col) if col is not None else "").replace("\n", " "), cell_style) for col in row]
+        for row in rows[1:]
+    ]
+    table_data = [header, *body]
+
+    page_width, _page_height = A4
+    available_width = page_width - 24 * mm
+    col_count = max(len(rows[0]), 1)
+    equal_col = available_width / col_count
+    col_widths = [equal_col] * col_count
+
+    table = Table(table_data, colWidths=col_widths, repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 8.5),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 7),
+                ("TOPPADDING", (0, 0), (-1, 0), 7),
+                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                ("FONTSIZE", (0, 1), (-1, -1), 8),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (-1, 0), "LEFT"),
+                ("ALIGN", (0, 1), (-1, -1), "LEFT"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f8fa")]),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#e5e7eb")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 1), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 5),
+            ]
         )
-        y_cursor -= 18
-        return y_cursor
+    )
+    story.append(table)
 
-    y = draw_header()
-    for row_index, row in enumerate(rows):
-        if y < margin:
-            pdf.showPage()
-            y = draw_header()
-
-        pdf.setFont(
-            "Helvetica-Bold" if row_index == 0 else "Helvetica", 8 if row_index == 0 else 7.8
-        )
-        line_text = " | ".join((col or "").replace("\n", " ").strip() for col in row)
-        if len(line_text) > 220:
-            line_text = f"{line_text[:217]}..."
-        pdf.drawString(margin, y, line_text)
-        y -= line_height
-
-    pdf.save()
+    doc.build(story)
     buffer.seek(0)
     return buffer.read()
+
+
+def _csv_to_xlsx_bytes(report_type: str, csv_text: str) -> bytes:
+    rows = list(csv.reader(io.StringIO(csv_text)))
+    if not rows:
+        rows = [["(no data)"]]
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = _to_title(report_type)[:31] or "Report"
+
+    header_fill = PatternFill("solid", fgColor="FF1F2937")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFFFF")
+    title_font = Font(name="Calibri", size=14, bold=True, color="FF111827")
+    meta_font = Font(name="Calibri", size=10, italic=True, color="FF6B7280")
+    cell_font = Font(name="Calibri", size=10, color="FF111827")
+    alt_fill = PatternFill("solid", fgColor="FFF7F8FA")
+    thin = Side(style="thin", color="FFE5E7EB")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    left_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+    worksheet.cell(row=1, column=1, value=f"{_to_title(report_type)} Report").font = title_font
+    worksheet.merge_cells(
+        start_row=1, start_column=1, end_row=1, end_column=max(len(rows[0]), 1)
+    )
+    worksheet.cell(row=1, column=1).alignment = Alignment(horizontal="left", vertical="center")
+
+    worksheet.cell(
+        row=2,
+        column=1,
+        value=f"Generated at {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+    ).font = meta_font
+    worksheet.merge_cells(
+        start_row=2, start_column=1, end_row=2, end_column=max(len(rows[0]), 1)
+    )
+    worksheet.cell(row=2, column=1).alignment = Alignment(horizontal="left", vertical="center")
+
+    header_row_index = 4
+    for col_index, header_value in enumerate(rows[0], start=1):
+        cell = worksheet.cell(row=header_row_index, column=col_index, value=header_value)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = left_align
+        cell.border = border
+
+    for row_offset, row in enumerate(rows[1:], start=1):
+        zebra = alt_fill if row_offset % 2 == 0 else None
+        for col_index, value in enumerate(row, start=1):
+            text = "" if value is None else str(value).replace("\n", " ")
+            cell = worksheet.cell(row=header_row_index + row_offset, column=col_index, value=text)
+            cell.font = cell_font
+            cell.alignment = left_align
+            cell.border = border
+            if zebra is not None:
+                cell.fill = zebra
+
+    col_count = max(len(rows[0]), 1)
+    for col_index in range(1, col_count + 1):
+        letter = get_column_letter(col_index)
+        max_length = 0
+        for row in rows:
+            if col_index - 1 < len(row):
+                cell_value = "" if row[col_index - 1] is None else str(row[col_index - 1])
+                max_length = max(max_length, len(cell_value))
+        worksheet.column_dimensions[letter].width = min(max(max_length + 2, 12), 40)
+
+    worksheet.row_dimensions[1].height = 22
+    worksheet.row_dimensions[2].height = 18
+    worksheet.row_dimensions[header_row_index].height = 24
+
+    worksheet.freeze_panes = worksheet.cell(row=header_row_index + 1, column=1)
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def _to_float(value: Decimal | float | int | None) -> float | None:
@@ -765,6 +922,7 @@ def _asset_summary(
         category=asset.category,
         categoryDefinitionId=asset.categoryDefinitionId,
         serialNumber=asset.serialNumber,
+        brand=asset.brand,
         model=asset.model,
         purchaseDate=asset.purchaseDate,
         purchasePrice=_to_float(asset.purchasePrice),
@@ -882,6 +1040,7 @@ def _employee_asset_view_item(
         category=asset_summary.category,
         categoryDefinitionId=asset_summary.categoryDefinitionId,
         serialNumber=asset_summary.serialNumber,
+        brand=asset_summary.brand,
         model=asset_summary.model,
         purchaseDate=asset_summary.purchaseDate,
         purchasePrice=asset_summary.purchasePrice,
@@ -1614,6 +1773,7 @@ async def upsert_asset(
     else:
         asset.category = "OTHER"
     asset.serialNumber = payload.serialNumber.strip() if payload.serialNumber else None
+    asset.brand = payload.brand.strip() if payload.brand else None
     asset.model = payload.model.strip() if payload.model else None
     asset.purchaseDate = payload.purchaseDate
     asset.purchasePrice = payload.purchasePrice
@@ -1764,6 +1924,8 @@ async def bulk_create_assets(
     asset_code = payload.assetCode.strip()
     condition = payload.condition
     location = payload.location.strip() if payload.location else None
+    brand = payload.brand.strip() if payload.brand else None
+    model = payload.model.strip() if payload.model else None
 
     created_assets: list[Asset] = []
 
@@ -1776,6 +1938,8 @@ async def bulk_create_assets(
             category=category_name,
             categoryDefinitionId=payload.categoryDefinitionId,
             serialNumber=serial_val,
+            brand=brand,
+            model=model,
             condition=condition,
             status="AVAILABLE",
             location=location,
@@ -1860,6 +2024,7 @@ async def list_available_groups(
                 "categoryName": cat_name,
                 "categoryDefinitionId": asset.categoryDefinitionId,
                 "assetCode": asset.assetCode,
+                "brand": asset.brand,
                 "model": asset.model,
                 "availableQuantity": 0,
             }
@@ -2119,6 +2284,7 @@ async def get_returned_assets(
                 assetCode=asset.assetCode if asset else "",
                 serialNumber=asset.serialNumber if asset else None,
                 category=asset.category if asset else "",
+                brand=asset.brand if asset else None,
                 condition=asset.condition if asset else None,
                 employeeMemberId=assignment.memberId,
                 employeeName=employee_name,
@@ -2668,6 +2834,15 @@ async def export_asset_report_pdf(
     return _csv_to_pdf_bytes(request.reportType, csv_text)
 
 
+async def export_asset_report_xlsx(
+    db: AsyncSession,
+    ctx: MemberContext,
+    request: AssetReportRequest,
+) -> bytes:
+    csv_text = await export_asset_report(db, ctx, request)
+    return _csv_to_xlsx_bytes(request.reportType, csv_text)
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 
@@ -3071,6 +3246,7 @@ async def get_upcoming_warranty_feed(
                     assetCode=asset.assetCode,
                     assetName=asset.name,
                     serialNumber=unit.serialNumber if unit is not None else asset.serialNumber,
+                    brand=asset.brand,
                     model=asset.model,
                     category=asset.category,
                     employeeMemberId=active_assignment.memberId,

@@ -212,6 +212,7 @@ class AssetUpsertRequest(BaseModel):
     category: str | None = None
     categoryDefinitionId: str | None = None
     serialNumber: str | None = Field(default=None, max_length=255)
+    brand: str | None = Field(default=None, max_length=120)
     model: str | None = Field(default=None, max_length=120)
     purchaseDate: date | None = None
     purchasePrice: float | None = Field(default=None, ge=0)
@@ -485,6 +486,7 @@ class EmployeeAssetViewItem(BaseModel):
     category: str
     categoryDefinitionId: str | None
     serialNumber: str | None
+    brand: str | None
     model: str | None
     purchaseDate: date | None
     purchasePrice: float | None
@@ -526,6 +528,8 @@ class BulkAssetCreateRequest(BaseModel):
     assetCode: str = Field(min_length=1, max_length=120)
     name: str = Field(min_length=1, max_length=255)
     categoryDefinitionId: str | None = None
+    brand: str | None = Field(default=None, max_length=120)
+    model: str | None = Field(default=None, max_length=120)
     condition: str = Field(default="GOOD")
     location: str | None = Field(default=None, max_length=160)
     serialNumbers: list[str] = Field(min_length=1)
@@ -557,6 +561,7 @@ class AvailableAssetGroupResponse(BaseModel):
     categoryName: str | None = None
     categoryDefinitionId: str | None = None
     assetCode: str
+    brand: str | None = None
     model: str | None = None
     availableQuantity: int
 
@@ -620,6 +625,7 @@ class AssetSummary(BaseModel):
     category: str
     categoryDefinitionId: str | None
     serialNumber: str | None
+    brand: str | None
     model: str | None
     purchaseDate: date | None
     purchasePrice: float | None
@@ -704,6 +710,7 @@ class ReturnedAssetSummary(BaseModel):
     assetCode: str
     serialNumber: str | None = None
     category: str
+    brand: str | None = None
     condition: str | None = None
     employeeMemberId: str
     employeeName: str | None = None
@@ -778,6 +785,7 @@ class WarrantyExpirationFeedItem(BaseModel):
     assetCode: str
     assetName: str
     serialNumber: str | None
+    brand: str | None
     model: str | None
     category: str
     employeeMemberId: str
@@ -811,6 +819,7 @@ class AssetSwapPreviewResponse(BaseModel):
     currentCondition: str | None
     assignedMemberId: str | None
     assignedMemberName: str | None
+    brand: str | None
     model: str | None
     operationalCriticalityTier: str | None
     estimatedDowntimeHours: int | None
