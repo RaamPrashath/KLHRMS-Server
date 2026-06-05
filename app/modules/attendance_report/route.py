@@ -4,9 +4,12 @@ from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.attendance_report.export_service import generate_attendance_report_export
 from app.modules.attendance_report.schema import (
+    AttendanceReportExportRequest,
     AttendanceReportFilters,
     AttendanceReportListResponse,
     AttendanceReportOptionsResponse,
@@ -19,6 +22,16 @@ from app.shared.deps.organization_member import MemberContext
 from app.shared.deps.permissions import require_permission
 
 router = APIRouter(prefix="/attendance-report", tags=["attendance-report"])
+
+_MIME_TYPES: dict[str, str] = {
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pdf": "application/pdf",
+}
+
+_FILE_EXTENSIONS: dict[str, str] = {
+    "xlsx": "xlsx",
+    "pdf": "pdf",
+}
 
 AttendanceReportCtx = Annotated[
     MemberContext,
@@ -109,4 +122,31 @@ async def get_attendance_report(
             total_hours=summary.total_hours,
             employee_count=summary.employee_count,
         ),
+    )
+
+
+@router.post(
+    "/export",
+    status_code=status.HTTP_200_OK,
+    summary="Export selected attendance report rows",
+)
+async def export_attendance_report(
+    body: AttendanceReportExportRequest,
+    ctx: AttendanceReportCtx,
+) -> StreamingResponse:
+    _ensure_organization_scope(ctx)
+    if not body.employees:
+        raise HTTPException(status_code=422, detail="Select at least one employee to export")
+
+    content = generate_attendance_report_export(body)
+    import io
+
+    filename = f"attendance-report.{_FILE_EXTENSIONS[body.format]}"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=_MIME_TYPES[body.format],
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(content)),
+        },
     )

@@ -23,8 +23,8 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from fastapi import Depends, HTTPException
 
@@ -58,11 +58,15 @@ class AttendanceAccessContext:
     organization: Organization
     member: Member
     role: Role
+    permission_module: str
     permission_action: str
     permission_scope: str
 
 
-def require_attendance_permission(action: str) -> Callable[..., AttendanceAccessContext]:
+def require_attendance_permission(
+    action: str,
+    module: str = "attendance",
+) -> Callable[..., AttendanceAccessContext]:
     """
     Factory that returns a FastAPI dependency enforcing that the resolved
     member has the attendance.<action> permission at a supported scope.
@@ -79,19 +83,19 @@ def require_attendance_permission(action: str) -> Callable[..., AttendanceAccess
     def _dependency(
         ctx: MemberContext = Depends(get_member_context),
     ) -> AttendanceAccessContext:
-        scope = get_member_permission_scope(ctx.member, "attendance", action)
+        scope = get_member_permission_scope(ctx.member, module, action)
 
-        if scope is None:
+        if scope is None or scope == "none":
             raise HTTPException(
                 status_code=403,
-                detail=f"No attendance.{action} permission",
+                detail=f"No {module}.{action} permission",
             )
 
         if scope in _UNSUPPORTED_SCOPES:
             raise HTTPException(
                 status_code=403,
                 detail=(
-                    f"Attendance scope '{scope}' is not supported in this deployment. "
+                    f"{module}.{action} scope '{scope}' is not supported in this deployment. "
                     "Only 'self' and 'organization' scopes are available."
                 ),
             )
@@ -99,16 +103,17 @@ def require_attendance_permission(action: str) -> Callable[..., AttendanceAccess
         if scope not in _SUPPORTED_SCOPES:
             raise HTTPException(
                 status_code=403,
-                detail=f"Unknown attendance scope '{scope}'",
+                detail=f"Unknown {module}.{action} scope '{scope}'",
             )
 
         return AttendanceAccessContext(
             organization=ctx.organization,
             member=ctx.member,
             role=ctx.role,
+            permission_module=module,
             permission_action=action,
             permission_scope=scope,
         )
 
-    _dependency.__name__ = f"require_attendance_{action}"
+    _dependency.__name__ = f"require_{module}_{action}"
     return _dependency
