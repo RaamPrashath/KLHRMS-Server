@@ -11,8 +11,15 @@ from app.modules.employee.schema import (
     EmployeeDeletePreview,
     EmployeeDeleteResponse,
     EmployeeDeactivateResponse,
+    EmployeeDetailResponse,
+    EmployeeDirectReportsResponse,
+    EmployeeGroupListResponse,
     EmployeeListFilters,
     EmployeeListResponse,
+    EmployeeManagerChainResponse,
+    EmployeeRefreshResponse,
+    UpdateEmployeeDetailsRequest,
+    UpdateEmployeeDetailsResponse,
     UpdateEmployeeRoleRequest,
     UpdateEmployeeRoleResponse,
 )
@@ -22,12 +29,10 @@ from app.shared.deps.organization_member import MemberContext
 
 async def handle_list_employees(
     ctx: MemberContext,
-    filters: EmployeeListFilters,
     db: AsyncSession,
 ) -> EmployeeListResponse:
     return await service.list_employees(
         organization_id=ctx.organization.id,
-        filters=filters,
         db=db,
     )
 
@@ -71,3 +76,62 @@ async def handle_deactivate_employee(
     db: AsyncSession,
 ) -> EmployeeDeactivateResponse:
     return await service.deactivate_employee(ctx.organization.id, member_id, db)
+
+
+async def handle_get_employee_detail(
+    ctx: MemberContext,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDetailResponse:
+    return await service.get_employee_detail(ctx.organization.id, member_id, db)
+
+
+async def handle_get_my_employee_profile(
+    ctx: MemberContext,
+    db: AsyncSession,
+) -> EmployeeDetailResponse:
+    """Return the calling member's own employee profile (for account settings)."""
+    return await service.get_employee_detail(ctx.organization.id, ctx.member.id, db)
+
+
+async def handle_get_employee_direct_reports(
+    ctx: MemberContext,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDirectReportsResponse:
+    return await service.get_employee_direct_reports(ctx.organization.id, member_id, db)
+
+
+async def handle_get_employee_group_memberships(
+    ctx: MemberContext,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeGroupListResponse:
+    return await service.get_employee_group_memberships(ctx.organization.id, member_id, db)
+
+
+async def handle_get_employee_manager_chain(
+    ctx: MemberContext,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeManagerChainResponse:
+    return await service.get_employee_manager_chain(ctx.organization.id, member_id, db)
+
+
+async def handle_refresh_employee_from_graph(
+    ctx: MemberContext,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeRefreshResponse:
+    return await service.refresh_employee_from_graph(ctx.organization.id, member_id, db)
+
+
+async def handle_update_employee_details(
+    ctx: MemberContext,
+    member_id: str,
+    body: UpdateEmployeeDetailsRequest,
+    db: AsyncSession,
+) -> UpdateEmployeeDetailsResponse:
+    return await service.update_employee_details(
+        ctx.organization.id, member_id, body, db
+    )

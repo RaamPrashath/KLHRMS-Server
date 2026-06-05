@@ -831,8 +831,14 @@ async def clock_out(
     written: list[AttendanceRecord] = []
     active_project_id = active.projectId
     active_project_task_id = active.projectTaskId
-    active_description = active.description
+    active_description = active.description.strip() if active.description else None
     normalized_work_log_text = (work_log_text or "").strip()
+
+    if not active_description and not normalized_work_log_text:
+        raise HTTPException(
+            status_code=400,
+            detail="Work summary is required before clock-out. Add it during clock-in or clock-out.",
+        )
 
     for seg in segments:
         total = _compute_hours(seg.clock_in, seg.clock_out)

@@ -485,13 +485,22 @@ async def _build_swap_preview(
     asset_model = _resolve_asset_model(asset, asset_brand)
     exact_match_units: list[tuple[Asset, AssetUnit]] = []
     temporary_units: list[tuple[Asset, AssetUnit]] = []
+    exact_match_unit_ids: set[str] = set()
+    temporary_unit_ids: set[str] = set()
     for candidate_asset, candidate_unit in available_laptops:
         candidate_brand = _resolve_asset_brand(candidate_asset)
         candidate_model = _resolve_asset_model(candidate_asset, candidate_brand)
         if candidate_model == asset_model:
             exact_match_units.append((candidate_asset, candidate_unit))
+            exact_match_unit_ids.add(candidate_unit.id)
         if _is_temporary_laptop(candidate_asset, candidate_brand, candidate_model):
             temporary_units.append((candidate_asset, candidate_unit))
+            temporary_unit_ids.add(candidate_unit.id)
+
+    any_available_units: list[tuple[Asset, AssetUnit]] = []
+    for candidate_asset, candidate_unit in available_laptops:
+        if candidate_unit.id not in exact_match_unit_ids and candidate_unit.id not in temporary_unit_ids:
+            any_available_units.append((candidate_asset, candidate_unit))
 
     requires_validation = _requires_replacement_validation(log, asset)
     recommended_mode: str | None = None
@@ -500,6 +509,8 @@ async def _build_swap_preview(
             recommended_mode = "PERMANENT_REPLACEMENT"
         elif temporary_units:
             recommended_mode = "TEMPORARY_BACKUP"
+        elif any_available_units:
+            recommended_mode = "ANY_AVAILABLE"
 
     downtime_hours = _resolved_downtime_hours(log)
     if not requires_validation:
@@ -508,6 +519,8 @@ async def _build_swap_preview(
         reason = "Repair exceeds 24 hours and matching model stock is available for a permanent swap."
     elif temporary_units:
         reason = "Repair exceeds 24 hours and exact model stock is unavailable, so a temporary backup is recommended."
+    elif any_available_units:
+        reason = "Repair exceeds 24 hours but no matching model or temporary stock is available. A different model replacement is offered as a fallback."
     else:
         reason = "Repair exceeds 24 hours but no replacement inventory is currently available."
 
@@ -545,6 +558,15 @@ async def _build_swap_preview(
                 assetUnitIds=[unit.id for _, unit in temporary_units[:8]],
                 serialNumbers=[unit.serialNumber or "Unit" for _, unit in temporary_units[:8]],
                 recommended=recommended_mode == "TEMPORARY_BACKUP",
+            ),
+            SwapAvailabilityOption(
+                mode="ANY_AVAILABLE",
+                label="Any Available Laptop",
+                available=bool(any_available_units),
+                availableCount=len(any_available_units),
+                assetUnitIds=[unit.id for _, unit in any_available_units[:8]],
+                serialNumbers=[unit.serialNumber or "Unit" for _, unit in any_available_units[:8]],
+                recommended=recommended_mode == "ANY_AVAILABLE",
             ),
         ],
     )
@@ -3555,6 +3577,12 @@ async def revoke_and_swap_asset(
     if log.assetUnitId:
         source_unit = next((unit for unit in asset.units if unit.id == log.assetUnitId), None)
 
+    if source_unit is not None and payload.replacementAssetUnitId == source_unit.id:
+        raise HTTPException(
+            status_code=422,
+            detail="Replacement unit cannot be the same as the malfunctioning unit",
+        )
+
     replacement_asset = replacement_unit.asset
     now = datetime.now(UTC)
     new_assignment = AssetAssignment(
@@ -3599,14 +3627,12 @@ async def revoke_and_swap_asset(
     replacement_unit.condition = payload.replacementConditionWhileProviding
     replacement_asset.status = _derive_asset_status(replacement_asset.units)
 
-    log.status = "IN_PROGRESS"
+    log.status = "COMPLETED"
     log.replacementDecision = payload.replacementMode
     log.replacementAssetUnitId = replacement_unit.id
-    log.notes = (
-        payload.notes.strip()
-        if payload.notes
-        else log.notes
-    )
+    if payload.notes and payload.notes.strip():
+        swap_note = payload.notes.strip()
+        log.notes = f"{log.notes}\n\n[Swap] {swap_note}" if log.notes else f"[Swap] {swap_note}"
 
     await db.commit()
 
