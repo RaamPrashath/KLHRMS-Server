@@ -18,6 +18,7 @@ class Asset(Base):
     category: Mapped[str] = mapped_column(String(40), nullable=False)
     categoryDefinitionId: Mapped[str | None] = mapped_column(String(36), nullable=True)
     serialNumber: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    brand: Mapped[str | None] = mapped_column(String(120), nullable=True)
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     purchaseDate: Mapped[date | None] = mapped_column(Date, nullable=True)
     purchasePrice: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
