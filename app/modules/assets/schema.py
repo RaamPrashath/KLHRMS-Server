@@ -918,6 +918,8 @@ class MaintenanceTicketResponse(BaseModel):
     loggedByMemberId: str | None = None
     loggedByName: str | None = None
     loggedByEmail: str | None = None
+    cancelledByMemberId: str | None = None
+    cancelledByName: str | None = None
     assetLifecycleStatus: str | None = None
     assetLifecycleStatusLabel: str | None = None
     swapPreview: AssetSwapPreviewResponse | None = None

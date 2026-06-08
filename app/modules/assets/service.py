@@ -1153,6 +1153,10 @@ def _my_ticket_response(log: AssetMaintenanceLog) -> MyTicketResponse:
     )
 
 
+def _mark_ticket_cancelled(log: AssetMaintenanceLog, ctx: MemberContext) -> None:
+    log.cancelledByMemberId = ctx.member.id
+
+
 def _maintenance_ticket_response(log: AssetMaintenanceLog) -> MaintenanceTicketResponse:
     asset_lifecycle_status, asset_lifecycle_status_label = _maintenance_asset_lifecycle(log.asset)
     return MaintenanceTicketResponse(
@@ -1184,6 +1188,10 @@ def _maintenance_ticket_response(log: AssetMaintenanceLog) -> MaintenanceTicketR
         else None,
         loggedByEmail=log.loggedByMember.user.email
         if log.loggedByMember and log.loggedByMember.user
+        else None,
+        cancelledByMemberId=log.cancelledByMemberId,
+        cancelledByName=log.cancelledByMember.user.name
+        if log.cancelledByMember and log.cancelledByMember.user
         else None,
         assetLifecycleStatus=asset_lifecycle_status,
         assetLifecycleStatusLabel=asset_lifecycle_status_label,
@@ -2449,6 +2457,7 @@ async def withdraw_helpdesk_ticket(
     if log.status == "COMPLETED":
         raise HTTPException(status_code=409, detail="Completed tickets cannot be withdrawn")
 
+    _mark_ticket_cancelled(log, ctx)
     log.status = "CANCELLED"
 
     if log.asset is not None:
@@ -2485,7 +2494,17 @@ async def withdraw_helpdesk_ticket(
                 asset.status = resumed_status
 
     await db.commit()
-    return _my_ticket_response(log)
+    refreshed_result = await db.execute(
+        select(AssetMaintenanceLog)
+        .where(
+            AssetMaintenanceLog.id == log.id,
+            AssetMaintenanceLog.organizationId == ctx.organization.id,
+            AssetMaintenanceLog.loggedByMemberId == ctx.member.id,
+        )
+        .options(joinedload(AssetMaintenanceLog.asset))
+    )
+    refreshed_log = refreshed_result.unique().scalar_one()
+    return _my_ticket_response(refreshed_log)
 
 
 async def update_maintenance_record(
@@ -2561,6 +2580,7 @@ async def update_maintenance_record(
             else:
                 asset.status = payload.nextAssetStatus
     elif payload.status == "CANCELLED":
+        _mark_ticket_cancelled(log, ctx)
         if log.assetUnitId:
             unit = next((u for u in (asset.units or []) if u.id == log.assetUnitId), None)
             if unit:
@@ -2609,6 +2629,9 @@ async def update_maintenance_record_by_id(
     log.conditionAfterMaintenance = payload.conditionAfterMaintenance
     if payload.notes:
         log.notes = payload.notes.strip()
+
+    if payload.status == "CANCELLED":
+        _mark_ticket_cancelled(log, ctx)
 
     await db.commit()
     await _notify_general_helpdesk_requester_if_completed(db, ctx, log, previous_status)
@@ -3458,6 +3481,7 @@ async def list_tickets(db: AsyncSession, ctx: MemberContext) -> list[Maintenance
                 AssetCustomFieldValue.fieldDefinition
             ),
             joinedload(AssetMaintenanceLog.loggedByMember).joinedload(Member.user),
+            joinedload(AssetMaintenanceLog.cancelledByMember).joinedload(Member.user),
         )
         .order_by(AssetMaintenanceLog.createdAt.desc())
     )
