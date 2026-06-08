@@ -41,6 +41,7 @@ class DepartmentMemberSummary(BaseModel):
     memberId: str
     name: str | None
     email: str | None
+    image: str | None = None
 
 
 class DepartmentHeadSummary(BaseModel):
@@ -48,6 +49,7 @@ class DepartmentHeadSummary(BaseModel):
     memberId: str
     name: str | None
     email: str | None
+    image: str | None = None
     assignedAt: datetime
 
 
