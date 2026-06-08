@@ -549,9 +549,7 @@ async def create_leave_request(
 ) -> LeaveRequest:
     leave_type = await get_leave_type_or_404(db, organization_id, leave_type_id)
 
-    target_member_id = actor_member_id if create_scope == "self" else (member_id or actor_member_id)
-    if create_scope == "self" and target_member_id != actor_member_id:
-        raise HTTPException(status_code=403, detail="You can only create leave requests for yourself")
+    target_member_id = actor_member_id
 
     await resolve_target_member(db, organization_id, target_member_id)
     await _ensure_no_overlapping_request(db, organization_id, target_member_id, start_date, end_date)
