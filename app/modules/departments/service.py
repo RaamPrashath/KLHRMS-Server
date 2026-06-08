@@ -55,6 +55,7 @@ def _department_to_summary(department: Department, member_id: str | None = None)
             memberId=item.memberId,
             name=item.member.user.name if item.member and item.member.user else None,
             email=item.member.user.email if item.member and item.member.user else None,
+            image=item.member.user.image if item.member and item.member.user else None,
         )
         for item in department.members
         if member_id is None or item.memberId == member_id
@@ -65,6 +66,7 @@ def _department_to_summary(department: Department, member_id: str | None = None)
             memberId=item.memberId,
             name=item.member.user.name if item.member and item.member.user else None,
             email=item.member.user.email if item.member and item.member.user else None,
+            image=item.member.user.image if item.member and item.member.user else None,
             assignedAt=item.assignedAt,
         )
         for item in getattr(department, "heads", [])
