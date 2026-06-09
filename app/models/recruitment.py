@@ -1534,6 +1534,16 @@ class StageEvent(Base):
 
     meetingUrl: Mapped[str | None] = mapped_column(String)
 
+    calendarProvider: Mapped[str | None] = mapped_column(String(32))
+
+    calendarEventId: Mapped[str | None] = mapped_column(String(255))
+
+    calendarEventUrl: Mapped[str | None] = mapped_column(Text)
+
+    microsoftCalendarEventId: Mapped[str | None] = mapped_column(String(255))
+
+    microsoftCalendarEventUrl: Mapped[str | None] = mapped_column(Text)
+
     googleCalendarEventId: Mapped[str | None] = mapped_column(String(255))
 
     googleCalendarEventUrl: Mapped[str | None] = mapped_column(Text)

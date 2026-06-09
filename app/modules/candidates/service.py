@@ -8,7 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.email.resend_service import ResendEmailService
-from app.integrations.google.calendar_service import GoogleCalendarService
+from app.integrations.microsoft_graph.calendar_service import (
+    CreatedTeamsCalendarMeeting,
+    MicrosoftTeamsCalendarService,
+)
 from app.models.member import Member
 from app.models.recruitment import (
     ApplicationStageHistory,
@@ -274,6 +277,11 @@ def _serialize_interview_meeting(event: StageEvent) -> InterviewMeetingRead:
         scheduledStartAt=event.scheduledStartAt,
         scheduledEndAt=event.scheduledEndAt,
         meetingUrl=event.meetingUrl,
+        calendarProvider=event.calendarProvider,
+        calendarEventId=event.calendarEventId,
+        calendarEventUrl=event.calendarEventUrl,
+        microsoftCalendarEventId=event.microsoftCalendarEventId,
+        microsoftCalendarEventUrl=event.microsoftCalendarEventUrl,
         googleCalendarEventId=event.googleCalendarEventId,
         googleCalendarEventUrl=event.googleCalendarEventUrl,
         emailSentAt=event.emailSentAt,
@@ -1713,9 +1721,7 @@ async def accept_interview(
     event.status = EventStatus.SCHEDULED
     event.scheduledStartAt = None
     event.scheduledEndAt = None
-    event.meetingUrl = None
-    event.googleCalendarEventId = None
-    event.googleCalendarEventUrl = None
+    _clear_calendar_metadata(event)
     event.completedByMemberId = None
     event.proposedSlots.clear()
 
@@ -2018,6 +2024,48 @@ def _meeting_time_text(starts_at: datetime) -> str:
     return ist.strftime("%d %b %Y, %I:%M %p IST")
 
 
+async def _create_teams_calendar_meeting(
+    db: AsyncSession,
+    actor_user_id: str,
+    title: str,
+    description: str,
+    starts_at: datetime,
+    ends_at: datetime,
+) -> CreatedTeamsCalendarMeeting:
+    return await MicrosoftTeamsCalendarService(db).create_teams_event(
+        user_id=actor_user_id,
+        summary=title,
+        description=description,
+        starts_at=starts_at,
+        ends_at=ends_at,
+    )
+
+
+def _apply_teams_calendar_meeting(
+    event: StageEvent,
+    meeting: CreatedTeamsCalendarMeeting,
+) -> None:
+    event.meetingUrl = meeting.join_url
+    event.calendarProvider = meeting.provider
+    event.calendarEventId = meeting.event_id
+    event.calendarEventUrl = meeting.event_url
+    event.microsoftCalendarEventId = meeting.event_id
+    event.microsoftCalendarEventUrl = meeting.event_url
+    event.googleCalendarEventId = None
+    event.googleCalendarEventUrl = None
+
+
+def _clear_calendar_metadata(event: StageEvent) -> None:
+    event.meetingUrl = None
+    event.calendarProvider = None
+    event.calendarEventId = None
+    event.calendarEventUrl = None
+    event.microsoftCalendarEventId = None
+    event.microsoftCalendarEventUrl = None
+    event.googleCalendarEventId = None
+    event.googleCalendarEventUrl = None
+
+
 async def create_interview_meeting(
     db: AsyncSession,
     organization_id: str,
@@ -2066,13 +2114,13 @@ async def create_interview_meeting(
         description_parts.append(f"Notes: {body.notes.strip()}")
 
     if body.mode == "SCHEDULE":
-        calendar_service = GoogleCalendarService(db)
-        meeting = await calendar_service.create_meet_event(
-            user_id=actor_user_id,
-            summary=title,
-            description="\n".join(description_parts),
-            starts_at=starts_at,
-            ends_at=ends_at,
+        meeting = await _create_teams_calendar_meeting(
+            db,
+            actor_user_id,
+            title,
+            "\n".join(description_parts),
+            starts_at,
+            ends_at,
         )
 
         await ResendEmailService().send_interview_invite(
@@ -2081,7 +2129,7 @@ async def create_interview_meeting(
             job_title=application.jobPosting.title,
             stage_name=stage.name,
             starts_at_text=_meeting_time_text(meeting.starts_at),
-            meeting_url=meeting.meeting_url,
+            meeting_url=meeting.join_url,
         )
 
         created_new_event = latest_event is not None and latest_event.status == EventStatus.COMPLETED
@@ -2101,9 +2149,7 @@ async def create_interview_meeting(
         event.scheduledStartAt = meeting.starts_at
         event.scheduledEndAt = meeting.ends_at
         event.notes = body.notes
-        event.meetingUrl = meeting.meeting_url
-        event.googleCalendarEventId = meeting.event_id
-        event.googleCalendarEventUrl = meeting.html_link
+        _apply_teams_calendar_meeting(event, meeting)
         event.emailSentAt = datetime.now(UTC)
         await repository.add_stage_event(event)
         if access_scope == "self" and created_new_event:
@@ -2124,13 +2170,13 @@ async def create_interview_meeting(
     if latest_event is not None and latest_event.meetingUrl and latest_event.status != EventStatus.COMPLETED:
         return _serialize_interview_meeting(latest_event)
 
-    calendar_service = GoogleCalendarService(db)
-    meeting = await calendar_service.create_meet_event(
-        user_id=actor_user_id,
-        summary=title,
-        description="\n".join(description_parts),
-        starts_at=starts_at,
-        ends_at=ends_at,
+    meeting = await _create_teams_calendar_meeting(
+        db,
+        actor_user_id,
+        title,
+        "\n".join(description_parts),
+        starts_at,
+        ends_at,
     )
 
     await ResendEmailService().send_interview_invite(
@@ -2139,7 +2185,7 @@ async def create_interview_meeting(
         job_title=application.jobPosting.title,
         stage_name=stage.name,
         starts_at_text=_meeting_time_text(meeting.starts_at),
-        meeting_url=meeting.meeting_url,
+        meeting_url=meeting.join_url,
     )
 
     created_new_event = latest_event is not None and latest_event.status == EventStatus.COMPLETED
@@ -2158,9 +2204,7 @@ async def create_interview_meeting(
     event.status = EventStatus.SCHEDULED
     event.scheduledStartAt = meeting.starts_at
     event.scheduledEndAt = meeting.ends_at
-    event.meetingUrl = meeting.meeting_url
-    event.googleCalendarEventId = meeting.event_id
-    event.googleCalendarEventUrl = meeting.html_link
+    _apply_teams_calendar_meeting(event, meeting)
     event.notes = body.notes
     event.emailSentAt = datetime.now(UTC)
     await repository.add_stage_event(event)
@@ -2227,14 +2271,13 @@ async def update_interview_meeting(
     if body.notes:
         description_parts.append(f"Notes: {body.notes.strip()}")
 
-    calendar_service = GoogleCalendarService(db)
-    meeting = await calendar_service.update_meet_event(
-        user_id=actor_user_id,
-        event_id=latest_event.googleCalendarEventId or event_id,
-        summary=title,
-        description="\n".join(description_parts),
-        starts_at=starts_at,
-        ends_at=ends_at,
+    meeting = await _create_teams_calendar_meeting(
+        db,
+        actor_user_id,
+        title,
+        "\n".join(description_parts),
+        starts_at,
+        ends_at,
     )
 
     await ResendEmailService().send_interview_rescheduled(
@@ -2243,7 +2286,7 @@ async def update_interview_meeting(
         job_title=application.jobPosting.title,
         stage_name=stage.name,
         starts_at_text=_meeting_time_text(meeting.starts_at),
-        meeting_url=meeting.meeting_url,
+        meeting_url=meeting.join_url,
     )
 
     latest_event.title = title
@@ -2251,9 +2294,7 @@ async def update_interview_meeting(
     latest_event.status = EventStatus.SCHEDULED
     latest_event.scheduledStartAt = meeting.starts_at
     latest_event.scheduledEndAt = meeting.ends_at
-    latest_event.meetingUrl = meeting.meeting_url
-    latest_event.googleCalendarEventId = meeting.event_id
-    latest_event.googleCalendarEventUrl = meeting.html_link
+    _apply_teams_calendar_meeting(latest_event, meeting)
     latest_event.notes = body.notes
     latest_event.emailSentAt = datetime.now(UTC)
     await repository.add_stage_event(latest_event)
@@ -2292,16 +2333,15 @@ async def start_interview_meeting(
             f"Candidate: {candidate_name}",
             f"Stage: {stage_or_job_title}",
         ]
-        meeting = await GoogleCalendarService(db).create_meet_event(
-            user_id=actor_user_id,
-            summary=title,
-            description="\n".join(description_parts),
-            starts_at=event.scheduledStartAt,
-            ends_at=event.scheduledEndAt,
+        meeting = await _create_teams_calendar_meeting(
+            db,
+            actor_user_id,
+            title,
+            "\n".join(description_parts),
+            event.scheduledStartAt,
+            event.scheduledEndAt,
         )
-        event.meetingUrl = meeting.meeting_url
-        event.googleCalendarEventId = meeting.event_id
-        event.googleCalendarEventUrl = meeting.html_link
+        _apply_teams_calendar_meeting(event, meeting)
 
     event.status = EventStatus.ONGOING
     await repository.add_stage_event(event)
@@ -2464,61 +2504,61 @@ async def select_candidate_slot(
     if slot.isSelectedByCandidate:
         raise HTTPException(status_code=400, detail="This slot has already been selected")
 
-    slot.isSelectedByCandidate = True
-    db.add(slot)
-
-    duration_minutes = int((slot.endTime - slot.startTime).total_seconds() / 60)
-    event.status = EventStatus.SCHEDULED
-    event.scheduledStartAt = slot.startTime
-    event.scheduledEndAt = slot.endTime
-    db.add(event)
-
     participant = next(
         (p for p in (event.participants or []) if p.id == slot.participantId),
         None,
     )
-    if participant is not None:
-        participant.approvalStatus = "SCHEDULED"
-        participant.scheduledTime = slot.startTime
-        db.add(participant)
+    if participant is None or participant.member is None or participant.member.user is None:
+        raise HTTPException(status_code=400, detail="Interview participant is missing a linked user")
+
+    candidate_name = _candidate_display_name(event.application)
+    job_title = event.application.jobPosting.title if event.application.jobPosting else ""
+    stage_name = event.stage.name if event.stage else "Interview"
+    title = event.title or f"{stage_name} interview - {candidate_name}"
+    description_parts = [
+        f"Interview for {job_title or stage_name}",
+        f"Candidate: {candidate_name}",
+        f"Stage: {stage_name}",
+    ]
+    if event.notes:
+        description_parts.append(f"Notes: {event.notes.strip()}")
+
+    meeting = await _create_teams_calendar_meeting(
+        db,
+        participant.member.user.id,
+        title,
+        "\n".join(description_parts),
+        slot.startTime,
+        slot.endTime,
+    )
+
+    slot.isSelectedByCandidate = True
+    db.add(slot)
+
+    event.title = title
+    event.description = "\n".join(description_parts)
+    event.status = EventStatus.SCHEDULED
+    event.scheduledStartAt = meeting.starts_at
+    event.scheduledEndAt = meeting.ends_at
+    _apply_teams_calendar_meeting(event, meeting)
+    db.add(event)
+
+    participant.approvalStatus = "SCHEDULED"
+    participant.scheduledTime = meeting.starts_at
+    db.add(participant)
 
     await db.commit()
-
-    # Create Google Meet meeting
-    meeting = None
-    if participant is not None:
-        actor_user_id = None
-        if participant.member is not None and participant.member.user is not None:
-            actor_user_id = participant.member.user.id
-        try:
-            meeting = await create_interview_meeting(
-                db,
-                event.organizationId,
-                participant.memberId,
-                actor_user_id or participant.memberId,
-                event.applicationId,
-                InterviewMeetingCreateRequest(
-                    mode="SCHEDULE",
-                    scheduledStartAt=slot.startTime,
-                    durationMinutes=duration_minutes,
-                ),
-            )
-        except Exception:
-            meeting = None
 
     # Send confirmation emails
     candidate = event.application.candidate
     candidate_email = candidate.email
-    candidate_name = _candidate_display_name(event.application)
-    job_title = event.application.jobPosting.title if event.application.jobPosting else ""
 
     interviewer_name = "Interviewer"
     interviewer_email = None
-    if participant is not None and participant.member is not None and participant.member.user is not None:
-        interviewer_name = participant.member.user.name or participant.member.user.email
-        interviewer_email = participant.member.user.email
+    interviewer_name = participant.member.user.name or participant.member.user.email
+    interviewer_email = participant.member.user.email
 
-    starts_at_text = _meeting_time_text(slot.startTime)
+    starts_at_text = _meeting_time_text(meeting.starts_at)
 
     email_service = ResendEmailService()
 
@@ -2529,7 +2569,7 @@ async def select_candidate_slot(
             interviewer_name=interviewer_name,
             job_title=job_title,
             starts_at_text=starts_at_text,
-            meeting_url=meeting.meetingUrl if meeting else None,
+            meeting_url=meeting.join_url,
         )
 
     if interviewer_email:
@@ -2539,7 +2579,7 @@ async def select_candidate_slot(
             candidate_name=candidate_name,
             job_title=job_title,
             starts_at_text=starts_at_text,
-            meeting_url=meeting.meetingUrl if meeting else None,
+            meeting_url=meeting.join_url,
         )
 
     return {"message": "Slot selected successfully"}

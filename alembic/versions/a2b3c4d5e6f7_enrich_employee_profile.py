@@ -23,21 +23,26 @@ depends_on: Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "employee",
-        sa.Column("user_id", sa.String(length=36), nullable=True),
-    )
-    op.create_index(
-        "ix_employee_user_id", "employee", ["user_id"], unique=False
-    )
-    op.create_foreign_key(
-        "fk_employee_user_id",
-        "employee",
-        "user",
-        ["user_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = {c["name"] for c in inspector.get_columns("employee")}
+    if "user_id" not in columns:
+        op.add_column(
+            "employee",
+            sa.Column("user_id", sa.String(length=36), nullable=True),
+        )
+        op.create_index(
+            "ix_employee_user_id", "employee", ["user_id"], unique=False,
+            if_not_exists=True,
+        )
+        op.create_foreign_key(
+            "fk_employee_user_id",
+            "employee",
+            "user",
+            ["user_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
 
     op.add_column(
         "employee",

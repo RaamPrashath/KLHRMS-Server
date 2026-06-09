@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import httpx
 import pytest
 
 from app.modules.resume_parser import service, storage
@@ -275,3 +276,47 @@ async def test_history_organization_scope_lists_all_org_rows() -> None:
     assert db.query is not None
     assert '"organizationId" = :organizationId_1' in str(db.query)
     assert '"memberId" = :memberId_1' not in str(db.query)
+
+
+@pytest.mark.asyncio
+async def test_resume_parser_gemini_retry_tries_fallback_model_on_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            pass
+
+        async def post(
+            self,
+            url: str,
+            params: dict[str, str],
+            json: dict[str, object],
+        ) -> httpx.Response:
+            del params, json
+            calls.append(url)
+            request = httpx.Request("POST", url)
+            if "gemini-2.5-flash" in url:
+                return httpx.Response(503, request=request)
+            return httpx.Response(200, json={"ok": True}, request=request)
+
+    monkeypatch.setattr(service.httpx, "AsyncClient", FakeClient)
+
+    response = await service._call_gemini_with_retry(
+        models=["gemini-2.5-flash", "gemini-3.5-flash"],
+        api_key="test-key",
+        payload={"contents": []},
+    )
+
+    assert response.status_code == 200
+    assert calls == [
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+    ]

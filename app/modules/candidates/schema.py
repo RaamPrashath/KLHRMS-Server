@@ -351,6 +351,11 @@ class InterviewMeetingRead(BaseModel):
     scheduledStartAt: datetime
     scheduledEndAt: datetime
     meetingUrl: str | None
+    calendarProvider: str | None = None
+    calendarEventId: str | None = None
+    calendarEventUrl: str | None = None
+    microsoftCalendarEventId: str | None = None
+    microsoftCalendarEventUrl: str | None = None
     googleCalendarEventId: str | None
     googleCalendarEventUrl: str | None
     emailSentAt: datetime | None

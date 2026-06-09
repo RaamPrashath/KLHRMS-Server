@@ -754,14 +754,6 @@ def _missing_submission_fields(requisition: JobRequisition) -> list[str]:
         missing.append("openings")
     if not requisition.hiringReason:
         missing.append("hiring reason")
-    if not (
-        requisition.roleSummary
-        or requisition.responsibilities
-        or requisition.requirementsRich
-        or requisition.description
-        or requisition.requirements
-    ):
-        missing.append("at least one content section")
     return missing
 
 

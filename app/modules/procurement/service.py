@@ -20,7 +20,6 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     HRFlowable,
-    Image as PlatypusImage,
     ListFlowable,
     ListItem,
     Paragraph,
@@ -29,10 +28,16 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+from reportlab.platypus import Image as PlatypusImage
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
+from app.integrations.storage.supabase_storage import (
+    SupabaseStorageError,
+    create_private_file_signed_url,
+    upload_private_file,
+)
 from app.models.asset import Asset
 from app.models.asset_category_definition import AssetCategoryDefinition
 from app.models.asset_maintenance_log import AssetMaintenanceLog
@@ -48,51 +53,47 @@ from app.models.organization import Organization
 from app.models.procurement_purchase_order_template import ProcurementPurchaseOrderTemplate
 from app.models.role import Role
 from app.modules.assets.service import _derive_asset_status, _members_with_asset_admin_scope
+from app.modules.notifications.service import (
+    NotificationCreateInput,
+    create_notification_batch,
+)
 from app.modules.procurement.schema import (
     AssetPurchaseRequisitionCreateRequest,
     AssetPurchaseRequisitionListResponse,
     AssetPurchaseRequisitionRead,
+    ProcurementActivityEntry,
     ProcurementAdminRecipientOption,
     ProcurementAdminRecipientsResponse,
-    ProcurementActivityEntry,
     ProcurementCategoryOption,
     ProcurementDecisionRequest,
     ProcurementDepartmentOption,
     ProcurementMetaResponse,
     ProcurementOrganizationDraftRead,
     ProcurementPdfPreviewResponse,
+    ProcurementPurchaseOrderDownloadResponse,
     ProcurementPurchaseOrderDraftPayload,
     ProcurementPurchaseOrderDraftResponse,
     ProcurementPurchaseOrderGenerateRequest,
     ProcurementPurchaseOrderIssueResponse,
-    ProcurementPurchaseOrderDownloadResponse,
     ProcurementPurchaseOrderLineItemPayload,
     ProcurementPurchaseOrderListItemRead,
     ProcurementPurchaseOrderListResponse,
-    ProcurementPurchaseOrderRead,
-    ProcurementPurchaseOrderTemplateRead,
-    ProcurementPurchaseOrderTemplatePayload,
-    ProcurementPurchaseOrderTemplateUpdateRequest,
     ProcurementPurchaseOrderPreviewRequest,
+    ProcurementPurchaseOrderRead,
+    ProcurementPurchaseOrderTemplatePayload,
+    ProcurementPurchaseOrderTemplateRead,
+    ProcurementPurchaseOrderTemplateUpdateRequest,
     ProcurementReplacementTicketOption,
     ProcurementSnapshotRead,
 )
-from app.modules.notifications.service import (
-    NotificationCreateInput,
-    create_notification_batch,
-)
-from app.integrations.storage.supabase_storage import (
-    SupabaseStorageError,
-    create_private_file_signed_url,
-    upload_private_file,
-)
+from app.shared.config import get_settings
 from app.shared.deps.organization_member import MemberContext
 from app.shared.notifications.email import (
+    is_resend_email_configured,
     send_procurement_purchase_order,
     send_procurement_requisition_decided,
     send_procurement_requisition_submitted,
 )
-from app.shared.config import get_settings
 from app.shared.utils.permissions import get_permission_scope
 
 
@@ -452,8 +453,7 @@ def _requisition_label(requisition: AssetPurchaseRequisition) -> str:
 
 
 def _is_procurement_email_configured() -> bool:
-    settings = get_settings()
-    return bool(settings.resend_api_key.strip() and settings.resend_from_email.strip())
+    return is_resend_email_configured()
 
 
 def _round_money(value: float) -> float:

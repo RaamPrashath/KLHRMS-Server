@@ -11,6 +11,12 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.integrations.gemini import (
+    RETRYABLE_GEMINI_STATUS_CODES,
+    describe_gemini_error,
+    gemini_generate_content_url,
+    gemini_model_candidates,
+)
 from app.models.member import Member
 from app.models.resume_parser import ResumeParserHistory
 from app.models.user import User
@@ -30,7 +36,6 @@ from app.modules.resume_parser.storage import (
 )
 from app.shared.config import get_settings
 
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 MAX_RESUME_BYTES = 10 * 1024 * 1024
 MAX_MODEL_INPUT_CHARS = 30000
 
@@ -189,9 +194,12 @@ async def parse_resume_to_generation_json(resume_text: str) -> dict[str, Any]:
             "responseMimeType": "application/json",
         },
     }
-    url = GEMINI_ENDPOINT.format(model=settings.gemini_model)
+    model_candidates = gemini_model_candidates(
+        settings.gemini_model,
+        getattr(settings, "gemini_fallback_models", ""),
+    )
     response = await _call_gemini_with_retry(
-        url=url,
+        models=model_candidates,
         api_key=settings.gemini_api_key,
         payload=payload,
     )
@@ -202,33 +210,41 @@ async def parse_resume_to_generation_json(resume_text: str) -> dict[str, Any]:
 
 async def _call_gemini_with_retry(
     *,
-    url: str,
+    models: list[str],
     api_key: str,
     payload: dict[str, Any],
 ) -> httpx.Response:
-    retry_statuses = {429, 500, 502, 503, 504}
-    last_status: int | None = None
-    for attempt, delay_seconds in enumerate((0.0, 1.5, 3.0, 6.0), start=1):
+    last_error: Exception | None = None
+    for delay_seconds in (0.0, 1.5, 3.0, 6.0):
         if delay_seconds:
             await asyncio.sleep(delay_seconds)
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(url, params={"key": api_key}, json=payload)
-            if response.status_code not in retry_statuses:
-                response.raise_for_status()
-                return response
-            last_status = response.status_code
-        except httpx.HTTPStatusError as exc:
-            status_code = exc.response.status_code
-            if status_code not in retry_statuses:
-                raise RuntimeError(f"Gemini request failed with status {status_code}") from exc
-            last_status = status_code
-        except httpx.HTTPError as exc:
-            if attempt == 4:
-                raise RuntimeError("Gemini request failed due to a network error") from exc
+        for model in models:
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(
+                        gemini_generate_content_url(model),
+                        params={"key": api_key},
+                        json=payload,
+                    )
+                if response.status_code not in RETRYABLE_GEMINI_STATUS_CODES:
+                    response.raise_for_status()
+                    return response
+                last_error = httpx.HTTPStatusError(
+                    f"Gemini request failed with status {response.status_code}",
+                    request=response.request,
+                    response=response,
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in RETRYABLE_GEMINI_STATUS_CODES | {404}:
+                    raise RuntimeError(describe_gemini_error(exc)) from exc
+                last_error = exc
+            except httpx.HTTPError as exc:
+                last_error = exc
 
-    status_text = f"status {last_status}" if last_status is not None else "a temporary error"
-    raise RuntimeError(f"Gemini is temporarily unavailable ({status_text}). Please try again.")
+    raise RuntimeError(
+        "Gemini is temporarily unavailable after trying "
+        f"{', '.join(models)}: {describe_gemini_error(last_error)}. Please try again."
+    ) from last_error
 
 
 def _build_prompt(resume_text: str) -> str:
