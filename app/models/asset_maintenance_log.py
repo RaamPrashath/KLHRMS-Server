@@ -26,6 +26,9 @@ class AssetMaintenanceLog(Base):
     loggedByMemberId: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("member.id", ondelete="SET NULL")
     )
+    cancelledByMemberId: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("member.id", ondelete="SET NULL"), nullable=True
+    )
     category: Mapped[str | None] = mapped_column(String(80), nullable=True)
     subject: Mapped[str | None] = mapped_column(String(160), nullable=True)
     attachmentsMetadata: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
@@ -57,6 +60,7 @@ class AssetMaintenanceLog(Base):
 
     asset = relationship("Asset", back_populates="maintenanceLogs")
     loggedByMember = relationship("Member", foreign_keys=[loggedByMemberId])
+    cancelledByMember = relationship("Member", foreign_keys=[cancelledByMemberId])
 
     __table_args__ = (
         Index("asset_maintenance_log_ticketId_key", "ticketId", unique=True),

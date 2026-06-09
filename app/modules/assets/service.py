@@ -6,6 +6,7 @@ import io
 import secrets
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import HTTPException
 from openpyxl import Workbook
@@ -35,6 +36,7 @@ from app.models.asset_custom_field_value import AssetCustomFieldValue
 from app.models.asset_id_definition import AssetIdDefinition
 from app.models.asset_maintenance_log import AssetMaintenanceLog
 from app.models.asset_notification import AssetNotification
+from app.models.asset_purchase_requisition import AssetPurchaseRequisition
 from app.models.asset_unit import AssetUnit
 from app.models.base import generate_uuid
 from app.models.member import Member
@@ -42,7 +44,11 @@ from app.models.organization import Organization
 from app.models.role import Role
 from app.models.user import User
 from app.modules.notifications.service import NotificationCreateInput, create_notification_batch
-from app.shared.notifications.email import send_asset_warranty_expiry_alert
+from app.shared.notifications.email import (
+    send_asset_warranty_expiry_alert,
+    send_asset_replacement_notification,
+    send_temp_replacement_reminder,
+)
 from app.modules.assets.schema import (
     ASSET_CONDITIONS,
     ASSET_STATUS_ALIASES,
@@ -103,6 +109,11 @@ from app.modules.assets.schema import (
     TicketAlertItem,
     WarrantyExpirationFeedItem,
     WarrantyExpirationFeedResponse,
+    ReplacementRecord,
+    ReplacementProvideRequest,
+    ReplacementRaiseAppraisalRequest,
+    SetReturnDateRequest,
+    MemberTicketSummary,
 )
 from app.shared.deps.organization_member import MemberContext
 
@@ -1153,6 +1164,10 @@ def _my_ticket_response(log: AssetMaintenanceLog) -> MyTicketResponse:
     )
 
 
+def _mark_ticket_cancelled(log: AssetMaintenanceLog, ctx: MemberContext) -> None:
+    log.cancelledByMemberId = ctx.member.id
+
+
 def _maintenance_ticket_response(log: AssetMaintenanceLog) -> MaintenanceTicketResponse:
     asset_lifecycle_status, asset_lifecycle_status_label = _maintenance_asset_lifecycle(log.asset)
     return MaintenanceTicketResponse(
@@ -1184,6 +1199,10 @@ def _maintenance_ticket_response(log: AssetMaintenanceLog) -> MaintenanceTicketR
         else None,
         loggedByEmail=log.loggedByMember.user.email
         if log.loggedByMember and log.loggedByMember.user
+        else None,
+        cancelledByMemberId=log.cancelledByMemberId,
+        cancelledByName=log.cancelledByMember.user.name
+        if log.cancelledByMember and log.cancelledByMember.user
         else None,
         assetLifecycleStatus=asset_lifecycle_status,
         assetLifecycleStatusLabel=asset_lifecycle_status_label,
@@ -2328,6 +2347,466 @@ async def get_returned_assets(
     return items
 
 
+# ── Replacements ────────────────────────────────────────────────────────────────
+
+
+async def list_member_tickets(
+    db: AsyncSession, ctx: MemberContext, member_id: str
+) -> list[MemberTicketSummary]:
+    result = await db.execute(
+        select(AssetMaintenanceLog)
+        .where(
+            AssetMaintenanceLog.organizationId == ctx.organization.id,
+            AssetMaintenanceLog.loggedByMemberId == member_id,
+            AssetMaintenanceLog.status.in_(["OPEN", "IN_PROGRESS"]),
+        )
+        .order_by(AssetMaintenanceLog.createdAt.desc())
+    )
+    logs = result.scalars().all()
+    return [
+        MemberTicketSummary(
+            id=log.id,
+            ticketId=log.ticketId,
+            maintenanceType=log.maintenanceType,
+            issueDescription=log.issueDescription,
+            status=log.status,
+            replacementDecision=log.replacementDecision,
+        )
+        for log in logs
+    ]
+
+
+async def list_replacements(db: AsyncSession, ctx: MemberContext) -> list[ReplacementRecord]:
+    result = await db.execute(
+        select(AssetAssignment)
+        .join(Asset, Asset.id == AssetAssignment.assetId)
+        .where(
+            Asset.organizationId == ctx.organization.id,
+            Asset.deletedAt.is_(None),
+            AssetAssignment.replacementAssignmentId.is_not(None),
+        )
+        .options(
+            joinedload(AssetAssignment.asset),
+            joinedload(AssetAssignment.member).joinedload(Member.user),
+            joinedload(AssetAssignment.receivedByMember).joinedload(Member.user),
+        )
+        .order_by(AssetAssignment.createdAt.desc())
+    )
+    old_assignments = result.unique().scalars().all()
+
+    records: list[ReplacementRecord] = []
+    for old in old_assignments:
+        new_assignment = None
+        if old.replacementAssignmentId:
+            new_result = await db.execute(
+                select(AssetAssignment)
+                .where(AssetAssignment.id == old.replacementAssignmentId)
+                .options(
+                    joinedload(AssetAssignment.asset),
+                    joinedload(AssetAssignment.providedByMember).joinedload(Member.user),
+                )
+            )
+            new_assignment = new_result.unique().scalar_one_or_none()
+
+        old_asset = old.asset
+        new_asset = new_assignment.asset if new_assignment else None
+
+        employee = old.member
+        employee_name = employee.user.name if employee and employee.user else None
+        employee_email = employee.user.email if employee and employee.user else None
+
+        provider = new_assignment.providedByMember if new_assignment else None
+        provider_name = provider.user.name if provider and provider.user else None
+
+        ticket_info = None
+        if old_asset:
+            ticket_result = await db.execute(
+                select(AssetMaintenanceLog)
+                .where(
+                    AssetMaintenanceLog.assetId == old_asset.id,
+                    AssetMaintenanceLog.organizationId == ctx.organization.id,
+                )
+                .order_by(AssetMaintenanceLog.createdAt.desc())
+                .limit(1)
+            )
+            ticket_info = ticket_result.unique().scalars().first()
+
+        records.append(
+            ReplacementRecord(
+                id=old.id,
+                employeeMemberId=old.memberId,
+                employeeName=employee_name,
+                employeeEmail=employee_email,
+                originalAssetId=old_asset.id if old_asset else "",
+                originalAssetName=old_asset.name if old_asset else "",
+                originalAssetCode=old_asset.assetCode if old_asset else "",
+                originalSerial=old_asset.serialNumber if old_asset else None,
+                originalUnitStatus=old_asset.status if old_asset else None,
+                replacementAssignmentId=new_assignment.id if new_assignment else None,
+                replacementAssetId=new_asset.id if new_asset else "",
+                replacementAssetName=new_asset.name if new_asset else "",
+                replacementAssetCode=new_asset.assetCode if new_asset else "",
+                replacementSerial=new_asset.serialNumber if new_asset else None,
+                replacementMode=ticket_info.replacementDecision if ticket_info else "",
+                expectedReturnDate=(
+                    new_assignment.expectedReturnDate.isoformat()
+                    if new_assignment and new_assignment.expectedReturnDate
+                    else None
+                ),
+                returnReminderSent=new_assignment.returnReminderSent if new_assignment else False,
+                providedByMemberId=provider.id if provider else None,
+                providedByName=provider_name,
+                ticketId=ticket_info.ticketId if ticket_info else None,
+                maintenanceType=ticket_info.maintenanceType if ticket_info else None,
+                maintenanceStatus=ticket_info.status if ticket_info else None,
+                issueDescription=ticket_info.issueDescription if ticket_info else None,
+                returnDate=old.returnDate.isoformat() if old.returnDate else "",
+                swapCompletedAt=old.createdAt.isoformat(),
+            )
+        )
+
+    return records
+
+
+async def provide_replacement(
+    db: AsyncSession,
+    ctx: MemberContext,
+    payload: ReplacementProvideRequest,
+) -> ReplacementRecord:
+    employee = await db.execute(
+        select(Member)
+        .where(Member.id == payload.employeeMemberId, Member.organizationId == ctx.organization.id)
+    )
+    employee_member = employee.scalar_one_or_none()
+    if employee_member is None:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    ticket_result = await db.execute(
+        select(AssetMaintenanceLog)
+        .where(
+            AssetMaintenanceLog.ticketId == payload.ticketId,
+            AssetMaintenanceLog.organizationId == ctx.organization.id,
+            AssetMaintenanceLog.loggedByMemberId == payload.employeeMemberId,
+        )
+        .options(
+            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.provisions).joinedload(
+                AssetAssignment.member
+            ).joinedload(Member.user),
+            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.units),
+        )
+    )
+    ticket = ticket_result.unique().scalar_one_or_none()
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Ticket not found for this employee")
+    if ticket.status not in ("OPEN", "IN_PROGRESS"):
+        raise HTTPException(status_code=422, detail="Ticket is not open or in progress")
+    if ticket.asset is None:
+        raise HTTPException(status_code=422, detail="Ticket has no associated asset")
+
+    asset = ticket.asset
+    active_assignment = next(
+        (rec for rec in asset.provisions if rec.returnDate is None and rec.memberId == payload.employeeMemberId),
+        None,
+    )
+    if active_assignment is None:
+        raise HTTPException(status_code=422, detail="Employee does not have this asset currently assigned")
+
+    preview = await _build_swap_preview(db, ctx.organization.id, ticket, asset)
+    selected_option = next(
+        (opt for opt in preview.options if opt.mode == payload.replacementMode and opt.available), None
+    )
+    if selected_option is None or not selected_option.assetUnitIds:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No available {payload.replacementMode.lower().replace('_', ' ')} units found",
+        )
+
+    replacement_unit_id = selected_option.assetUnitIds[0]
+    unit_result = await db.execute(
+        select(AssetUnit)
+        .join(Asset, Asset.id == AssetUnit.assetId)
+        .where(
+            AssetUnit.id == replacement_unit_id,
+            Asset.organizationId == ctx.organization.id,
+            Asset.deletedAt.is_(None),
+        )
+        .options(joinedload(AssetUnit.asset).joinedload(Asset.units))
+    )
+    replacement_unit = unit_result.unique().scalar_one_or_none()
+    if replacement_unit is None or replacement_unit.asset is None:
+        raise HTTPException(status_code=404, detail="Replacement unit not found")
+    if _normalize_asset_status(replacement_unit.status) != "AVAILABLE":
+        raise HTTPException(status_code=422, detail="Replacement unit is no longer available")
+
+    replacement_asset = replacement_unit.asset
+    now = datetime.now(UTC)
+
+    source_unit = None
+    if ticket.assetUnitId:
+        source_unit = next((unit for unit in asset.units if unit.id == ticket.assetUnitId), None)
+
+    new_assignment = AssetAssignment(
+        assetId=replacement_asset.id,
+        assetUnitId=replacement_unit.id,
+        memberId=payload.employeeMemberId,
+        providedByMemberId=ctx.member.id,
+        providedDate=now,
+        conditionWhileProviding="GOOD",
+        provideNotes=payload.notes.strip() if payload.notes else None,
+    )
+    if payload.replacementMode == "TEMPORARY_BACKUP" and payload.expectedReturnDate:
+        try:
+            new_assignment.expectedReturnDate = datetime.fromisoformat(payload.expectedReturnDate)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="Invalid expectedReturnDate format")
+
+    db.add(new_assignment)
+    await db.flush()
+
+    active_assignment.replacementAssignmentId = new_assignment.id
+    active_assignment.handoverRequestedAt = now
+
+    active_assignment.returnDate = now
+    active_assignment.returnedCondition = ticket.conditionBeforeMaintenance or asset.condition
+    active_assignment.receivedByMemberId = ctx.member.id
+    active_assignment.returnNotes = (
+        payload.notes.strip() if payload.notes else "Revoked automatically during replacement"
+    )
+    if active_assignment.handoverCompletedAt is None:
+        active_assignment.handoverCompletedAt = now
+
+    if source_unit is not None:
+        source_unit.status = "IN_MAINTENANCE"
+        source_unit.currentHolderMemberId = None
+        source_unit.condition = ticket.conditionBeforeMaintenance or source_unit.condition
+        asset.status = _derive_asset_status(asset.units)
+    else:
+        asset.status = "IN_MAINTENANCE"
+
+    replacement_unit.status = "ASSIGNED"
+    replacement_unit.currentHolderMemberId = payload.employeeMemberId
+    replacement_unit.condition = "GOOD"
+    replacement_asset.status = _derive_asset_status(replacement_asset.units)
+
+    ticket.status = "COMPLETED"
+    ticket.replacementDecision = payload.replacementMode
+    ticket.replacementAssetUnitId = replacement_unit.id
+    if payload.notes and payload.notes.strip():
+        note = payload.notes.strip()
+        ticket.notes = f"{ticket.notes}\n\n[Replacement] {note}" if ticket.notes else f"[Replacement] {note}"
+
+    await db.commit()
+
+    await create_notification_batch(db, [
+        NotificationCreateInput(
+            organization_id=ctx.organization.id,
+            member_id=payload.employeeMemberId,
+            type="REPLACEMENT_PROVIDED",
+            category="assets",
+            title="Your asset has been replaced",
+            message=(
+                f"A {payload.replacementMode.lower().replace('_', ' ')} replacement "
+                f"({replacement_asset.name}) has been assigned to you. Ticket {ticket.ticketId}."
+            ),
+            action_url=f"/{ctx.organization.slug}/assets",
+            entity_type="REPLACEMENT",
+            entity_id=ticket.id,
+            metadata={"replacementMode": payload.replacementMode},
+        )
+    ])
+
+    employee_user = employee_member.user
+    if employee_user and employee_user.email:
+        await send_asset_replacement_notification(
+            to_email=employee_user.email,
+            recipient_name=employee_user.name or employee_user.email,
+            org_slug=ctx.organization.slug,
+            ticket_id=ticket.ticketId,
+            replacement_mode=payload.replacementMode,
+            new_asset_name=replacement_asset.name,
+            new_asset_code=replacement_asset.assetCode,
+            admin_name=ctx.member.user.name if ctx.member.user else "Admin",
+        )
+
+    return ReplacementRecord(
+        id=active_assignment.id,
+        employeeMemberId=payload.employeeMemberId,
+        employeeName=employee_user.name if employee_user else None,
+        employeeEmail=employee_user.email if employee_user else None,
+        originalAssetId=asset.id,
+        originalAssetName=asset.name,
+        originalAssetCode=asset.assetCode,
+        originalSerial=asset.serialNumber,
+        originalUnitStatus=source_unit.status if source_unit else asset.status,
+        replacementAssignmentId=new_assignment.id,
+        replacementAssetId=replacement_asset.id,
+        replacementAssetName=replacement_asset.name,
+        replacementAssetCode=replacement_asset.assetCode,
+        replacementSerial=replacement_asset.serialNumber,
+        replacementMode=payload.replacementMode,
+        expectedReturnDate=(
+            new_assignment.expectedReturnDate.isoformat()
+            if new_assignment.expectedReturnDate
+            else None
+        ),
+        returnReminderSent=False,
+        providedByMemberId=ctx.member.id,
+        providedByName=ctx.member.user.name if ctx.member.user else None,
+        ticketId=ticket.ticketId,
+        maintenanceType=ticket.maintenanceType,
+        maintenanceStatus=ticket.status,
+        issueDescription=ticket.issueDescription,
+        returnDate=active_assignment.returnDate.isoformat() if active_assignment.returnDate else "",
+        swapCompletedAt=datetime.now(UTC).isoformat(),
+    )
+
+
+async def raise_replacement_appraisal(
+    db: AsyncSession,
+    ctx: MemberContext,
+    payload: ReplacementRaiseAppraisalRequest,
+) -> dict:
+    from app.modules.procurement.schema import AssetPurchaseRequisitionCreateRequest
+
+    employee = await db.execute(
+        select(Member)
+        .where(Member.id == payload.employeeMemberId, Member.organizationId == ctx.organization.id)
+    )
+    employee_member = employee.scalar_one_or_none()
+    if employee_member is None:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    ticket_result = await db.execute(
+        select(AssetMaintenanceLog)
+        .where(
+            AssetMaintenanceLog.ticketId == payload.ticketId,
+            AssetMaintenanceLog.organizationId == ctx.organization.id,
+            AssetMaintenanceLog.loggedByMemberId == payload.employeeMemberId,
+        )
+        .options(joinedload(AssetMaintenanceLog.asset))
+    )
+    ticket = ticket_result.unique().scalar_one_or_none()
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Ticket not found for this employee")
+
+    proc_payload = AssetPurchaseRequisitionCreateRequest(
+        requestType="REPLACEMENT",
+        maintenanceTicketId=ticket.id,
+        justification=f"Replacement requested for ticket {ticket.ticketId}: {ticket.issueDescription[:200]}",
+        estimatedQuantity=1,
+        estimatedUnitCost=0,
+        estimatedTotalCost=0,
+        urgency="STANDARD",
+        assetName=ticket.asset.name if ticket.asset else None,
+        assetCode=ticket.asset.assetCode if ticket.asset else None,
+        replacementReason=payload.replacementMode,
+        notes=payload.notes,
+    )
+    result = await _create_proc_req(db, ctx, proc_payload)
+    return {"requisitionId": result.id, "message": "Appraisal raised to finance manager for approval"}
+
+
+async def set_replacement_return_date(
+    db: AsyncSession,
+    ctx: MemberContext,
+    assignment_id: str,
+    payload: SetReturnDateRequest,
+) -> dict:
+    result = await db.execute(
+        select(AssetAssignment)
+        .join(Asset, Asset.id == AssetAssignment.assetId)
+        .where(
+            AssetAssignment.id == assignment_id,
+            Asset.organizationId == ctx.organization.id,
+            Asset.deletedAt.is_(None),
+            AssetAssignment.returnDate.is_(None),
+        )
+    )
+    assignment = result.unique().scalar_one_or_none()
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="Active replacement assignment not found")
+
+    try:
+        assignment.expectedReturnDate = datetime.fromisoformat(payload.expectedReturnDate)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="Invalid date format")
+
+    assignment.returnReminderSent = False
+    await db.commit()
+    return {"success": True}
+
+
+async def run_temp_replacement_reminder_scan(db: AsyncSession) -> dict[str, int]:
+    tomorrow = date.today() + timedelta(days=1)
+    notified = 0
+
+    result = await db.execute(
+        select(AssetAssignment)
+        .join(Asset, Asset.id == AssetAssignment.assetId)
+        .where(
+            Asset.deletedAt.is_(None),
+            AssetAssignment.returnDate.is_(None),
+            AssetAssignment.expectedReturnDate.is_not(None),
+            AssetAssignment.returnReminderSent.is_(False),
+        )
+        .options(
+            joinedload(AssetAssignment.asset),
+            joinedload(AssetAssignment.member).joinedload(Member.user),
+        )
+    )
+    assignments = result.unique().scalars().all()
+
+    for assignment in assignments:
+        expected = assignment.expectedReturnDate
+        if expected is None:
+            continue
+        if expected.date() != tomorrow:
+            continue
+
+        member = assignment.member
+        user = member.user if member else None
+        if not user or not user.email:
+            continue
+
+        org_result = await db.execute(
+            select(Organization).where(Organization.id == member.organizationId)
+        )
+        org = org_result.scalar_one_or_none()
+        org_slug = org.slug if org else "app"
+
+        await create_notification_batch(db, [
+            NotificationCreateInput(
+                organization_id=member.organizationId,
+                member_id=member.id,
+                type="TEMP_REPLACEMENT_DUE_REMINDER",
+                category="assets",
+                title="Your temporary replacement is due tomorrow",
+                message=(
+                    f"The temporary asset {assignment.asset.name if assignment.asset else ''} "
+                    f"assigned to you is due for return by {expected.strftime('%b %d, %Y')}."
+                ),
+                action_url=f"/{org_slug}/assets",
+                entity_type="REPLACEMENT",
+                entity_id=assignment.id,
+            )
+        ])
+
+        await send_temp_replacement_reminder(
+            to_email=user.email,
+            recipient_name=user.name or user.email,
+            org_slug=org_slug,
+            asset_name=assignment.asset.name if assignment.asset else "Asset",
+            expected_return_date=expected.strftime("%b %d, %Y"),
+        )
+
+        assignment.returnReminderSent = True
+        notified += 1
+
+    if notified:
+        await db.commit()
+    return {"notified": notified}
+
+
 # ── Maintenance ────────────────────────────────────────────────────────────────
 
 
@@ -2449,6 +2928,7 @@ async def withdraw_helpdesk_ticket(
     if log.status == "COMPLETED":
         raise HTTPException(status_code=409, detail="Completed tickets cannot be withdrawn")
 
+    _mark_ticket_cancelled(log, ctx)
     log.status = "CANCELLED"
 
     if log.asset is not None:
@@ -2485,7 +2965,17 @@ async def withdraw_helpdesk_ticket(
                 asset.status = resumed_status
 
     await db.commit()
-    return _my_ticket_response(log)
+    refreshed_result = await db.execute(
+        select(AssetMaintenanceLog)
+        .where(
+            AssetMaintenanceLog.id == log.id,
+            AssetMaintenanceLog.organizationId == ctx.organization.id,
+            AssetMaintenanceLog.loggedByMemberId == ctx.member.id,
+        )
+        .options(joinedload(AssetMaintenanceLog.asset))
+    )
+    refreshed_log = refreshed_result.unique().scalar_one()
+    return _my_ticket_response(refreshed_log)
 
 
 async def update_maintenance_record(
@@ -2561,6 +3051,7 @@ async def update_maintenance_record(
             else:
                 asset.status = payload.nextAssetStatus
     elif payload.status == "CANCELLED":
+        _mark_ticket_cancelled(log, ctx)
         if log.assetUnitId:
             unit = next((u for u in (asset.units or []) if u.id == log.assetUnitId), None)
             if unit:
@@ -2609,6 +3100,9 @@ async def update_maintenance_record_by_id(
     log.conditionAfterMaintenance = payload.conditionAfterMaintenance
     if payload.notes:
         log.notes = payload.notes.strip()
+
+    if payload.status == "CANCELLED":
+        _mark_ticket_cancelled(log, ctx)
 
     await db.commit()
     await _notify_general_helpdesk_requester_if_completed(db, ctx, log, previous_status)
@@ -3458,6 +3952,7 @@ async def list_tickets(db: AsyncSession, ctx: MemberContext) -> list[Maintenance
                 AssetCustomFieldValue.fieldDefinition
             ),
             joinedload(AssetMaintenanceLog.loggedByMember).joinedload(Member.user),
+            joinedload(AssetMaintenanceLog.cancelledByMember).joinedload(Member.user),
         )
         .order_by(AssetMaintenanceLog.createdAt.desc())
     )

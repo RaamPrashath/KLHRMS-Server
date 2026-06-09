@@ -426,3 +426,107 @@ async def send_procurement_purchase_order(
         ),
         attachments=[_attachment_payload(file_name, pdf_bytes)],
     )
+
+
+async def send_asset_replacement_notification(
+    *,
+    to_email: str,
+    recipient_name: str,
+    org_slug: str,
+    ticket_id: str,
+    replacement_mode: str,
+    new_asset_name: str,
+    new_asset_code: str,
+    admin_name: str,
+) -> None:
+    escaped_recipient = html.escape(recipient_name)
+    escaped_ticket = html.escape(ticket_id)
+    escaped_mode = html.escape(replacement_mode.lower().replace("_", " "))
+    escaped_asset = html.escape(new_asset_name)
+    escaped_code = html.escape(new_asset_code)
+    escaped_admin = html.escape(admin_name)
+    dashboard_link = html.escape(f"{get_settings().better_auth_url.rstrip('/')}/{org_slug}/assets")
+
+    body = f"""
+      <p style="margin:0 0 16px;">Hello {escaped_recipient},</p>
+      <p style="margin:0 0 16px;">
+        Your asset has been replaced by <strong>{escaped_admin}</strong>.
+      </p>
+      <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
+        <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Ticket</td><td style="padding:2px 0;font-size:14px;">{escaped_ticket}</td></tr>
+        <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Replacement Mode</td><td style="padding:2px 0;font-size:14px;">{escaped_mode}</td></tr>
+        <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">New Asset</td><td style="padding:2px 0;font-size:14px;">{escaped_asset} ({escaped_code})</td></tr>
+        <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Provided By</td><td style="padding:2px 0;font-size:14px;">{escaped_admin}</td></tr>
+      </table>
+      <table role="presentation" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="border-radius:8px;" bgcolor="#00874a">
+            <a href="{dashboard_link}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">View My Assets</a>
+          </td>
+        </tr>
+      </table>
+    """
+
+    await _send_email(
+        to_email,
+        f"Your asset has been replaced — {new_asset_name}",
+        _email_wrapper(body),
+        (
+            f"Kovan Labs\n\n"
+            f"Hello {recipient_name},\n\n"
+            f"Your asset has been replaced by {admin_name}.\n"
+            f"Ticket: {ticket_id}\n"
+            f"Replacement Mode: {replacement_mode.lower().replace('_', ' ')}\n"
+            f"New Asset: {new_asset_name} ({new_asset_code})\n"
+            f"Provided By: {admin_name}\n\n"
+            f"View your assets: {get_settings().better_auth_url.rstrip('/')}/{org_slug}/assets\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        ),
+    )
+
+
+async def send_temp_replacement_reminder(
+    *,
+    to_email: str,
+    recipient_name: str,
+    org_slug: str,
+    asset_name: str,
+    expected_return_date: str,
+) -> None:
+    escaped_recipient = html.escape(recipient_name)
+    escaped_asset = html.escape(asset_name)
+    escaped_date = html.escape(expected_return_date)
+    dashboard_link = html.escape(f"{get_settings().better_auth_url.rstrip('/')}/{org_slug}/assets")
+
+    body = f"""
+      <p style="margin:0 0 16px;">Hello {escaped_recipient},</p>
+      <p style="margin:0 0 16px;">
+        This is a reminder that your temporary asset <strong>{escaped_asset}</strong> is due for return by <strong>{escaped_date}</strong> (tomorrow).
+      </p>
+      <p style="margin:0 0 16px;">
+        Please coordinate the return with your asset admin.
+      </p>
+      <table role="presentation" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="border-radius:8px;" bgcolor="#00874a">
+            <a href="{dashboard_link}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">View My Assets</a>
+          </td>
+        </tr>
+      </table>
+    """
+
+    await _send_email(
+        to_email,
+        f"Reminder: Your temporary replacement ({asset_name}) is due tomorrow",
+        _email_wrapper(body),
+        (
+            f"Kovan Labs\n\n"
+            f"Hello {recipient_name},\n\n"
+            f"This is a reminder that your temporary asset ({asset_name}) is due for return by {expected_return_date} (tomorrow).\n"
+            f"Please coordinate the return with your asset admin.\n\n"
+            f"View your assets: {get_settings().better_auth_url.rstrip('/')}/{org_slug}/assets\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        ),
+    )

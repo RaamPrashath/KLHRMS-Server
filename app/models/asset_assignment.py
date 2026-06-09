@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, generate_uuid
@@ -33,6 +33,12 @@ class AssetAssignment(Base):
     returnedCondition: Mapped[str | None] = mapped_column(String(40), nullable=True)
     receivedByMemberId: Mapped[str | None] = mapped_column(String(36), ForeignKey("member.id", ondelete="SET NULL"))
     returnNotes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expectedReturnDate: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    returnReminderSent: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false"), nullable=False
+    )
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updatedAt: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -51,4 +57,5 @@ class AssetAssignment(Base):
         Index("asset_assignment_memberId_idx", "memberId"),
         Index("asset_assignment_replacementAssignmentId_idx", "replacementAssignmentId"),
         Index("asset_assignment_returnDate_idx", "returnDate"),
+        Index("asset_assignment_expectedReturnDate_idx", "expectedReturnDate"),
     )

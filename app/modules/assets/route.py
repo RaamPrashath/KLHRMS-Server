@@ -46,6 +46,11 @@ from app.modules.assets.controller import (
     handle_update_maintenance,
     handle_update_maintenance_by_id,
     handle_withdraw_helpdesk_ticket,
+    handle_list_member_tickets,
+    handle_list_replacements,
+    handle_provide_replacement,
+    handle_raise_replacement_appraisal,
+    handle_set_replacement_return_date,
 )
 from app.modules.assets.schema import (
     AssetCategoryCreate,
@@ -83,6 +88,11 @@ from app.modules.assets.schema import (
     MaintenanceTicketResponse,
     MyTicketResponse,
     WarrantyExpirationFeedResponse,
+    ReplacementRecord,
+    ReplacementProvideRequest,
+    ReplacementRaiseAppraisalRequest,
+    SetReturnDateRequest,
+    MemberTicketSummary,
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
@@ -572,3 +582,59 @@ async def revoke_and_swap_route(
     db: DbSession,
 ) -> AssetSwapExecutionResponse:
     return await handle_revoke_and_swap_asset(access, db, maintenance_id, body)
+
+
+# ── Replacement Routes ──────────────────────────────────────────────────────
+
+
+@router.get("/members/{member_id}/tickets", response_model=list[MemberTicketSummary])
+async def list_member_tickets_route(
+    member_id: str,
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> list[MemberTicketSummary]:
+    return await handle_list_member_tickets(access, db, member_id)
+
+
+@router.get("/replacements", response_model=list[ReplacementRecord])
+async def list_replacements_route(
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> list[ReplacementRecord]:
+    return await handle_list_replacements(access, db)
+
+
+@router.post(
+    "/replacement/provide",
+    response_model=ReplacementRecord,
+    status_code=status.HTTP_201_CREATED,
+)
+async def provide_replacement_route(
+    body: ReplacementProvideRequest,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> ReplacementRecord:
+    return await handle_provide_replacement(access, db, body)
+
+
+@router.post("/replacement/raise-appraisal")
+async def raise_replacement_appraisal_route(
+    body: ReplacementRaiseAppraisalRequest,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> dict:
+    return await handle_raise_replacement_appraisal(access, db, body)
+
+
+@router.patch("/replacements/{assignment_id}/return-date")
+async def set_replacement_return_date_route(
+    assignment_id: str,
+    body: SetReturnDateRequest,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> dict:
+    return await handle_set_replacement_return_date(access, db, assignment_id, body)

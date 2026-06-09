@@ -6,8 +6,9 @@ via FastAPI lifespan events in main.py.
 
 Scheduled jobs
 --------------
-annual_holiday_sync   - runs on January 1st at 00:00 every year.
-warranty_tracker_scan - runs daily at 09:00 IST.
+annual_holiday_sync            - runs on January 1st at 00:00 every year.
+warranty_tracker_scan          - runs daily at 09:00 IST.
+temp_replacement_reminder_scan - runs daily at 08:00 IST.
 """
 
 from __future__ import annotations
@@ -52,6 +53,20 @@ async def _warranty_tracker_scan_job() -> None:
             logger.exception("Warranty tracker scan job failed")
 
 
+async def _temp_replacement_reminder_job() -> None:
+    from app.modules.assets.service import run_temp_replacement_reminder_scan
+    from app.shared.database import AsyncSessionLocal
+
+    logger.info("Temp replacement reminder scan job triggered")
+
+    async with AsyncSessionLocal() as db:
+        try:
+            summary = await run_temp_replacement_reminder_scan(db)
+            logger.info("Temp replacement reminder scan completed: %s", summary)
+        except Exception:
+            logger.exception("Temp replacement reminder scan job failed")
+
+
 def register_jobs() -> None:
     scheduler.add_job(
         _annual_holiday_sync_job,
@@ -84,3 +99,18 @@ def register_jobs() -> None:
         misfire_grace_time=3600,
     )
     logger.info("Registered job: warranty_tracker_scan (Daily 09:00 IST)")
+
+    scheduler.add_job(
+        _temp_replacement_reminder_job,
+        trigger=CronTrigger(
+            hour=8,
+            minute=0,
+            second=0,
+            timezone="Asia/Kolkata",
+        ),
+        id="temp_replacement_reminder_scan",
+        name="Temp Replacement Reminder Scan (Daily 08:00 IST)",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    logger.info("Registered job: temp_replacement_reminder_scan (Daily 08:00 IST)")

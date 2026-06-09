@@ -876,6 +876,65 @@ class AssetSwapExecutionResponse(BaseModel):
     assignedMemberName: str | None
 
 
+# ── Replacement Schemas ─────────────────────────────────────────────────────
+
+
+class ReplacementRecord(BaseModel):
+    id: str
+    employeeMemberId: str
+    employeeName: str | None = None
+    employeeEmail: str | None = None
+    originalAssetId: str
+    originalAssetName: str
+    originalAssetCode: str
+    originalSerial: str | None = None
+    originalUnitStatus: str | None = None
+    replacementAssignmentId: str | None = None
+    replacementAssetId: str
+    replacementAssetName: str
+    replacementAssetCode: str
+    replacementSerial: str | None = None
+    replacementMode: str
+    expectedReturnDate: str | None = None
+    returnReminderSent: bool = False
+    providedByMemberId: str | None = None
+    providedByName: str | None = None
+    ticketId: str | None = None
+    maintenanceType: str | None = None
+    maintenanceStatus: str | None = None
+    issueDescription: str | None = None
+    returnDate: str
+    swapCompletedAt: str
+
+
+class ReplacementProvideRequest(BaseModel):
+    employeeMemberId: str
+    ticketId: str
+    replacementMode: Literal["PERMANENT_REPLACEMENT", "TEMPORARY_BACKUP"]
+    expectedReturnDate: str | None = None
+    notes: str | None = None
+
+
+class ReplacementRaiseAppraisalRequest(BaseModel):
+    employeeMemberId: str
+    ticketId: str
+    replacementMode: Literal["PERMANENT_REPLACEMENT", "TEMPORARY_BACKUP"]
+    notes: str | None = None
+
+
+class SetReturnDateRequest(BaseModel):
+    expectedReturnDate: str
+
+
+class MemberTicketSummary(BaseModel):
+    id: str
+    ticketId: str
+    maintenanceType: str
+    issueDescription: str
+    status: str
+    replacementDecision: str | None = None
+
+
 class MyTicketResponse(BaseModel):
     id: str
     ticketId: str
@@ -918,6 +977,8 @@ class MaintenanceTicketResponse(BaseModel):
     loggedByMemberId: str | None = None
     loggedByName: str | None = None
     loggedByEmail: str | None = None
+    cancelledByMemberId: str | None = None
+    cancelledByName: str | None = None
     assetLifecycleStatus: str | None = None
     assetLifecycleStatusLabel: str | None = None
     swapPreview: AssetSwapPreviewResponse | None = None

@@ -38,6 +38,11 @@ from app.modules.assets.schema import (
     MaintenanceTicketResponse,
     MyTicketResponse,
     WarrantyExpirationFeedResponse,
+    ReplacementRecord,
+    ReplacementProvideRequest,
+    ReplacementRaiseAppraisalRequest,
+    SetReturnDateRequest,
+    MemberTicketSummary,
 )
 from app.modules.assets.service import (
     bulk_create_assets,
@@ -67,10 +72,15 @@ from app.modules.assets.service import (
     list_assets,
     list_available_groups,
     list_categories,
+    list_member_tickets,
+    list_replacements,
     list_my_tickets,
     list_tickets,
+    provide_replacement,
+    raise_replacement_appraisal,
     request_asset_return,
     return_asset,
+    set_replacement_return_date,
     withdraw_helpdesk_ticket,
     revoke_and_swap_asset,
     update_asset_id,
@@ -371,3 +381,46 @@ async def handle_issue_assets(
     payload: AssetIssueRequest,
 ) -> AssetIssueResponse:
     return await issue_assets(db, ctx, payload)
+
+
+# ── Replacement handlers ────────────────────────────────────────────────────
+
+
+async def handle_list_member_tickets(
+    ctx: MemberContext,
+    db: AsyncSession,
+    member_id: str,
+) -> list[MemberTicketSummary]:
+    return await list_member_tickets(db, ctx, member_id)
+
+
+async def handle_list_replacements(
+    ctx: MemberContext,
+    db: AsyncSession,
+) -> list[ReplacementRecord]:
+    return await list_replacements(db, ctx)
+
+
+async def handle_provide_replacement(
+    ctx: MemberContext,
+    db: AsyncSession,
+    payload: ReplacementProvideRequest,
+) -> ReplacementRecord:
+    return await provide_replacement(db, ctx, payload)
+
+
+async def handle_raise_replacement_appraisal(
+    ctx: MemberContext,
+    db: AsyncSession,
+    payload: ReplacementRaiseAppraisalRequest,
+) -> dict:
+    return await raise_replacement_appraisal(db, ctx, payload)
+
+
+async def handle_set_replacement_return_date(
+    ctx: MemberContext,
+    db: AsyncSession,
+    assignment_id: str,
+    payload: SetReturnDateRequest,
+) -> dict:
+    return await set_replacement_return_date(db, ctx, assignment_id, payload)
