@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.models.recruitment import EmploymentType, JobRequisition, JobRequisitionRules
@@ -308,4 +309,37 @@ async def test_gemini_extraction_retries_until_valid_structured_facts(monkeypatc
     facts = await llm_extractor.extract_resume_facts_with_gemini("resume text", _rules())
 
     assert calls == 3
+    assert facts.overallConfidence == 0.9
+
+
+@pytest.mark.asyncio
+async def test_gemini_extraction_falls_back_to_next_model_on_503(monkeypatch):
+    attempted_models: list[str] = []
+
+    async def fake_call_gemini_for_facts(*args, **kwargs):
+        model = kwargs["model"]
+        attempted_models.append(model)
+        if model == "gemini-2.5-flash":
+            request = httpx.Request(
+                "POST",
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=secret",
+            )
+            response = httpx.Response(503, request=request)
+            raise httpx.HTTPStatusError("server unavailable", request=request, response=response)
+        return _facts()
+
+    monkeypatch.setattr(
+        llm_extractor,
+        "get_settings",
+        lambda: SimpleNamespace(
+            gemini_api_key="test-key",
+            gemini_model="gemini-2.5-flash",
+            gemini_fallback_models="gemini-3.5-flash",
+        ),
+    )
+    monkeypatch.setattr(llm_extractor, "_call_gemini_for_facts", fake_call_gemini_for_facts)
+
+    facts = await llm_extractor.extract_resume_facts_with_gemini("resume text", _rules())
+
+    assert attempted_models == ["gemini-2.5-flash", "gemini-3.5-flash"]
     assert facts.overallConfidence == 0.9

@@ -131,6 +131,14 @@ class Settings(BaseSettings):
         alias="GEMINI_MODEL",
     )
 
+    gemini_fallback_models: str = Field(
+        default=os.getenv(
+            "GEMINI_FALLBACK_MODELS",
+            "gemini-3.5-flash,gemini-2.5-flash-lite,gemini-2.5-pro",
+        ),
+        alias="GEMINI_FALLBACK_MODELS",
+    )
+
     resend_from_email: str = Field(
         # Resend's onboarding@resend.dev is a sandbox sender. It is useful before a
         # domain is verified, but Resend only delivers it to the account owner's email.
@@ -175,18 +183,42 @@ class Settings(BaseSettings):
 
     # ── Microsoft Graph API ──────────────────────────
     azure_tenant_id: str = Field(
-        default=os.getenv("AZURE_TENANT_ID", ""),
+        default=os.getenv("AZURE_TENANT_ID", os.getenv("AZURE_AD_TENANT_ID", "")),
         alias="AZURE_TENANT_ID",
     )
 
     azure_client_id: str = Field(
-        default=os.getenv("AZURE_CLIENT_ID", ""),
+        default=os.getenv("AZURE_CLIENT_ID", os.getenv("AZURE_AD_CLIENT_ID", "")),
         alias="AZURE_CLIENT_ID",
     )
 
     azure_client_secret: str = Field(
-        default=os.getenv("AZURE_CLIENT_SECRET", ""),
+        default=os.getenv("AZURE_CLIENT_SECRET", os.getenv("AZURE_AD_CLIENT_SECRET", "")),
         alias="AZURE_CLIENT_SECRET",
+    )
+
+    microsoft_tenant_id: str = Field(
+        default=os.getenv(
+            "MICROSOFT_TENANT_ID",
+            os.getenv("AZURE_TENANT_ID", os.getenv("AZURE_AD_TENANT_ID", "common")),
+        ),
+        alias="MICROSOFT_TENANT_ID",
+    )
+
+    microsoft_client_id: str = Field(
+        default=os.getenv(
+            "MICROSOFT_CLIENT_ID",
+            os.getenv("AZURE_CLIENT_ID", os.getenv("AZURE_AD_CLIENT_ID", "")),
+        ),
+        alias="MICROSOFT_CLIENT_ID",
+    )
+
+    microsoft_client_secret: str = Field(
+        default=os.getenv(
+            "MICROSOFT_CLIENT_SECRET",
+            os.getenv("AZURE_CLIENT_SECRET", os.getenv("AZURE_AD_CLIENT_SECRET", "")),
+        ),
+        alias="MICROSOFT_CLIENT_SECRET",
     )
 
     @field_validator("database_url", mode="before")

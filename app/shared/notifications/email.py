@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import html
 import base64
+import html
 
 import httpx
 
-from app.models.member import Member
+from app.integrations.email.resend_config import (
+    resolve_resend_delivery,
+    validate_resend_sender_for_environment,
+)
 from app.models.asset_purchase_requisition import AssetPurchaseRequisition
+from app.models.member import Member
 from app.models.recruitment import JobRequisition
 from app.shared.config import get_settings
 
@@ -63,6 +67,17 @@ def _email_wrapper(content: str) -> str:
 </html>"""
 
 
+def is_resend_email_configured() -> bool:
+    settings = get_settings()
+    if not settings.resend_api_key.strip():
+        return False
+    try:
+        validate_resend_sender_for_environment(settings)
+    except ValueError:
+        return False
+    return settings.mode.strip().lower() == "production" or bool(settings.secondary_receiver.strip())
+
+
 def _requisition_link(org_slug: str, req_id: str) -> str:
     base_url = get_settings().better_auth_url.rstrip("/")
     return f"{base_url}/{org_slug}/jobs/{req_id}"
@@ -84,11 +99,10 @@ async def _send_email(
     if not settings.resend_api_key:
         return
 
-    recipient = to_email
-    if settings.mode.strip().lower() != "production":
-        if not settings.secondary_receiver.strip():
-            return
-        recipient = settings.secondary_receiver.strip()
+    try:
+        from_email, recipient_list = resolve_resend_delivery(settings, to_email)
+    except ValueError:
+        return
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:
@@ -99,8 +113,8 @@ async def _send_email(
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": settings.resend_from_email,
-                    "to": [recipient],
+                    "from": from_email,
+                    "to": recipient_list,
                     "subject": subject,
                     "html": html_body,
                     "text": text,

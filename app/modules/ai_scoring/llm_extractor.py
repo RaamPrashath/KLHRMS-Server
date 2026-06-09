@@ -8,12 +8,17 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
+from app.integrations.gemini import (
+    describe_gemini_error,
+    gemini_generate_content_url,
+    gemini_model_candidates,
+    should_try_next_gemini_model,
+)
 from app.models.recruitment import JobRequisitionRules
 from app.modules.ai_scoring.schema import ExtractedResumeFacts
 from app.shared.config import get_settings
 from app.shared.skill_aliases import SKILL_ALIASES
 
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 MAX_MODEL_INPUT_CHARS = 30000
 _NO_KNOCKOUT_VALUES = {
     "none",
@@ -41,22 +46,38 @@ async def extract_resume_facts_with_gemini(
 
     prompt = _build_extraction_prompt(resume_text, rules)
     last_error: Exception | None = None
-    for attempt, delay_seconds in enumerate((0.0, 1.5, 3.0), start=1):
+    attempted_models: list[str] = []
+    model_candidates = gemini_model_candidates(
+        settings.gemini_model,
+        getattr(settings, "gemini_fallback_models", ""),
+    )
+    for delay_seconds in (0.0, 1.5, 3.0):
         if delay_seconds:
             await asyncio.sleep(delay_seconds)
-        try:
-            return await _call_gemini_for_facts(
-                prompt=prompt,
-                api_key=settings.gemini_api_key,
-                model=settings.gemini_model,
-            )
-        except (httpx.HTTPError, ValidationError, json.JSONDecodeError, KeyError, ValueError) as exc:
-            last_error = exc
-            if attempt == 3:
+        for model in model_candidates:
+            if model not in attempted_models:
+                attempted_models.append(model)
+            try:
+                return await _call_gemini_for_facts(
+                    prompt=prompt,
+                    api_key=settings.gemini_api_key,
+                    model=model,
+                )
+            except (
+                httpx.HTTPError,
+                ValidationError,
+                json.JSONDecodeError,
+                KeyError,
+                ValueError,
+            ) as exc:
+                last_error = exc
+                if should_try_next_gemini_model(exc):
+                    continue
                 break
 
     raise ResumeFactExtractionError(
-        f"Resume fact extraction failed after 3 attempts: {last_error}"
+        "Resume fact extraction failed after 3 attempts "
+        f"across models {', '.join(attempted_models)}: {describe_gemini_error(last_error)}"
     ) from last_error
 
 
@@ -65,7 +86,7 @@ async def _call_gemini_for_facts(
     api_key: str,
     model: str,
 ) -> ExtractedResumeFacts:
-    url = GEMINI_ENDPOINT.format(model=model)
+    url = gemini_generate_content_url(model)
     payload: dict[str, Any] = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
