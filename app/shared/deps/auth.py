@@ -24,6 +24,7 @@ from sqlalchemy.orm import joinedload
 from app.models.member import Member
 from app.shared.auth_context import AuthContext
 from app.shared.database import get_db
+from app.shared.logging_config import set_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,8 @@ async def get_auth_context(request: Request, db: DbSession) -> AuthContext:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Member role is invalid.",
         )
+
+    set_user_id(user_id)
 
     logger.debug(
         "auth.resolved",

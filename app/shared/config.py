@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     # ── Logging ───────────────────────────────────────────
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     log_json: bool = Field(default=True, alias="LOG_JSON")
+    log_dir: str = Field(default="./logs", alias="LOG_DIR")
 
     # ── CORS / Hosts ──────────────────────────────────────
     cors_origins: str = Field(

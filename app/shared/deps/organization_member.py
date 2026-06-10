@@ -22,6 +22,7 @@ from app.models.member import Member
 from app.models.organization import Organization
 from app.models.role import Role
 from app.shared.database import get_db
+from app.shared.logging_config import set_user_id
 
 
 @dataclass
@@ -72,5 +73,7 @@ async def get_member_context(
         raise HTTPException(status_code=403, detail="you dont have permission")
 
     role: Role = member.role
+
+    set_user_id(member.userId)
 
     return MemberContext(organization=organization, member=member, role=role)
