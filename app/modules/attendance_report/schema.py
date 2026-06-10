@@ -51,6 +51,8 @@ class AttendanceReportRow(BaseModel):
     projectName: str | None = None
     taskName: str | None = None
     clockOutDescription: str | None = None
+    leaveTypeName: str | None = None
+    entryType: str | None = None
 
 
 class AttendanceReportSummary(BaseModel):

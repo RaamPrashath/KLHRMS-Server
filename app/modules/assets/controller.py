@@ -10,6 +10,7 @@ from app.modules.assets.schema import (
     AssetDashboardResponse,
     AssetDetailResponse,
     EmployeeAssetViewResponse,
+    AssetExportRequest,
     AssetFilters,
     AssetIdCreate,
     AssetIdResponse,
@@ -86,6 +87,12 @@ from app.modules.assets.service import (
     update_maintenance_record,
     update_maintenance_record_by_id,
     upsert_asset,
+)
+from app.modules.assets.export_service import (
+    generate_register_export,
+    generate_issued_export,
+    generate_returned_export,
+    generate_inventory_export,
 )
 from app.shared.deps.organization_member import MemberContext
 
@@ -248,6 +255,30 @@ async def handle_export_report_xlsx(
     ctx: MemberContext, db: AsyncSession, payload: AssetReportRequest
 ) -> bytes:
     return await export_asset_report_xlsx(db, ctx, payload)
+
+
+async def handle_export_register(
+    ctx: MemberContext, db: AsyncSession, payload: AssetExportRequest
+) -> bytes | str:
+    return await generate_register_export(db, ctx, payload)
+
+
+async def handle_export_issued(
+    ctx: MemberContext, db: AsyncSession, payload: AssetExportRequest
+) -> bytes | str:
+    return await generate_issued_export(db, ctx, payload)
+
+
+async def handle_export_returned(
+    ctx: MemberContext, db: AsyncSession, payload: AssetExportRequest
+) -> bytes | str:
+    return await generate_returned_export(db, ctx, payload)
+
+
+async def handle_export_inventory(
+    ctx: MemberContext, db: AsyncSession, payload: AssetExportRequest
+) -> bytes | str:
+    return await generate_inventory_export(db, ctx, payload)
 
 
 # ── Asset ID CRUD handlers ────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -447,6 +448,13 @@ class AssetReportRequest(BaseModel):
         if normalized not in REPORT_TYPES:
             raise ValueError("Invalid report type")
         return normalized
+
+
+class AssetExportRequest(BaseModel):
+    format: Literal["xlsx", "pdf", "csv"]
+    startDate: str
+    endDate: str
+    employeeIds: list[str]
 
 
 class AssetLookupOption(BaseModel):

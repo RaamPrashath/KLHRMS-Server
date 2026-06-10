@@ -91,14 +91,16 @@ class ManualDayEntryRequest(BaseModel):
     )
     clock_in: dt.datetime | None = Field(default=None)
     clock_out: dt.datetime | None = Field(default=None)
+    entry_type: str | None = Field(default=None, description="Override type: LEAVE, COMP_OFF, or null for work hours")
 
     model_config = {"populate_by_name": True}
 
     @model_validator(mode="after")
     def validate_clock_order(self) -> "ManualDayEntryRequest":
-        if self.clock_in is not None and self.clock_out is not None:
-            if self.clock_out <= self.clock_in:
-                raise ValueError("clock_out must be after clock_in")
+        if self.entry_type not in (None, "LEAVE", "COMP_OFF"):
+            raise ValueError("entry_type must be LEAVE, COMP_OFF, or null")
+        if self.entry_type is not None and self.clock_in is not None:
+            raise ValueError("entry_type cannot be combined with clock_in — omit both clock fields for L/CO markers")
         return self
 
 
@@ -168,6 +170,7 @@ class AttendanceRecordResponse(BaseModel):
     status: str
     is_remote: bool = Field(default=False, alias="isRemote")
     entered_by_manager_id: str | None = Field(alias="enteredByManagerId")
+    entry_type: str | None = None
     created_at: dt.datetime = Field(alias="createdAt")
     # Populated for org-scope list queries; null for self-scope responses.
     employee_name: str | None = Field(default=None, alias="employeeName")

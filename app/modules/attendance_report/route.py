@@ -113,6 +113,8 @@ async def get_attendance_report(
                 projectName=row.project_name,
                 taskName=row.task_name,
                 clockOutDescription=row.clock_out_description,
+                leaveTypeName=row.leave_type_name,
+                entryType=row.entry_type,
             )
             for row in rows
         ],

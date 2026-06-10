@@ -31,6 +31,8 @@ class AttendanceRecord(Base):
 
     enteredByManagerId: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
+    entryType: Mapped[str | None] = mapped_column(String(20), nullable=True, default=None)
+
     createdAt: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
