@@ -39,11 +39,17 @@ from app.modules.role.route import router as role_router
 from app.modules.user.route import router as user_router
 from app.modules.weekly_plan.router import router as weekly_plan_router
 from app.shared.config import get_settings
+from app.shared.exception_handlers import unhandled_exception_handler
+from app.shared.logging_config import setup_logging
+from app.shared.middleware import RequestContextMiddleware
 from app.shared.scheduler import register_jobs, scheduler
 
 settings = get_settings()
 UPLOADS_DIR = Path(__file__).resolve().parents[1] / ".uploads"
 
+# ── Logging ───────────────────────────────────────────────────────────────────
+
+setup_logging(settings)
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
@@ -68,6 +74,8 @@ app = FastAPI(
 
 # ── Middleware ────────────────────────────────────────────────────────────────
 
+app.add_middleware(RequestContextMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -76,6 +84,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Exception Handlers ────────────────────────────────────────────────────────
+
+app.add_exception_handler(Exception, unhandled_exception_handler)
+
+# ── Static Files ──────────────────────────────────────────────────────────────
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")

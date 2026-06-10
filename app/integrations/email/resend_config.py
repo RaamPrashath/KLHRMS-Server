@@ -30,13 +30,7 @@ def is_resend_sandbox_sender(from_email: str) -> bool:
 
 
 def validate_resend_sender_for_environment(settings: ResendSettings) -> str:
-    from_email = normalize_resend_from_email(settings.resend_from_email)
-    if settings.mode.strip().lower() == "production" and is_resend_sandbox_sender(from_email):
-        raise ValueError(
-            "RESEND_FROM_EMAIL must use an address on a verified Resend domain in production. "
-            "onboarding@resend.dev is only for Resend sandbox testing."
-        )
-    return from_email
+    return normalize_resend_from_email(settings.resend_from_email)
 
 
 def resolve_resend_delivery(settings: ResendSettings, to_email: str) -> tuple[str, list[str]]:

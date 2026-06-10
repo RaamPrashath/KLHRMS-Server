@@ -339,10 +339,10 @@ async def assign_credentials(
     record = result.scalar_one_or_none()
     if record is None:
         raise HTTPException(status_code=404, detail="Onboarding record not found")
-    if record.status != OnboardingStatus.DOCUMENTS_SUBMITTED:
+    if record.status == OnboardingStatus.CREDENTIALS_SENT:
         raise HTTPException(
             status_code=400,
-            detail="Candidate has not submitted documents yet",
+            detail="Credentials have already been sent",
         )
 
     record.assignedRoleId = body.roleId

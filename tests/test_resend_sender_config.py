@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from app.integrations.email.resend_config import (
     RESEND_SANDBOX_FROM_EMAIL,
     is_resend_sandbox_sender,
@@ -25,13 +23,15 @@ def _settings(
     )
 
 
-def test_resend_dev_sender_is_only_allowed_outside_production() -> None:
+def test_resend_dev_sender_is_allowed_in_production_for_now() -> None:
     assert is_resend_sandbox_sender(RESEND_SANDBOX_FROM_EMAIL)
 
-    with pytest.raises(ValueError, match="verified Resend domain"):
+    assert (
         validate_resend_sender_for_environment(
             _settings(mode="production", from_email=RESEND_SANDBOX_FROM_EMAIL)
         )
+        == RESEND_SANDBOX_FROM_EMAIL
+    )
 
     assert (
         validate_resend_sender_for_environment(
