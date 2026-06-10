@@ -82,11 +82,9 @@ from app.modules.assets.schema import (
     AssetMetaResponse,
     AssetOsDistributionResponse,
     AssetOsDistributionRow,
-    AssetRevokeSwapRequest,
     AssetProvideRecordSummary,
     AssetReportRequest,
     AssetReturnRequest,
-    AssetSwapExecutionResponse,
     AssetSwapPreviewResponse,
     AssetStatusCount,
     AssetSummary,
@@ -109,11 +107,12 @@ from app.modules.assets.schema import (
     TicketAlertItem,
     WarrantyExpirationFeedItem,
     WarrantyExpirationFeedResponse,
+    MemberAssignedAssetResponse,
+    MemberTicketSummary,
     ReplacementRecord,
     ReplacementProvideRequest,
     ReplacementRaiseAppraisalRequest,
     SetReturnDateRequest,
-    MemberTicketSummary,
 )
 from app.shared.deps.organization_member import MemberContext
 
@@ -2376,6 +2375,50 @@ async def list_member_tickets(
     ]
 
 
+async def list_member_assigned_assets(
+    db: AsyncSession, ctx: MemberContext, member_id: str
+) -> list[MemberAssignedAssetResponse]:
+    result = await db.execute(
+        select(AssetAssignment)
+        .join(Asset, Asset.id == AssetAssignment.assetId)
+        .outerjoin(AssetUnit, AssetUnit.id == AssetAssignment.assetUnitId)
+        .options(
+            joinedload(AssetAssignment.asset),
+            joinedload(AssetAssignment.member),
+            joinedload(AssetAssignment.asset).joinedload(Asset.units),
+        )
+        .where(
+            Asset.organizationId == ctx.organization.id,
+            Asset.deletedAt.is_(None),
+            AssetAssignment.memberId == member_id,
+            AssetAssignment.returnDate.is_(None),
+        )
+        .order_by(AssetAssignment.providedDate.desc())
+    )
+    records = result.unique().scalars().all()
+
+    return [
+        MemberAssignedAssetResponse(
+            id=rec.id,
+            assetId=rec.asset.id,
+            assetCode=rec.asset.assetCode,
+            name=rec.asset.name,
+            brand=rec.asset.brand,
+            model=rec.asset.model,
+            category=rec.asset.category,
+            serialNumber=rec.asset.serialNumber,
+            unitSerial=next(
+                (unit.serialNumber for unit in (rec.asset.units or []) if unit.id == rec.assetUnitId),
+                None,
+            ),
+            status=rec.asset.status,
+            condition=rec.conditionWhileProviding,
+            providedDate=rec.providedDate,
+        )
+        for rec in records
+    ]
+
+
 async def list_replacements(db: AsyncSession, ctx: MemberContext) -> list[ReplacementRecord]:
     result = await db.execute(
         select(AssetAssignment)
@@ -3968,182 +4011,4 @@ async def list_tickets(db: AsyncSession, ctx: MemberContext) -> list[Maintenance
     return responses
 
 
-async def get_swap_preview(
-    db: AsyncSession, ctx: MemberContext, maintenance_id: str
-) -> AssetSwapPreviewResponse:
-    result = await db.execute(
-        select(AssetMaintenanceLog)
-        .where(
-            AssetMaintenanceLog.id == maintenance_id,
-            AssetMaintenanceLog.organizationId == ctx.organization.id,
-        )
-        .options(
-            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.provisions).joinedload(
-                AssetAssignment.member
-            ).joinedload(Member.user),
-            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.units),
-            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.customFieldValues).joinedload(
-                AssetCustomFieldValue.fieldDefinition
-            ),
-        )
-    )
-    log = result.unique().scalar_one_or_none()
-    if log is None or log.asset is None:
-        raise HTTPException(status_code=404, detail="Maintenance record not found")
 
-    return await _build_swap_preview(db, ctx.organization.id, log, log.asset)
-
-
-async def revoke_and_swap_asset(
-    db: AsyncSession,
-    ctx: MemberContext,
-    maintenance_id: str,
-    payload: AssetRevokeSwapRequest,
-) -> AssetSwapExecutionResponse:
-    if payload.maintenanceId != maintenance_id:
-        raise HTTPException(status_code=422, detail="Maintenance ID mismatch")
-
-    result = await db.execute(
-        select(AssetMaintenanceLog)
-        .where(
-            AssetMaintenanceLog.id == maintenance_id,
-            AssetMaintenanceLog.organizationId == ctx.organization.id,
-        )
-        .options(
-            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.provisions).joinedload(
-                AssetAssignment.member
-            ).joinedload(Member.user),
-            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.units),
-            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.customFieldValues).joinedload(
-                AssetCustomFieldValue.fieldDefinition
-            ),
-        )
-    )
-    log = result.unique().scalar_one_or_none()
-    if log is None or log.asset is None:
-        raise HTTPException(status_code=404, detail="Maintenance record not found")
-
-    asset = log.asset
-    preview = await _build_swap_preview(db, ctx.organization.id, log, asset)
-    if preview.requiresReplacementValidation and preview.recommendedMode is None:
-        raise HTTPException(
-            status_code=422,
-            detail="No replacement inventory is currently available for this incident",
-        )
-
-    active_assignment = next((record for record in asset.provisions if record.returnDate is None), None)
-    if active_assignment is None:
-        raise HTTPException(status_code=422, detail="The malfunctioning asset is not currently assigned")
-
-    replacement_result = await db.execute(
-        select(AssetUnit)
-        .join(Asset, Asset.id == AssetUnit.assetId)
-        .where(
-            AssetUnit.id == payload.replacementAssetUnitId,
-            Asset.organizationId == ctx.organization.id,
-            Asset.deletedAt.is_(None),
-        )
-        .options(
-            joinedload(AssetUnit.asset).joinedload(Asset.units),
-            joinedload(AssetUnit.asset).joinedload(Asset.customFieldValues).joinedload(
-                AssetCustomFieldValue.fieldDefinition
-            ),
-        )
-    )
-    replacement_unit = replacement_result.unique().scalar_one_or_none()
-    if replacement_unit is None or replacement_unit.asset is None:
-        raise HTTPException(status_code=404, detail="Replacement unit not found")
-    if _normalize_asset_status(replacement_unit.status) != "AVAILABLE":
-        raise HTTPException(status_code=422, detail="Replacement unit is no longer available")
-
-    selected_option = next(
-        (option for option in preview.options if option.mode == payload.replacementMode), None
-    )
-    if selected_option is None or payload.replacementAssetUnitId not in selected_option.assetUnitIds:
-        raise HTTPException(
-            status_code=422,
-            detail="Replacement unit does not match the validated inventory option",
-        )
-
-    provider_id = payload.providedByMemberId or ctx.member.id
-    await _get_member_or_404(db, ctx.organization.id, provider_id)
-
-    source_unit = None
-    if log.assetUnitId:
-        source_unit = next((unit for unit in asset.units if unit.id == log.assetUnitId), None)
-
-    if source_unit is not None and payload.replacementAssetUnitId == source_unit.id:
-        raise HTTPException(
-            status_code=422,
-            detail="Replacement unit cannot be the same as the malfunctioning unit",
-        )
-
-    replacement_asset = replacement_unit.asset
-    now = datetime.now(UTC)
-    new_assignment = AssetAssignment(
-        assetId=replacement_asset.id,
-        assetUnitId=replacement_unit.id,
-        memberId=active_assignment.memberId,
-        providedByMemberId=provider_id,
-        providedDate=now,
-        conditionWhileProviding=payload.replacementConditionWhileProviding,
-        provideNotes=payload.notes.strip() if payload.notes else None,
-    )
-    db.add(new_assignment)
-    await db.flush()
-
-    active_assignment.replacementAssignmentId = new_assignment.id
-    active_assignment.handoverRequestedAt = now
-    if payload.notes:
-        active_assignment.handoverConditionNotes = payload.notes.strip()
-
-    if payload.revokeStatus != "PENDING_RETURN":
-        active_assignment.returnDate = now
-        active_assignment.returnedCondition = log.conditionBeforeMaintenance or asset.condition
-        active_assignment.receivedByMemberId = ctx.member.id
-        active_assignment.returnNotes = (
-            payload.notes.strip() if payload.notes else "Revoked automatically during asset swap"
-        )
-        if active_assignment.handoverCompletedAt is None:
-            active_assignment.handoverCompletedAt = now
-
-    if source_unit is not None:
-        source_unit.status = payload.revokeStatus
-        source_unit.currentHolderMemberId = (
-            active_assignment.memberId if payload.revokeStatus == "PENDING_RETURN" else None
-        )
-        source_unit.condition = log.conditionBeforeMaintenance or source_unit.condition
-        asset.status = _derive_asset_status(asset.units)
-    else:
-        asset.status = payload.revokeStatus
-
-    replacement_unit.status = "ASSIGNED"
-    replacement_unit.currentHolderMemberId = active_assignment.memberId
-    replacement_unit.condition = payload.replacementConditionWhileProviding
-    replacement_asset.status = _derive_asset_status(replacement_asset.units)
-
-    log.status = "COMPLETED"
-    log.replacementDecision = payload.replacementMode
-    log.replacementAssetUnitId = replacement_unit.id
-    if payload.notes and payload.notes.strip():
-        swap_note = payload.notes.strip()
-        log.notes = f"{log.notes}\n\n[Swap] {swap_note}" if log.notes else f"[Swap] {swap_note}"
-
-    await db.commit()
-
-    assigned_member_name = None
-    if active_assignment.member and active_assignment.member.user:
-        assigned_member_name = active_assignment.member.user.name or active_assignment.member.user.email
-
-    return AssetSwapExecutionResponse(
-        maintenanceId=maintenance_id,
-        revokedAssetId=asset.id,
-        revokedAssetUnitId=source_unit.id if source_unit else None,
-        revokedStatus=payload.revokeStatus,
-        replacementAssetId=replacement_asset.id,
-        replacementAssetUnitId=replacement_unit.id,
-        replacementMode=payload.replacementMode,
-        assignmentId=new_assignment.id,
-        assignedMemberId=active_assignment.memberId,
-        assignedMemberName=assigned_member_name,
-    )

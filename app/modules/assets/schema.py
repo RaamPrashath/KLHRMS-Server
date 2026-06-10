@@ -829,53 +829,6 @@ class AssetSwapPreviewResponse(BaseModel):
     options: list[SwapAvailabilityOption]
 
 
-class AssetRevokeSwapRequest(BaseModel):
-    maintenanceId: str
-    replacementMode: str
-    replacementAssetUnitId: str
-    revokeStatus: str = Field(default="IN_MAINTENANCE")
-    replacementConditionWhileProviding: str = Field(default="GOOD")
-    providedByMemberId: str | None = None
-    notes: str | None = None
-
-    @field_validator("replacementMode")
-    @classmethod
-    def validate_replacement_mode(cls, value: str) -> str:
-        normalized = _normalize_enum(value)
-        if normalized not in SWAP_MODES:
-            raise ValueError("Invalid replacement mode")
-        return normalized
-
-    @field_validator("revokeStatus")
-    @classmethod
-    def validate_revoke_status(cls, value: str) -> str:
-        normalized = _normalize_asset_status(value)
-        if normalized not in {"IN_MAINTENANCE", "PENDING_RETURN"}:
-            raise ValueError("Revoke status must be IN_MAINTENANCE or PENDING_RETURN")
-        return normalized
-
-    @field_validator("replacementConditionWhileProviding")
-    @classmethod
-    def validate_replacement_condition(cls, value: str) -> str:
-        normalized = _normalize_enum(value)
-        if normalized not in ASSET_CONDITIONS:
-            raise ValueError("Invalid replacement condition")
-        return normalized
-
-
-class AssetSwapExecutionResponse(BaseModel):
-    maintenanceId: str
-    revokedAssetId: str
-    revokedAssetUnitId: str | None
-    revokedStatus: str
-    replacementAssetId: str
-    replacementAssetUnitId: str
-    replacementMode: str
-    assignmentId: str
-    assignedMemberId: str
-    assignedMemberName: str | None
-
-
 # ── Replacement Schemas ─────────────────────────────────────────────────────
 
 
@@ -924,6 +877,21 @@ class ReplacementRaiseAppraisalRequest(BaseModel):
 
 class SetReturnDateRequest(BaseModel):
     expectedReturnDate: str
+
+
+class MemberAssignedAssetResponse(BaseModel):
+    id: str
+    assetId: str
+    assetCode: str
+    name: str
+    brand: str | None = None
+    model: str | None = None
+    category: str
+    serialNumber: str | None = None
+    unitSerial: str | None = None
+    status: str
+    condition: str | None = None
+    providedDate: datetime | None = None
 
 
 class MemberTicketSummary(BaseModel):

@@ -117,7 +117,7 @@ async def update_employee_role(
 
 @router.get("/me", response_model=EmployeeDetailResponse)
 async def get_my_employee_profile(
-    ctx: Annotated[MemberContext, Depends(require_permission("employees", "view"))],
+    ctx: Annotated[MemberContext, Depends(require_permission("employees", "view", allow_self=True))],
     db: AsyncSession = Depends(get_db),
 ) -> EmployeeDetailResponse:
     """Return the calling member's own employee profile (for account settings)."""

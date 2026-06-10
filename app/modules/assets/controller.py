@@ -22,12 +22,9 @@ from app.modules.assets.schema import (
     AssetMaintenanceUpdateRequest,
     AssetMetaResponse,
     AssetOsDistributionResponse,
-    AssetRevokeSwapRequest,
     AssetReportRequest,
     AssetReturnRequest,
     AssetReturnRequestedResponse,
-    AssetSwapExecutionResponse,
-    AssetSwapPreviewResponse,
     AssetUpsertRequest,
     AvailableAssetGroupResponse,
     BulkAssetCreateRequest,
@@ -38,11 +35,12 @@ from app.modules.assets.schema import (
     MaintenanceTicketResponse,
     MyTicketResponse,
     WarrantyExpirationFeedResponse,
+    MemberAssignedAssetResponse,
+    MemberTicketSummary,
     ReplacementRecord,
     ReplacementProvideRequest,
     ReplacementRaiseAppraisalRequest,
     SetReturnDateRequest,
-    MemberTicketSummary,
 )
 from app.modules.assets.service import (
     bulk_create_assets,
@@ -58,7 +56,6 @@ from app.modules.assets.service import (
     export_asset_report,
     export_asset_report_pdf,
     export_asset_report_xlsx,
-    get_swap_preview,
     get_asset,
     get_employee_asset_view,
     get_brand_model_analytics,
@@ -72,6 +69,7 @@ from app.modules.assets.service import (
     list_assets,
     list_available_groups,
     list_categories,
+    list_member_assigned_assets,
     list_member_tickets,
     list_replacements,
     list_my_tickets,
@@ -82,7 +80,6 @@ from app.modules.assets.service import (
     return_asset,
     set_replacement_return_date,
     withdraw_helpdesk_ticket,
-    revoke_and_swap_asset,
     update_asset_id,
     update_category,
     update_category_field,
@@ -191,23 +188,6 @@ async def handle_update_maintenance_by_id(
     payload: AssetMaintenanceUpdateRequest,
 ) -> None:
     await update_maintenance_record_by_id(db, ctx, maintenance_id, payload)
-
-
-async def handle_get_swap_preview(
-    ctx: MemberContext,
-    db: AsyncSession,
-    maintenance_id: str,
-) -> AssetSwapPreviewResponse:
-    return await get_swap_preview(db, ctx, maintenance_id)
-
-
-async def handle_revoke_and_swap_asset(
-    ctx: MemberContext,
-    db: AsyncSession,
-    maintenance_id: str,
-    payload: AssetRevokeSwapRequest,
-) -> AssetSwapExecutionResponse:
-    return await revoke_and_swap_asset(db, ctx, maintenance_id, payload)
 
 
 async def handle_get_dashboard(ctx: MemberContext, db: AsyncSession) -> AssetDashboardResponse:
@@ -384,6 +364,14 @@ async def handle_issue_assets(
 
 
 # ── Replacement handlers ────────────────────────────────────────────────────
+
+
+async def handle_list_member_assigned_assets(
+    ctx: MemberContext,
+    db: AsyncSession,
+    member_id: str,
+) -> list[MemberAssignedAssetResponse]:
+    return await list_member_assigned_assets(db, ctx, member_id)
 
 
 async def handle_list_member_tickets(
