@@ -94,7 +94,7 @@ class ResendEmailService:
           <table role="presentation" cellpadding="0" cellspacing="0">
             <tr>
               <td style="border-radius:8px;" bgcolor="#00874a">
-                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Microsoft Teams</a>
+                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Google Meet</a>
               </td>
             </tr>
           </table>
@@ -107,7 +107,7 @@ class ResendEmailService:
             f"Your interview for {job_title} has been scheduled.\n"
             f"Stage: {stage_name}\n"
             f"Time: {starts_at_text}\n\n"
-            f"Microsoft Teams: {meeting_url}\n\n"
+            f"Google Meet: {meeting_url}\n\n"
             f"---\n"
             f"Kovan Labs\n"
         )
@@ -353,7 +353,7 @@ class ResendEmailService:
           <table role="presentation" cellpadding="0" cellspacing="0">
             <tr>
               <td style="border-radius:8px;" bgcolor="#00874a">
-                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Microsoft Teams</a>
+                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Google Meet</a>
               </td>
             </tr>
           </table>
@@ -366,7 +366,7 @@ class ResendEmailService:
             f"Your interview for {job_title} has been rescheduled.\n"
             f"Stage: {stage_name}\n"
             f"New time: {starts_at_text}\n\n"
-            f"Microsoft Teams: {meeting_url}\n\n"
+            f"Google Meet: {meeting_url}\n\n"
             f"---\n"
             f"Kovan Labs\n"
         )
@@ -389,7 +389,7 @@ class ResendEmailService:
           <table role="presentation" cellpadding="0" cellspacing="0">
             <tr>
               <td style="border-radius:8px;" bgcolor="#00874a">
-                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Microsoft Teams</a>
+                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Google Meet</a>
               </td>
             </tr>
           </table>
@@ -400,7 +400,7 @@ class ResendEmailService:
             f"Kovan Labs\n\n"
             f"Hello {candidate_name},\n\n"
             f"Your interview for {job_title} is ready to join.\n\n"
-            f"Microsoft Teams: {meeting_url}\n\n"
+            f"Google Meet: {meeting_url}\n\n"
             f"---\n"
             f"Kovan Labs\n"
         )
@@ -515,7 +515,7 @@ class ResendEmailService:
           <table role="presentation" cellpadding="0" cellspacing="0">
             <tr>
               <td style="border-radius:8px;" bgcolor="#00874a">
-                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Microsoft Teams</a>
+                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Google Meet</a>
               </td>
             </tr>
           </table>
@@ -536,7 +536,7 @@ class ResendEmailService:
             f"Your interview for {job_title} has been confirmed.\n"
             f"Interviewer: {interviewer_name}\n"
             f"Time: {starts_at_text}\n"
-            + (f"\nMicrosoft Teams: {meeting_url}\n" if meeting_url else "")
+            + (f"\nGoogle Meet: {meeting_url}\n" if meeting_url else "")
             + "\n---\nKovan Labs\n"
         )
         await self._send_email(to_email, subject, html, text)
@@ -557,7 +557,7 @@ class ResendEmailService:
           <table role="presentation" cellpadding="0" cellspacing="0">
             <tr>
               <td style="border-radius:8px;" bgcolor="#00874a">
-                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Microsoft Teams</a>
+                <a href="{meeting_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Join Google Meet</a>
               </td>
             </tr>
           </table>
@@ -576,7 +576,7 @@ class ResendEmailService:
             f"Hello {interviewer_name},\n\n"
             f"{candidate_name} has selected a time for the {job_title} interview.\n"
             f"Time: {starts_at_text}\n"
-            + (f"\nMicrosoft Teams: {meeting_url}\n" if meeting_url else "")
+            + (f"\nGoogle Meet: {meeting_url}\n" if meeting_url else "")
             + "\n---\nKovan Labs\n"
         )
         await self._send_email(to_email, subject, html, text)
