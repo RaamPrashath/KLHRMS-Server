@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -76,6 +77,32 @@ class WeeklyPlanRead(BaseModel):
     date: date
     work_location: PlanLocationValue
     project: str | None
+
+
+class PlanExportEmployee(BaseModel):
+    id: str
+    name: str
+    email: str | None = None
+
+
+class PlanExportRow(BaseModel):
+    user_id: str
+    user_name: str | None = None
+    date: date
+    work_location: PlanLocationValue
+    project: str | None = None
+
+
+PlanExportFormat = Literal["xlsx", "pdf", "csv"]
+
+
+class PlanExportRequest(BaseModel):
+    format: PlanExportFormat
+    title: str | None = None
+    periodLabel: str | None = None
+    dateColumns: list[str] | None = None
+    employees: list[PlanExportEmployee] = Field(default_factory=list)
+    rows: list[PlanExportRow] = Field(default_factory=list)
 
 
 def build_location_options() -> list[PlanLocationOptionRead]:

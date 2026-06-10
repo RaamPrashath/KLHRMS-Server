@@ -26,11 +26,13 @@ router = APIRouter(prefix="/attendance-report", tags=["attendance-report"])
 _MIME_TYPES: dict[str, str] = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pdf": "application/pdf",
+    "csv": "text/csv",
 }
 
 _FILE_EXTENSIONS: dict[str, str] = {
     "xlsx": "xlsx",
     "pdf": "pdf",
+    "csv": "csv",
 }
 
 AttendanceReportCtx = Annotated[

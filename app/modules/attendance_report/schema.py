@@ -67,7 +67,7 @@ class AttendanceReportListResponse(BaseModel):
     summary: AttendanceReportSummary
 
 
-AttendanceReportExportFormat = Literal["xlsx", "pdf"]
+AttendanceReportExportFormat = Literal["xlsx", "pdf", "csv"]
 AttendanceReportExportMode = Literal["report", "timesheet"]
 
 

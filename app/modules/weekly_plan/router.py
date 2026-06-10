@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.weekly_plan.permissions import (
@@ -12,7 +13,9 @@ from app.modules.weekly_plan.permissions import (
     require_weekly_plan_permission,
 )
 from app.modules.weekly_plan.repository import MonthlyPlanRepository, WeeklyPlanRepository
+from app.modules.weekly_plan.export_service import generate_plan_export
 from app.modules.weekly_plan.schema import (
+    PlanExportRequest,
     PlanLocationOptionRead,
     WeeklyPlanBulkSaveRequest,
     WeeklyPlanDayCreate,
@@ -71,6 +74,21 @@ async def get_my_monthly_plan(
     auth: WeeklyPlanAccessContext = Depends(require_weekly_plan_permission("view")),
 ) -> list[WeeklyPlanRead]:
     return await build_service(db, auth).get_my_month(year=year, month=month)
+
+
+@router.get(
+    "/team/month",
+    response_model=list[WeeklyPlanRead],
+    status_code=status.HTTP_200_OK,
+    summary="Get team monthly plans",
+)
+async def get_team_monthly_plan(
+    year: int = Query(ge=2000, le=2100),
+    month: int = Query(ge=1, le=12),
+    db: AsyncSession = Depends(get_async_db),
+    auth: WeeklyPlanAccessContext = Depends(require_weekly_plan_permission("view")),
+) -> list[WeeklyPlanRead]:
+    return await build_service(db, auth).get_team_month(year=year, month=month)
 
 
 @router.get(
@@ -137,3 +155,32 @@ async def save_monthly_plan(
     auth: WeeklyPlanAccessContext = Depends(require_weekly_plan_permission("edit")),
 ) -> list[WeeklyPlanRead]:
     return await build_service(db, auth).save_month(year=year, month=month, body=body)
+
+
+_CONTENT_TYPE_MAP = {
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pdf": "application/pdf",
+    "csv": "text/csv",
+}
+
+_FILENAME_EXT = {"xlsx": "xlsx", "pdf": "pdf", "csv": "csv"}
+
+
+@router.post(
+    "/export",
+    status_code=status.HTTP_200_OK,
+    summary="Export weekly plans",
+)
+async def export_weekly_plans(
+    body: PlanExportRequest,
+    db: AsyncSession = Depends(get_async_db),
+    auth: WeeklyPlanAccessContext = Depends(require_weekly_plan_permission("view")),
+) -> StreamingResponse:
+    data = generate_plan_export(body)
+    content_type = _CONTENT_TYPE_MAP.get(body.format, "application/octet-stream")
+    filename = f"plan-export.{_FILENAME_EXT.get(body.format, 'bin')}"
+    return StreamingResponse(
+        iter([data]),
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

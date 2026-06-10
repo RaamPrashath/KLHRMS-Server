@@ -119,6 +119,27 @@ class WeeklyPlanService:
         entries = self._merge_entries_by_date(weekly_entries, monthly_entries)
         return [WeeklyPlanRead.model_validate(entry) for entry in entries]
 
+    async def get_team_month(self, year: int, month: int) -> list[WeeklyPlanRead]:
+        if self.auth.permission_scope != "organization":
+            raise HTTPException(status_code=403, detail="Organization scope is required for team plans")
+
+        entries = await self.weekly_repo.list_team_by_range(
+            start_date=_month_start(year, month),
+            end_date=_month_end(year, month),
+        )
+        return [
+            WeeklyPlanRead(
+                id=entry["id"],
+                organization_id=entry["organization_id"],
+                user_id=entry["user_id"],
+                user_name=entry.get("user_name"),
+                date=entry["date"],
+                work_location=entry["work_location"],
+                project=entry.get("project"),
+            )
+            for entry in entries
+        ]
+
     async def get_team_week(self, year: int, week: int) -> list[WeeklyPlanRead]:
         if self.auth.permission_scope != "organization":
             raise HTTPException(status_code=403, detail="Organization scope is required for team plans")

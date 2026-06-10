@@ -38,3 +38,5 @@ PLAN_LOCATION_OPTIONS = (
         "color": "#9333ea",
     },
 )
+
+PLAN_LOCATION_MAP = {opt["value"]: opt for opt in PLAN_LOCATION_OPTIONS}
