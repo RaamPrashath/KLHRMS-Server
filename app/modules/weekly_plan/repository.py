@@ -138,6 +138,32 @@ class WeeklyPlanRepository(BasePlanRepository):
             for plan, user_name in rows
         ]
 
+    async def list_team_by_range(self, start_date: date, end_date: date) -> list[dict]:
+        result = await self.db.execute(
+            select(WeeklyPlan, User.name.label("user_name"))
+            .outerjoin(User, User.id == WeeklyPlan.user_id)
+            .where(
+                WeeklyPlan.organization_id == self.organization_id,
+                WeeklyPlan.date >= start_date,
+                WeeklyPlan.date <= end_date,
+                WeeklyPlan.deleted_at.is_(None),
+            )
+            .order_by(WeeklyPlan.user_id.asc(), WeeklyPlan.date.asc())
+        )
+        rows = result.all()
+        return [
+            {
+                "id": plan.id,
+                "organization_id": plan.organization_id,
+                "user_id": plan.user_id,
+                "user_name": user_name,
+                "date": plan.date,
+                "work_location": plan.work_location,
+                "project": plan.project,
+            }
+            for plan, user_name in rows
+        ]
+
     async def set_day(
         self,
         user_id: str,

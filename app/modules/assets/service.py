@@ -26,7 +26,7 @@ from reportlab.platypus import (
 )
 from sqlalchemy import Select, extract, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import contains_eager, joinedload, selectinload
 
 from app.models.asset import Asset
 from app.models.asset_assignment import AssetAssignment
@@ -1666,18 +1666,18 @@ async def get_employee_asset_view(
             AssetAssignment.memberId == ctx.member.id,
         )
         .options(
-            joinedload(AssetAssignment.member).joinedload(Member.user),
-            joinedload(AssetAssignment.providedByMember).joinedload(Member.user),
-            joinedload(AssetAssignment.receivedByMember).joinedload(Member.user),
-            joinedload(AssetAssignment.asset).joinedload(Asset.units),
-            joinedload(AssetAssignment.asset).joinedload(Asset.maintenanceLogs),
-            joinedload(AssetAssignment.asset)
+            contains_eager(AssetAssignment.asset).joinedload(Asset.units),
+            contains_eager(AssetAssignment.asset).joinedload(Asset.maintenanceLogs),
+            contains_eager(AssetAssignment.asset)
             .joinedload(Asset.customFieldValues)
             .joinedload(AssetCustomFieldValue.fieldDefinition),
-            joinedload(AssetAssignment.asset)
+            contains_eager(AssetAssignment.asset)
             .joinedload(Asset.provisions)
             .joinedload(AssetAssignment.member)
             .joinedload(Member.user),
+            joinedload(AssetAssignment.member).joinedload(Member.user),
+            joinedload(AssetAssignment.providedByMember).joinedload(Member.user),
+            joinedload(AssetAssignment.receivedByMember).joinedload(Member.user),
         )
         .order_by(AssetAssignment.providedDate.desc(), AssetAssignment.createdAt.desc())
     )
@@ -2286,7 +2286,7 @@ async def get_returned_assets(
             AssetAssignment.returnDate.is_not(None),
         )
         .options(
-            joinedload(AssetAssignment.asset),
+            contains_eager(AssetAssignment.asset),
             joinedload(AssetAssignment.member).joinedload(Member.user),
         )
         .order_by(AssetAssignment.returnDate.desc())
@@ -2383,9 +2383,8 @@ async def list_member_assigned_assets(
         .join(Asset, Asset.id == AssetAssignment.assetId)
         .outerjoin(AssetUnit, AssetUnit.id == AssetAssignment.assetUnitId)
         .options(
-            joinedload(AssetAssignment.asset),
+            contains_eager(AssetAssignment.asset).joinedload(Asset.units),
             joinedload(AssetAssignment.member),
-            joinedload(AssetAssignment.asset).joinedload(Asset.units),
         )
         .where(
             Asset.organizationId == ctx.organization.id,
@@ -2429,7 +2428,7 @@ async def list_replacements(db: AsyncSession, ctx: MemberContext) -> list[Replac
             AssetAssignment.replacementAssignmentId.is_not(None),
         )
         .options(
-            joinedload(AssetAssignment.asset),
+            contains_eager(AssetAssignment.asset),
             joinedload(AssetAssignment.member).joinedload(Member.user),
             joinedload(AssetAssignment.receivedByMember).joinedload(Member.user),
         )

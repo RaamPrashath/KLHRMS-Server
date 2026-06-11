@@ -51,6 +51,8 @@ class AttendanceReportRow(BaseModel):
     projectName: str | None = None
     taskName: str | None = None
     clockOutDescription: str | None = None
+    leaveTypeName: str | None = None
+    entryType: str | None = None
 
 
 class AttendanceReportSummary(BaseModel):
@@ -67,7 +69,7 @@ class AttendanceReportListResponse(BaseModel):
     summary: AttendanceReportSummary
 
 
-AttendanceReportExportFormat = Literal["xlsx", "pdf"]
+AttendanceReportExportFormat = Literal["xlsx", "pdf", "csv"]
 AttendanceReportExportMode = Literal["report", "timesheet"]
 
 

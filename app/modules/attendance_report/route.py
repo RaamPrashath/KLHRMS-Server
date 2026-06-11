@@ -26,11 +26,13 @@ router = APIRouter(prefix="/attendance-report", tags=["attendance-report"])
 _MIME_TYPES: dict[str, str] = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pdf": "application/pdf",
+    "csv": "text/csv",
 }
 
 _FILE_EXTENSIONS: dict[str, str] = {
     "xlsx": "xlsx",
     "pdf": "pdf",
+    "csv": "csv",
 }
 
 AttendanceReportCtx = Annotated[
@@ -111,6 +113,8 @@ async def get_attendance_report(
                 projectName=row.project_name,
                 taskName=row.task_name,
                 clockOutDescription=row.clock_out_description,
+                leaveTypeName=row.leave_type_name,
+                entryType=row.entry_type,
             )
             for row in rows
         ],

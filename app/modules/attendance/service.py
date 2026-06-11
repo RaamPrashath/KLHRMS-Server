@@ -547,6 +547,7 @@ async def _upsert_day_row(
     project_task_id: str | None = None,
     description: str | None = None,
     is_remote: bool = False,
+    entry_type: str | None = None,
     commit: bool = True,
 ) -> AttendanceRecord:
     """
@@ -573,6 +574,7 @@ async def _upsert_day_row(
         existing.status = status
         existing.enteredByManagerId = entered_by_manager_id
         existing.isRemote = is_remote
+        existing.entryType = entry_type
         record = existing
     else:
         record = AttendanceRecord(
@@ -590,6 +592,7 @@ async def _upsert_day_row(
             status=status,
             enteredByManagerId=entered_by_manager_id,
             isRemote=is_remote,
+            entryType=entry_type,
         )
         db.add(record)
 
@@ -909,6 +912,7 @@ async def upsert_manual_day(
     day: date,
     clock_in_time: datetime | None,
     clock_out_time: datetime | None,
+    entry_type: str | None = None,
 ) -> AttendanceRecord:
     """
     Manually create or replace a single attendance day row.
@@ -917,20 +921,28 @@ async def upsert_manual_day(
     - Recomputes totals/status/overtime from provided clock times.
     - Sets enteredByManagerId to the actor.
     - Overwrites any existing row for that member/date.
+    - If entry_type is provided (LEAVE/COMP_OFF), bypasses leave check and marks the cell.
     """
     enforce_scope(actor_member_id, target_member_id, scope)
 
-    if await _check_day_has_approved_leave(db, organization_id, target_member_id, day):
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot manually edit attendance for a day with approved leave. The member must clock in/out instead.",
-        )
+    if entry_type is None:
+        if await _check_day_has_approved_leave(db, organization_id, target_member_id, day):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot manually edit attendance for a day with approved leave.",
+            )
 
     total_hours: float | None = None
     overtime_hours: float | None = None
     status = "ABSENT"
 
-    if clock_in_time is not None and clock_out_time is not None:
+    if entry_type == "LEAVE":
+        status = "ABSENT"
+        total_hours = 0
+    elif entry_type == "COMP_OFF":
+        status = "PRESENT"
+        total_hours = 0
+    elif clock_in_time is not None and clock_out_time is not None:
         ci = _normalize_attendance_datetime(clock_in_time)
         co = _normalize_attendance_datetime(clock_out_time)
 
@@ -958,6 +970,7 @@ async def upsert_manual_day(
         overtime_hours=overtime_hours,
         status=status,
         entered_by_manager_id=actor_member_id,
+        entry_type=entry_type,
     )
 
 

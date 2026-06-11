@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.assets.controller import (
@@ -18,6 +19,10 @@ from app.modules.assets.controller import (
     handle_delete_asset_id,
     handle_delete_category,
     handle_delete_category_field,
+    handle_export_register,
+    handle_export_issued,
+    handle_export_returned,
+    handle_export_inventory,
     handle_export_report,
     handle_export_report_pdf,
     handle_export_report_xlsx,
@@ -59,6 +64,7 @@ from app.modules.assets.schema import (
     AssetDashboardResponse,
     AssetDetailResponse,
     EmployeeAssetViewResponse,
+    AssetExportRequest,
     AssetFilters,
     AssetIdCreate,
     AssetIdResponse,
@@ -435,6 +441,79 @@ async def export_asset_report_xlsx_route(
     )
 
 
+def _export_response(
+    content: bytes | str,
+    fmt: str,
+    filename: str,
+) -> Response:
+    if fmt == "csv":
+        return Response(
+            content=content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}.csv"'},
+        )
+    elif fmt == "pdf":
+        return Response(
+            content=content,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}.pdf"'},
+        )
+    else:
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}.xlsx"'},
+        )
+
+
+@router.post("/export/register")
+async def export_register_route(
+    body: AssetExportRequest,
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> Response:
+    result = await handle_export_register(access, db, body)
+    return _export_response(result, body.format, "asset-register")
+
+
+@router.post("/export/issued")
+async def export_issued_route(
+    body: AssetExportRequest,
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> Response:
+    result = await handle_export_issued(access, db, body)
+    return _export_response(result, body.format, "issued-assets")
+
+
+@router.post("/export/returned")
+async def export_returned_route(
+    body: AssetExportRequest,
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> Response:
+    result = await handle_export_returned(access, db, body)
+    return _export_response(result, body.format, "returned-assets")
+
+
+@router.post("/export/inventory")
+async def export_inventory_route(
+    body: AssetExportRequest,
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "edit"))
+    ],
+    db: DbSession,
+) -> Response:
+    result = await handle_export_inventory(access, db, body)
+    return _export_response(result, body.format, "inventory")
+
+
 @router.post(
     "/bulk-create", response_model=list[AssetDetailResponse], status_code=status.HTTP_201_CREATED
 )
@@ -463,6 +542,73 @@ async def issue_assets_route(
     db: DbSession,
 ) -> AssetIssueResponse:
     return await handle_issue_assets(access, db, body)
+
+
+# ── Replacement Routes ──────────────────────────────────────────────────────
+
+
+@router.get("/replacements", response_model=list[ReplacementRecord])
+async def list_replacements_route(
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> list[ReplacementRecord]:
+    return await handle_list_replacements(access, db)
+
+
+@router.post(
+    "/replacement/provide",
+    response_model=ReplacementRecord,
+    status_code=status.HTTP_201_CREATED,
+)
+async def provide_replacement_route(
+    body: ReplacementProvideRequest,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> ReplacementRecord:
+    return await handle_provide_replacement(access, db, body)
+
+
+@router.post("/replacement/raise-appraisal")
+async def raise_replacement_appraisal_route(
+    body: ReplacementRaiseAppraisalRequest,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> dict:
+    return await handle_raise_replacement_appraisal(access, db, body)
+
+
+@router.patch("/replacements/{assignment_id}/return-date")
+async def set_replacement_return_date_route(
+    assignment_id: str,
+    body: SetReturnDateRequest,
+    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
+    db: DbSession,
+) -> dict:
+    return await handle_set_replacement_return_date(access, db, assignment_id, body)
+
+
+@router.get("/members/{member_id}/assigned-assets", response_model=list[MemberAssignedAssetResponse])
+async def list_member_assigned_assets_route(
+    member_id: str,
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> list[MemberAssignedAssetResponse]:
+    return await handle_list_member_assigned_assets(access, db, member_id)
+
+
+@router.get("/members/{member_id}/tickets", response_model=list[MemberTicketSummary])
+async def list_member_tickets_route(
+    member_id: str,
+    access: Annotated[
+        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
+    ],
+    db: DbSession,
+) -> list[MemberTicketSummary]:
+    return await handle_list_member_tickets(access, db, member_id)
 
 
 @router.post("/{asset_id}/request-return", response_model=AssetReturnRequestedResponse)
@@ -556,70 +702,3 @@ async def update_maintenance_by_id_route(
 ) -> Response:
     await handle_update_maintenance_by_id(access, db, maintenance_id, body)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-# ── Replacement Routes ──────────────────────────────────────────────────────
-
-
-@router.get("/members/{member_id}/assigned-assets", response_model=list[MemberAssignedAssetResponse])
-async def list_member_assigned_assets_route(
-    member_id: str,
-    access: Annotated[
-        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
-    ],
-    db: DbSession,
-) -> list[MemberAssignedAssetResponse]:
-    return await handle_list_member_assigned_assets(access, db, member_id)
-
-
-@router.get("/members/{member_id}/tickets", response_model=list[MemberTicketSummary])
-async def list_member_tickets_route(
-    member_id: str,
-    access: Annotated[
-        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
-    ],
-    db: DbSession,
-) -> list[MemberTicketSummary]:
-    return await handle_list_member_tickets(access, db, member_id)
-
-
-@router.get("/replacements", response_model=list[ReplacementRecord])
-async def list_replacements_route(
-    access: Annotated[
-        MemberContext, Depends(require_permission("assets", "view", allow_self=True))
-    ],
-    db: DbSession,
-) -> list[ReplacementRecord]:
-    return await handle_list_replacements(access, db)
-
-
-@router.post(
-    "/replacement/provide",
-    response_model=ReplacementRecord,
-    status_code=status.HTTP_201_CREATED,
-)
-async def provide_replacement_route(
-    body: ReplacementProvideRequest,
-    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
-    db: DbSession,
-) -> ReplacementRecord:
-    return await handle_provide_replacement(access, db, body)
-
-
-@router.post("/replacement/raise-appraisal")
-async def raise_replacement_appraisal_route(
-    body: ReplacementRaiseAppraisalRequest,
-    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
-    db: DbSession,
-) -> dict:
-    return await handle_raise_replacement_appraisal(access, db, body)
-
-
-@router.patch("/replacements/{assignment_id}/return-date")
-async def set_replacement_return_date_route(
-    assignment_id: str,
-    body: SetReturnDateRequest,
-    access: Annotated[MemberContext, Depends(require_permission("assets", "edit"))],
-    db: DbSession,
-) -> dict:
-    return await handle_set_replacement_return_date(access, db, assignment_id, body)

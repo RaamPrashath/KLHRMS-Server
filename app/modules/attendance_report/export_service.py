@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import html
 import io
 import re
@@ -399,11 +400,65 @@ def generate_timesheet_pdf(payload: AttendanceReportExportRequest) -> bytes:
     return buffer.getvalue()
 
 
+def generate_report_csv(payload: AttendanceReportExportRequest) -> bytes:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Employee", "Date", "Day", "Project", "Description", "Hours"])
+
+    grouped = _rows_by_employee(payload.rows)
+    employees = _employees_for_export(payload)
+
+    if not employees:
+        employees = [AttendanceReportExportEmployee(id="empty", name="No selected employees")]
+
+    for employee in employees:
+        employee_rows = grouped.get(employee.id, [])
+        for row in employee_rows:
+            writer.writerow([
+                _employee_name(employee),
+                _date_label(row.date),
+                _day_label(row.date),
+                _project_label(row),
+                _row_description(row),
+                _display_hours(row.totalHours, payload.force8),
+            ])
+
+    return output.getvalue().encode("utf-8-sig")
+
+
+def generate_timesheet_csv(payload: AttendanceReportExportRequest) -> bytes:
+    dates, employees, grouped = _build_timesheet_maps(payload)
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    headers = ["Employee", "Total Hours", *[str(day.day) for day in dates]]
+    writer.writerow(headers)
+    writer.writerow(["Day:", "", *[_short_day_label(day) for day in dates]])
+
+    for employee in employees:
+        by_date = grouped.get(employee.id, {})
+        row_values = [_employee_name(employee)]
+        total = 0.0
+        for day in dates:
+            report_row = by_date.get(day)
+            hours = _numeric_hours(report_row.totalHours, payload.force8) if report_row else 0.0
+            total += hours
+            row_values.append(f"{hours:.2f}" if hours else "")
+        row_values.insert(1, f"{total:.2f}" if total else "")
+        writer.writerow(row_values)
+
+    return output.getvalue().encode("utf-8-sig")
+
+
 def generate_attendance_report_export(payload: AttendanceReportExportRequest) -> bytes:
     if payload.mode == "report":
+        if payload.format == "csv":
+            return generate_report_csv(payload)
         if payload.format == "xlsx":
             return generate_report_xlsx(payload)
         return generate_report_pdf(payload)
+    if payload.format == "csv":
+        return generate_timesheet_csv(payload)
     if payload.format == "xlsx":
         return generate_timesheet_xlsx(payload)
     return generate_timesheet_pdf(payload)

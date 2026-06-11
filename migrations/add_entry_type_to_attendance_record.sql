@@ -1,0 +1,2 @@
+ALTER TABLE "attendanceRecord"
+ADD COLUMN "entryType" VARCHAR(20) DEFAULT NULL;
