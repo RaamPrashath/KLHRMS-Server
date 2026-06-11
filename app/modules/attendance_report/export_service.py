@@ -65,6 +65,9 @@ def _day_label(value: date) -> str:
 def _short_day_label(value: date) -> str:
     return value.strftime("%a")
 
+def _is_weekend(value: date) -> bool:
+    return value.weekday() >= 5
+
 
 def _display_hours(hours: float | None, force8: bool) -> float | str:
     if hours is None:
@@ -172,6 +175,8 @@ def generate_report_xlsx(payload: AttendanceReportExportRequest) -> bytes:
                 )
                 if col == 5 and value != "":
                     cell.number_format = "0.00"
+                if _is_weekend(row.date):
+                    cell.font = Font(color="FF0000")
             ws.row_dimensions[row_index].height = max(24, min(96, 18 + (_row_description(row).count("\n") + 1) * 12))
 
         total_row = len(employee_rows) + 3
@@ -222,13 +227,19 @@ def generate_timesheet_xlsx(payload: AttendanceReportExportRequest) -> bytes:
     ws.cell(row=2, column=1, value="Employee")
     ws.cell(row=2, column=2, value="Total Hours")
     for offset, day in enumerate(dates, start=3):
-        ws.cell(row=2, column=offset, value=str(day.day))
-        ws.cell(row=3, column=offset, value=_short_day_label(day))
+        is_weekend = _is_weekend(day)
+        for header_row in (2, 3):
+            val = str(day.day) if header_row == 2 else _short_day_label(day)
+            cell = ws.cell(row=header_row, column=offset, value=val)
+            cell.font = Font(bold=True, color="FF0000" if is_weekend else ("FFFFFF" if header_row == 2 else "1D1D1F"))
+            cell.fill = PatternFill("solid", fgColor=_HEADER_FILL if header_row == 2 else _TITLE_FILL)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = _GRID_BORDER
     ws.cell(row=3, column=1, value="Day:")
     ws.cell(row=3, column=2, value="")
 
-    for row in (2, 3):
-        for col in range(1, total_cols + 1):
+    for col in (1, 2):
+        for row in (2, 3):
             cell = ws.cell(row=row, column=col)
             cell.font = Font(bold=True, color="FFFFFF" if row == 2 else "1D1D1F")
             cell.fill = PatternFill("solid", fgColor=_HEADER_FILL if row == 2 else _TITLE_FILL)
@@ -237,19 +248,23 @@ def generate_timesheet_xlsx(payload: AttendanceReportExportRequest) -> bytes:
 
     for row_index, employee in enumerate(employees, start=4):
         employee_rows = grouped.get(employee.id, {})
-        ws.cell(row=row_index, column=1, value=_employee_name(employee))
-        ws.cell(row=row_index, column=2, value=f"=SUM(C{row_index}:{get_column_letter(total_cols)}{row_index})")
-        ws.cell(row=row_index, column=2).number_format = "0.00"
+        name_cell = ws.cell(row=row_index, column=1, value=_employee_name(employee))
+        name_cell.border = _GRID_BORDER
+        name_cell.alignment = Alignment(horizontal="left", vertical="center")
+        total_cell = ws.cell(row=row_index, column=2, value=f"=SUM(C{row_index}:{get_column_letter(total_cols)}{row_index})")
+        total_cell.number_format = "0.00"
+        total_cell.border = _GRID_BORDER
+        total_cell.alignment = Alignment(horizontal="center", vertical="center")
         for offset, day in enumerate(dates, start=3):
             report_row = employee_rows.get(day)
             value = _display_hours(report_row.totalHours, payload.force8) if report_row else ""
             cell = ws.cell(row=row_index, column=offset, value=value)
+            cell.border = _GRID_BORDER
+            cell.alignment = Alignment(horizontal="center", vertical="center")
             if value != "":
                 cell.number_format = "0.00"
-        for col in range(1, total_cols + 1):
-            cell = ws.cell(row=row_index, column=col)
-            cell.border = _GRID_BORDER
-            cell.alignment = Alignment(horizontal="left" if col == 1 else "center", vertical="center")
+            if _is_weekend(day):
+                cell.font = Font(color="FF0000")
         ws.row_dimensions[row_index].height = 22
 
     ws.column_dimensions["A"].width = 32
@@ -298,7 +313,10 @@ def generate_report_pdf(payload: AttendanceReportExportRequest) -> bytes:
         story.append(Spacer(1, 4 * mm))
 
         table_data: list[list[object]] = [_REPORT_HEADERS]
-        for row in grouped.get(employee.id, []):
+        weekend_rows: list[int] = []
+        for idx, row in enumerate(grouped.get(employee.id, []), start=1):
+            if _is_weekend(row.date):
+                weekend_rows.append(idx)
             table_data.append(
                 [
                     _date_label(row.date),
@@ -312,27 +330,26 @@ def generate_report_pdf(payload: AttendanceReportExportRequest) -> bytes:
         total = sum(_numeric_hours(row.totalHours, payload.force8) for row in grouped.get(employee.id, []))
         table_data.append(["", "", "", "Total Hours:", f"{total:.2f}" if total else "", ""])
 
+        style_cmds: list[object] = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(f"#{_HEADER_FILL}")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D9E2EC")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (0, 0), (2, -1), "CENTER"),
+            ("ALIGN", (4, 1), (4, -1), "CENTER"),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor(f"#{_SUBTOTAL_FILL}")),
+            ("FONTNAME", (3, -1), (4, -1), "Helvetica-Bold"),
+        ]
+        for r in weekend_rows:
+            style_cmds.append(("TEXTCOLOR", (0, r), (-1, r), colors.red))
         table = Table(
             table_data,
             colWidths=[24 * mm, 24 * mm, 38 * mm, 108 * mm, 18 * mm, 54 * mm],
             repeatRows=1,
         )
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(f"#{_HEADER_FILL}")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 8),
-                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D9E2EC")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ALIGN", (0, 0), (2, -1), "CENTER"),
-                    ("ALIGN", (4, 1), (4, -1), "CENTER"),
-                    ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor(f"#{_SUBTOTAL_FILL}")),
-                    ("FONTNAME", (3, -1), (4, -1), "Helvetica-Bold"),
-                ]
-            )
-        )
+        table.setStyle(TableStyle(style_cmds))
         story.append(table)
 
     if not story:
@@ -378,23 +395,26 @@ def generate_timesheet_pdf(payload: AttendanceReportExportRequest) -> bytes:
     employee_width = 52 * mm
     total_width = 20 * mm
     day_width = max((usable_width - employee_width - total_width) / max(len(dates), 1), 7 * mm)
+    weekend_cols: list[int] = []
+    for idx, day in enumerate(dates):
+        if _is_weekend(day):
+            weekend_cols.append(2 + idx)
+    style_cmds: list[object] = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(f"#{_HEADER_FILL}")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor(f"#{_TITLE_FILL}")),
+        ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#D9E2EC")),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("ALIGN", (0, 2), (0, -1), "LEFT"),
+        ("FONTNAME", (0, 2), (1, -1), "Helvetica-Bold"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]
+    for c in weekend_cols:
+        style_cmds.append(("TEXTCOLOR", (c, 0), (c, -1), colors.red))
     table = Table(table_data, colWidths=[employee_width, total_width, *([day_width] * len(dates))], repeatRows=2)
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(f"#{_HEADER_FILL}")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor(f"#{_TITLE_FILL}")),
-                ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 7),
-                ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#D9E2EC")),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("ALIGN", (0, 2), (0, -1), "LEFT"),
-                ("FONTNAME", (0, 2), (1, -1), "Helvetica-Bold"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ]
-        )
-    )
+    table.setStyle(TableStyle(style_cmds))
     story.append(table)
     doc.build(story)
     return buffer.getvalue()

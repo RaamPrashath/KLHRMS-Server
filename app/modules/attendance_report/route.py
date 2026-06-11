@@ -139,8 +139,6 @@ async def export_attendance_report(
     ctx: AttendanceReportCtx,
 ) -> StreamingResponse:
     _ensure_organization_scope(ctx)
-    if not body.employees:
-        raise HTTPException(status_code=422, detail="Select at least one employee to export")
 
     content = generate_attendance_report_export(body)
     import io
