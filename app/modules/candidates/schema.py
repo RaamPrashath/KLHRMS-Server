@@ -108,12 +108,14 @@ class StageWorkspaceInterviewerRead(BaseModel):
 
 class StageWorkspaceAssignmentRead(BaseModel):
     eventId: str
+    stageSlug: str | None = None
     interviewer: StageWorkspaceInterviewerRead | None
     scheduledStartAt: datetime | None
     scheduledEndAt: datetime | None
     meetLink: str | None = None
     status: str
     emailSentAt: datetime | None
+    proposedSlots: list[PublicProposedSlotRead] = Field(default_factory=list)
 
 
 class StageWorkspaceCandidateRead(BaseModel):
@@ -226,6 +228,8 @@ class PublicProposedSlotRead(BaseModel):
     id: str
     startTime: datetime
     endTime: datetime
+    proposedBy: Literal["INTERVIEWER", "CANDIDATE"] = "INTERVIEWER"
+    note: str | None = None
 
 
 class PublicSlotListResponse(BaseModel):
@@ -233,10 +237,21 @@ class PublicSlotListResponse(BaseModel):
     jobTitle: str
     interviewerName: str
     candidateToken: str
+    stageDueDate: datetime | None = None
     slots: list[PublicProposedSlotRead]
 
 
 class PublicSlotSelectResponse(BaseModel):
+    message: str
+
+
+class CandidateSlotProposalRequest(BaseModel):
+    proposedSlots: list[ProposedSlotInput] = Field(min_length=1)
+    durationMinutes: int = Field(default=30, ge=15, le=240)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class CandidateSlotProposalResponse(BaseModel):
     message: str
 
 
@@ -247,11 +262,17 @@ class InterviewRejectResponse(BaseModel):
     warnings: list[StageInterviewWarningRead]
 
 
+class InterviewRejectRequest(BaseModel):
+    mode: Literal["AUTO", "REASSIGN", "UNASSIGN"] = "AUTO"
+    newInterviewerMemberId: str | None = None
+
+
 class MyInterviewRead(BaseModel):
     eventId: str
     applicationId: str
     stageId: str
     stageName: str
+    stageSlug: str | None = None
     candidate: CandidateSummaryRead
     jobTitle: str
     jobPostingId: str

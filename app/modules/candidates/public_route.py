@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.candidates.schema import (
+    CandidateSlotProposalRequest,
+    CandidateSlotProposalResponse,
     FeedbackInfoResponse,
     FeedbackSubmitRequest,
     FeedbackSubmitResponse,
@@ -14,6 +16,7 @@ from app.modules.candidates.schema import (
 from app.modules.candidates.service import (
     get_candidate_slots_by_token,
     get_feedback_info_by_token,
+    propose_candidate_slots,
     select_candidate_slot,
     submit_candidate_feedback,
 )
@@ -33,6 +36,7 @@ async def list_candidate_slots(
         jobTitle=result["jobTitle"],
         interviewerName=result["interviewerName"],
         candidateToken=result["candidateToken"],
+        stageDueDate=result["stageDueDate"],
         slots=[PublicProposedSlotRead(**s) for s in result["slots"]],
     )
 
@@ -45,6 +49,16 @@ async def select_slot(
 ) -> PublicSlotSelectResponse:
     result = await select_candidate_slot(db, token, slot_id)
     return PublicSlotSelectResponse(message=result["message"])
+
+
+@router.post("/{token}/slots/propose", response_model=CandidateSlotProposalResponse)
+async def propose_slots(
+    token: str,
+    body: CandidateSlotProposalRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CandidateSlotProposalResponse:
+    result = await propose_candidate_slots(db, token, body)
+    return CandidateSlotProposalResponse(message=result["message"])
 
 
 @router.get("/{token}/feedback", response_model=FeedbackInfoResponse)

@@ -499,6 +499,48 @@ class ResendEmailService:
         )
         await self._send_email(to_email, subject, html, text)
 
+    async def send_interview_slot_reminder(
+        self,
+        to_email: str,
+        candidate_name: str,
+        interviewer_name: str,
+        job_title: str,
+        organization_name: str,
+        candidate_token: str,
+    ) -> None:
+        base_url = self.settings.public_app_url.rstrip("/")
+        slot_url = f"{base_url}/interview/{candidate_token}"
+
+        subject = f"Reminder: Choose your interview time with {organization_name}"
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {candidate_name},</p>
+          <p style="margin:0 0 16px;">This is a friendly reminder to choose your interview time for <strong>{job_title}</strong>.</p>
+          <p style="margin:0 0 16px;">Please pick a slot that works best for you at your earliest convenience.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 8px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Interviewer</td><td style="padding:2px 0;font-size:14px;">{interviewer_name}</td></tr>
+          </table>
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{slot_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Choose Your Interview Time</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If the button does not work, open this link:<br /><a href="{slot_url}" style="color:#00874a;">{slot_url}</a></p>
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {candidate_name},\n\n"
+            f"This is a friendly reminder to choose your interview time for {job_title}.\n\n"
+            f"Interviewer: {interviewer_name}\n\n"
+            f"Please pick your preferred time here:\n"
+            f"{slot_url}\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
     async def send_interview_slot_confirmation_to_candidate(
         self,
         to_email: str,
@@ -578,6 +620,76 @@ class ResendEmailService:
             f"Time: {starts_at_text}\n"
             + (f"\nGoogle Meet: {meeting_url}\n" if meeting_url else "")
             + "\n---\nKovan Labs\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
+    async def send_candidate_slot_proposal_acknowledgement(
+        self,
+        to_email: str,
+        candidate_name: str,
+        interviewer_name: str,
+        job_title: str,
+        proposed_slots_text: str,
+    ) -> None:
+        subject = f"We received your interview availability - {job_title}"
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {candidate_name},</p>
+          <p style="margin:0 0 16px;">Thank you for sharing alternate interview slots for <strong>{job_title}</strong>. We have sent them to {interviewer_name} for review.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 8px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Proposed slots</td><td style="padding:2px 0;font-size:14px;white-space:pre-line;">{proposed_slots_text}</td></tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">We will email you once a time is confirmed.</p>
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {candidate_name},\n\n"
+            f"Thank you for sharing alternate interview slots for {job_title}. "
+            f"We have sent them to {interviewer_name} for review.\n\n"
+            f"Proposed slots:\n{proposed_slots_text}\n\n"
+            f"We will email you once a time is confirmed.\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
+    async def send_candidate_slot_proposal_to_interviewer(
+        self,
+        to_email: str,
+        interviewer_name: str,
+        candidate_name: str,
+        candidate_email: str,
+        job_title: str,
+        proposed_slots_text: str,
+        note: str | None,
+    ) -> None:
+        subject = f"Candidate proposed interview slots - {candidate_name}"
+        note_block = ""
+        if note:
+            safe_note = escape(note)
+            note_block = f"""
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Note</td><td style="padding:2px 0;font-size:14px;">{safe_note}</td></tr>
+            """
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {interviewer_name},</p>
+          <p style="margin:0 0 16px;"><strong>{candidate_name}</strong> proposed alternate slots for the <strong>{job_title}</strong> interview.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 8px;">
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Candidate email</td><td style="padding:2px 0;font-size:14px;">{candidate_email}</td></tr>
+            <tr><td style="padding:2px 0;font-size:14px;color:#6e6e73;padding-right:12px;">Proposed slots</td><td style="padding:2px 0;font-size:14px;white-space:pre-line;">{proposed_slots_text}</td></tr>
+            {note_block}
+          </table>
+          <p style="margin:16px 0 0;">Open My Interviews in HRMS to book one of these slots.</p>
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {interviewer_name},\n\n"
+            f"{candidate_name} proposed alternate slots for the {job_title} interview.\n"
+            f"Candidate email: {candidate_email}\n\n"
+            f"Proposed slots:\n{proposed_slots_text}\n"
+            + (f"\nNote: {note}\n" if note else "")
+            + "\nOpen My Interviews in HRMS to book one of these slots.\n\n"
+            + "---\nKovan Labs\n"
         )
         await self._send_email(to_email, subject, html, text)
 

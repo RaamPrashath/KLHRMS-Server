@@ -1554,6 +1554,16 @@ class StageEvent(Base):
 
     emailSentAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
+    slotInvitationSentAt: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    lastSlotReminderSentAt: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     candidateToken: Mapped[str | None] = mapped_column(
         String,
         unique=True,
@@ -1737,6 +1747,14 @@ class StageEventProposedSlot(Base):
         nullable=False,
         default=False,
     )
+
+    proposedBy: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="INTERVIEWER",
+    )
+
+    note: Mapped[str | None] = mapped_column(Text)
 
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),

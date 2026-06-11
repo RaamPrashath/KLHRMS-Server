@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Body, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.candidates.controller import (
     handle_accept_interview,
     handle_assign_stage_interviews,
+    handle_book_candidate_proposed_slot,
     handle_complete_interview_meeting,
     handle_complete_stage,
     handle_create_application_note,
@@ -51,6 +52,7 @@ from app.modules.candidates.schema import (
     InterviewMeetingUpdateRequest,
     InterviewMoveRequest,
     InterviewMoveResponse,
+    InterviewRejectRequest,
     InterviewRejectResponse,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
@@ -379,9 +381,20 @@ async def accept_interview(
 async def reject_interview(
     event_id: str,
     ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit", allow_self=True))],
+    body: InterviewRejectRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> InterviewRejectResponse:
-    return await handle_reject_interview(ctx, db, event_id)
+    return await handle_reject_interview(ctx, db, event_id, body)
+
+
+@router.post("/interviews/{event_id}/slots/{slot_id}/book", response_model=InterviewMeetingRead)
+async def book_candidate_slot(
+    event_id: str,
+    slot_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("interviews", "edit", allow_self=True))],
+    db: AsyncSession = Depends(get_db),
+) -> InterviewMeetingRead:
+    return await handle_book_candidate_proposed_slot(ctx, db, event_id, slot_id)
 
 
 @router.post("/interviews/{event_id}/reassignment-requests")

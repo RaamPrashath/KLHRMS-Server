@@ -17,6 +17,7 @@ from app.modules.candidates.schema import (
     InterviewMeetingUpdateRequest,
     InterviewMoveRequest,
     InterviewMoveResponse,
+    InterviewRejectRequest,
     InterviewRejectResponse,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
@@ -355,6 +356,7 @@ async def handle_reject_interview(
     ctx: MemberContext,
     db: AsyncSession,
     event_id: str,
+    body: InterviewRejectRequest | None = None,
 ) -> InterviewRejectResponse:
     return await service.reject_interview(
         db,
@@ -362,6 +364,24 @@ async def handle_reject_interview(
         ctx.organization.name,
         ctx.member.id,
         event_id,
+        body,
+    )
+
+
+async def handle_book_candidate_proposed_slot(
+    ctx: MemberContext,
+    db: AsyncSession,
+    event_id: str,
+    slot_id: str,
+) -> InterviewMeetingRead:
+    return await service.book_candidate_proposed_slot(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        ctx.member.userId,
+        event_id,
+        slot_id,
     )
 
 

@@ -4,7 +4,8 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
+from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.email.resend_service import ResendEmailService
@@ -34,6 +35,7 @@ from app.modules.candidates.schema import (
     CandidateApplicationNoteRead,
     CandidateApplicationNoteUpdateRequest,
     CandidateApplicationUpdateRequest,
+    CandidateSlotProposalRequest,
     CandidateSummaryRead,
     FeedbackInfoResponse,
     FeedbackSubmitRequest,
@@ -49,6 +51,7 @@ from app.modules.candidates.schema import (
     InterviewMoveRequest,
     InterviewMoveResponse,
     InterviewParticipantRead,
+    InterviewRejectRequest,
     InterviewRejectResponse,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
@@ -516,6 +519,107 @@ def _primary_participant(event: StageEvent) -> StageEventParticipant | None:
     return None
 
 
+def _slot_proposed_by(slot: StageEventProposedSlot) -> str:
+    value = (slot.proposedBy or "INTERVIEWER").strip().upper()
+    return "CANDIDATE" if value == "CANDIDATE" else "INTERVIEWER"
+
+
+def _slot_to_read(slot: StageEventProposedSlot) -> PublicProposedSlotRead:
+    return PublicProposedSlotRead(
+        id=slot.id,
+        startTime=slot.startTime,
+        endTime=slot.endTime,
+        proposedBy=_slot_proposed_by(slot),
+        note=slot.note,
+    )
+
+
+def _active_proposed_slots(event: StageEvent) -> list[StageEventProposedSlot]:
+    return [
+        slot
+        for slot in (event.proposedSlots or [])
+        if not slot.isSelectedByCandidate
+    ]
+
+
+def _interview_display_status(
+    event: StageEvent | None,
+    participant: StageEventParticipant | None = None,
+) -> str:
+    if event is None:
+        return "UNASSIGNED"
+    if participant is None:
+        participant = _primary_participant(event)
+
+    participant_status = (participant.approvalStatus if participant is not None else None) or ""
+    if participant_status == "PENDING":
+        participant_status = "PENDING_ACCEPTANCE"
+    if participant_status == "REJECTED":
+        return "REJECTED"
+
+    application = event.__dict__.get("application")
+    if application is not None and application.pipelineStageId != event.stageId:
+        return "CLOSED"
+
+    if event.status == EventStatus.COMPLETED:
+        return "COMPLETED"
+    if event.status == EventStatus.ONGOING:
+        return "ONGOING"
+    if event.status == EventStatus.CANCELLED:
+        return "UNASSIGNED"
+
+    if participant_status == "PENDING_ACCEPTANCE":
+        return "PENDING_ACCEPTANCE"
+
+    if event.scheduledStartAt is not None and event.scheduledEndAt is not None:
+        return "SCHEDULED"
+
+    active_slots = _active_proposed_slots(event)
+    if any(_slot_proposed_by(slot) == "CANDIDATE" for slot in active_slots):
+        return "PENDING_INTERVIEWER"
+    if any(_slot_proposed_by(slot) == "INTERVIEWER" for slot in active_slots):
+        return "CANDIDATE_PENDING"
+
+    if participant_status in {"ACCEPTED", "PENDING_CANDIDATE", "PENDING_CANDIDATE_ACCEPTANCE"}:
+        return "CANDIDATE_PENDING"
+    if participant_status == "SCHEDULED":
+        return "SCHEDULED"
+
+    computed = _computed_interview_status(event)
+    return "SCHEDULED" if computed == "PENDING" else computed
+
+
+def _normalize_proposed_slot_inputs(
+    event: StageEvent,
+    proposed_slots: list,
+) -> list[tuple[datetime, datetime]]:
+    now = datetime.now(UTC)
+    normalized_slots: list[tuple[datetime, datetime]] = []
+    for slot in proposed_slots:
+        starts_at = slot.startTime
+        ends_at = slot.endTime
+        if starts_at.tzinfo is None:
+            starts_at = starts_at.replace(tzinfo=UTC)
+        if ends_at.tzinfo is None:
+            ends_at = ends_at.replace(tzinfo=UTC)
+        starts_at = starts_at.astimezone(UTC)
+        ends_at = ends_at.astimezone(UTC)
+
+        if starts_at < now:
+            raise HTTPException(status_code=400, detail="Interview cannot be scheduled in the past")
+        if ends_at <= starts_at:
+            raise HTTPException(status_code=400, detail="End time must be after start time")
+        if event.stage is not None and event.stage.dueDate is not None:
+            due_date = event.stage.dueDate
+            if due_date.tzinfo is None:
+                due_date = due_date.replace(tzinfo=UTC)
+            if starts_at > due_date.astimezone(UTC):
+                raise HTTPException(status_code=400, detail="Interview cannot be scheduled after the stage due date")
+
+        normalized_slots.append((starts_at, ends_at))
+    return normalized_slots
+
+
 def _is_primary_interviewer(event: StageEvent, member_id: str) -> bool:
     participant = _primary_participant(event)
     return (
@@ -548,19 +652,20 @@ def _serialize_workspace_assignment(event: StageEvent | None) -> StageWorkspaceA
     interviewer = None
     if primary is not None and primary.member is not None:
         interviewer = _serialize_interviewer(primary.member)
-    status = event.status.value if event.status in {EventStatus.ONGOING, EventStatus.COMPLETED} else (
-        primary.approvalStatus if primary is not None else event.status.value
-    )
-    if status == "PENDING":
-        status = "PENDING_ACCEPTANCE"
+    status = _interview_display_status(event, primary)
     return StageWorkspaceAssignmentRead(
         eventId=event.id,
+        stageSlug=event.__dict__.get("stage").slug if event.__dict__.get("stage") is not None else None,
         interviewer=interviewer,
         scheduledStartAt=event.scheduledStartAt,
         scheduledEndAt=event.scheduledEndAt,
         meetLink=event.meetingUrl,
         status=status,
         emailSentAt=event.emailSentAt,
+        proposedSlots=[
+            _slot_to_read(slot)
+            for slot in sorted(_active_proposed_slots(event), key=lambda item: item.startTime)
+        ],
     )
 
 
@@ -811,13 +916,6 @@ async def move_application_stage(
     )
     if _computed_interview_status(current_event) == "ONGOING":
         raise HTTPException(status_code=400, detail="Candidate cannot be moved while an interview is ongoing")
-    if current_event is not None and current_event.status not in {
-        EventStatus.COMPLETED,
-        EventStatus.CANCELLED,
-    }:
-        current_event.status = EventStatus.COMPLETED
-        current_event.completedByMemberId = actor_member_id
-        db.add(current_event)
 
     from_stage_id = application.pipelineStageId
     application.pipelineStageId = target_stage.id
@@ -1690,35 +1788,13 @@ async def accept_interview(
     if participant.approvalStatus == "REJECTED":
         raise HTTPException(status_code=400, detail="Rejected assignments cannot be accepted")
 
-    now = datetime.now(UTC)
     is_reschedule = (
         event.status in {EventStatus.SCHEDULED, EventStatus.ONGOING, EventStatus.COMPLETED}
         or participant.approvalStatus == "SCHEDULED"
     )
 
-    normalized_slots: list[tuple[datetime, datetime]] = []
-    for slot in body.proposedSlots:
-        starts_at = slot.startTime
-        ends_at = slot.endTime
-        if starts_at.tzinfo is None:
-            starts_at = starts_at.replace(tzinfo=UTC)
-        if ends_at.tzinfo is None:
-            ends_at = ends_at.replace(tzinfo=UTC)
-        starts_at = starts_at.astimezone(UTC)
-        ends_at = ends_at.astimezone(UTC)
-
-        if starts_at < now:
-            raise HTTPException(status_code=400, detail="Interview cannot be scheduled in the past")
-        if ends_at <= starts_at:
-            raise HTTPException(status_code=400, detail="End time must be after start time")
-        if event.stage is not None and event.stage.dueDate is not None:
-            due_date = event.stage.dueDate
-            if due_date.tzinfo is None:
-                due_date = due_date.replace(tzinfo=UTC)
-            if starts_at > due_date.astimezone(UTC):
-                raise HTTPException(status_code=400, detail="Interview cannot be scheduled after the stage due date")
-
-        normalized_slots.append((starts_at, ends_at))
+    normalized_slots = _normalize_proposed_slot_inputs(event, body.proposedSlots)
+    now = datetime.now(UTC)
 
     participant.approvedAt = now
     participant.approvalStatus = "ACCEPTED"
@@ -1739,6 +1815,7 @@ async def accept_interview(
                 participantId=participant.id,
                 startTime=starts_at,
                 endTime=ends_at,
+                proposedBy="INTERVIEWER",
             )
         )
 
@@ -1771,6 +1848,10 @@ async def accept_interview(
             is_reschedule=is_reschedule,
         )
 
+    event.slotInvitationSentAt = datetime.now(UTC)
+    db.add(event)
+    await db.commit()
+
     return InterviewAcceptResponse(
         eventId=event_id,
         status=participant.approvalStatus,
@@ -1785,11 +1866,14 @@ async def reject_interview(
     organization_name: str,
     member_id: str,
     event_id: str,
+    body: InterviewRejectRequest | None = None,
 ) -> InterviewRejectResponse:
     repository = CandidatePipelineRepository(db)
     event = await repository.get_stage_event_with_participants(organization_id, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Interview event not found")
+    if event.stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
 
     participant = next(
         (
@@ -1802,6 +1886,7 @@ async def reject_interview(
     if participant is None:
         raise HTTPException(status_code=400, detail="You are not the primary interviewer for this assignment")
 
+    reject_mode = body.mode if body is not None else "AUTO"
     now = datetime.now(UTC)
     participant.approvalStatus = "REJECTED"
     participant.rejectedAt = now
@@ -1819,20 +1904,18 @@ async def reject_interview(
         )
         rejected_member_ids.add(member_id)
 
-    # Find available team member with lowest active interview count
-    existing_participant_ids = {p.memberId for p in (event.participants or [])}
+    event.candidateToken = None
+    event.slotInvitationSentAt = None
+    event.lastSlotReminderSentAt = None
+    event.proposedSlots.clear()
 
     team_member_ids = await repository.get_primary_hiring_team_member_ids(
         organization_id,
         event.stage.jobPostingId,
         event.stage.id,
     )
-    available_member_ids = [
-        mid for mid in team_member_ids
-        if mid not in rejected_member_ids and mid not in existing_participant_ids
-    ]
 
-    if not available_member_ids:
+    if reject_mode == "UNASSIGN":
         event.status = EventStatus.CANCELLED
         db.add(event)
         await db.commit()
@@ -1843,36 +1926,75 @@ async def reject_interview(
             warnings=[],
         )
 
-    active_counts = await repository.count_active_interviews_for_members(
-        organization_id,
-        available_member_ids,
-    )
-    new_member_id = min(
-        available_member_ids,
-        key=lambda mid: (active_counts.get(mid, 0), mid),
-    )
+    existing_participant_ids = {p.memberId for p in (event.participants or [])}
+
+    if reject_mode == "REASSIGN":
+        new_member_id = body.newInterviewerMemberId if body is not None else None
+        if not new_member_id:
+            raise HTTPException(status_code=400, detail="Select an interviewer to reassign")
+        if new_member_id == member_id:
+            raise HTTPException(status_code=400, detail="Cannot reassign to the rejecting interviewer")
+        if new_member_id not in team_member_ids:
+            raise HTTPException(status_code=400, detail="Selected interviewer is not in this interview team")
+        if new_member_id in rejected_member_ids:
+            raise HTTPException(status_code=400, detail="Selected interviewer has already rejected this interview")
+    else:
+        available_member_ids = [
+            mid for mid in team_member_ids
+            if mid not in rejected_member_ids and mid not in existing_participant_ids
+        ]
+
+        if not available_member_ids:
+            event.status = EventStatus.CANCELLED
+            db.add(event)
+            await db.commit()
+            return InterviewRejectResponse(
+                eventId=event.id,
+                newInterviewerMemberId=None,
+                status="UNASSIGNED",
+                warnings=[],
+            )
+
+        active_counts = await repository.count_active_interviews_for_members(
+            organization_id,
+            available_member_ids,
+        )
+        new_member_id = min(
+            available_member_ids,
+            key=lambda mid: (active_counts.get(mid, 0), mid),
+        )
 
     new_members = await repository.get_members_by_ids(organization_id, [new_member_id])
     new_member = new_members[0] if new_members else None
     if new_member is None:
-        event.status = EventStatus.CANCELLED
-        db.add(event)
-        await db.commit()
-        return InterviewRejectResponse(
-            eventId=event.id,
-            newInterviewerMemberId=None,
-            status="UNASSIGNED",
-            warnings=[],
-        )
+        raise HTTPException(status_code=400, detail="Selected interviewer was not found")
+    if new_member.user is None or not new_member.user.email:
+        raise HTTPException(status_code=400, detail="Selected interviewer email is missing")
 
-    new_participant = StageEventParticipant(
-        eventId=event.id,
-        memberId=new_member_id,
-        role="INTERVIEWER",
-        isBackup=False,
-        approvalStatus="PENDING_ACCEPTANCE",
+    existing_new_participant = next(
+        (
+            item
+            for item in (event.participants or [])
+            if item.memberId == new_member_id and (item.role == "INTERVIEWER" or item.role is None)
+        ),
+        None,
     )
-    await repository.add_stage_event_participant(new_participant)
+    if existing_new_participant is not None:
+        existing_new_participant.role = "INTERVIEWER"
+        existing_new_participant.isBackup = False
+        existing_new_participant.approvalStatus = "PENDING_ACCEPTANCE"
+        existing_new_participant.rejectedAt = None
+        db.add(existing_new_participant)
+    else:
+        await repository.add_stage_event_participant(
+            StageEventParticipant(
+                eventId=event.id,
+                memberId=new_member_id,
+                role="INTERVIEWER",
+                isBackup=False,
+                approvalStatus="PENDING_ACCEPTANCE",
+            )
+        )
     event.status = EventStatus.RESCHEDULED
     db.add(event)
     await db.commit()
@@ -1892,19 +2014,18 @@ async def reject_interview(
             ],
         )
 
-    if new_member.user is not None:
-        email_service = ResendEmailService()
-        candidate_name = _candidate_display_name(event.application)
-        starts_at_text = _meeting_time_text(event.scheduledStartAt) if event.scheduledStartAt else "To be scheduled"
-        await email_service.send_stage_interview_assignment_to_interviewer(
-            to_email=new_member.user.email,
-            interviewer_name=new_member.user.name or new_member.user.email,
-            candidate_name=candidate_name,
-            candidate_email=event.application.candidate.email,
-            stage_name=event.stage.name if event.stage else "Interview",
-            organization_name=organization_name,
-            starts_at_text=starts_at_text,
-        )
+    email_service = ResendEmailService()
+    candidate_name = _candidate_display_name(event.application)
+    starts_at_text = _meeting_time_text(event.scheduledStartAt) if event.scheduledStartAt else "To be scheduled"
+    await email_service.send_stage_interview_assignment_to_interviewer(
+        to_email=new_member.user.email,
+        interviewer_name=new_member.user.name or new_member.user.email,
+        candidate_name=candidate_name,
+        candidate_email=event.application.candidate.email,
+        stage_name=event.stage.name if event.stage else "Interview",
+        organization_name=organization_name,
+        starts_at_text=starts_at_text,
+    )
 
     return InterviewRejectResponse(
         eventId=event.id,
@@ -1931,24 +2052,11 @@ async def list_my_interviews(
             continue
         candidate = application.candidate
         stage = event.stage
-        status = participant.approvalStatus
-        if status == "PENDING":
-            status = "PENDING_ACCEPTANCE"
-        if status in {"PENDING_ACCEPTANCE", "ACCEPTED", "REJECTED"}:
-            display_status = status
-        elif status == "SCHEDULED":
-            computed_status = _computed_interview_status(event)
-            display_status = "SCHEDULED" if computed_status == "PENDING" else computed_status
-        else:
-            display_status = _computed_interview_status(event)
+        display_status = _interview_display_status(event, participant)
         proposed_slots = [
-            PublicProposedSlotRead(
-                id=slot.id,
-                startTime=slot.startTime,
-                endTime=slot.endTime,
-            )
+            _slot_to_read(slot)
             for slot in sorted(
-                event.proposedSlots or [],
+                _active_proposed_slots(event),
                 key=lambda item: item.startTime,
             )
         ]
@@ -1958,6 +2066,7 @@ async def list_my_interviews(
                 applicationId=application.id,
                 stageId=stage.id if stage else "",
                 stageName=stage.name if stage else "",
+                stageSlug=stage.slug if stage else None,
                 candidate=_serialize_candidate(candidate),
                 jobTitle=application.jobPosting.title if application.jobPosting else "",
                 jobPostingId=application.jobPosting.id if application.jobPosting else "",
@@ -2475,48 +2584,123 @@ async def get_candidate_slots_by_token(
         interviewer_name = participant.member.user.name or participant.member.user.email
 
     slots = []
-    for slot in (event.proposedSlots or []):
-        if not slot.isSelectedByCandidate:
-            slots.append({
-                "id": slot.id,
-                "startTime": slot.startTime,
-                "endTime": slot.endTime,
-            })
+    if event.scheduledStartAt is None:
+        for slot in (event.proposedSlots or []):
+            if not slot.isSelectedByCandidate and _slot_proposed_by(slot) == "INTERVIEWER":
+                slots.append({
+                    "id": slot.id,
+                    "startTime": slot.startTime,
+                    "endTime": slot.endTime,
+                    "proposedBy": _slot_proposed_by(slot),
+                    "note": slot.note,
+                })
 
     return {
         "candidateName": candidate_name,
         "jobTitle": job_title,
         "interviewerName": interviewer_name,
         "candidateToken": token,
+        "stageDueDate": event.stage.dueDate if event.stage else None,
         "slots": slots,
     }
 
 
-async def select_candidate_slot(
+def _format_slot_lines(slots: list[tuple[datetime, datetime]]) -> str:
+    return "\n".join(f"- {_meeting_time_text(start)} to {_meeting_time_text(end)}" for start, end in slots)
+
+
+async def propose_candidate_slots(
     db: AsyncSession,
     token: str,
-    slot_id: str,
+    body: CandidateSlotProposalRequest,
 ) -> dict:
     repository = CandidatePipelineRepository(db)
     event = await repository.get_stage_event_by_candidate_token(token)
     if event is None:
         raise HTTPException(status_code=404, detail="Interview not found or token expired")
 
-    slot = next(
-        (s for s in (event.proposedSlots or []) if s.id == slot_id),
-        None,
-    )
-    if slot is None:
-        raise HTTPException(status_code=404, detail="Slot not found")
+    participant = _primary_participant(event)
+    if participant is None or participant.member is None or participant.member.user is None:
+        raise HTTPException(status_code=400, detail="Interview participant is missing a linked user")
+    if participant.approvalStatus == "SCHEDULED" or event.scheduledStartAt is not None:
+        raise HTTPException(status_code=400, detail="This interview has already been scheduled")
+    if participant.approvalStatus not in {"ACCEPTED", "PENDING_CANDIDATE", "PENDING_CANDIDATE_ACCEPTANCE"}:
+        raise HTTPException(status_code=400, detail="The interviewer must accept the interview before alternate slots can be proposed")
+
+    normalized_slots = _normalize_proposed_slot_inputs(event, body.proposedSlots)
+    note = body.note.strip() if body.note else None
+
+    event.proposedSlots.clear()
+    for starts_at, ends_at in normalized_slots:
+        event.proposedSlots.append(
+            StageEventProposedSlot(
+                eventId=event.id,
+                participantId=participant.id,
+                startTime=starts_at,
+                endTime=ends_at,
+                proposedBy="CANDIDATE",
+                note=note,
+            )
+        )
+
+    event.status = EventStatus.SCHEDULED
+    event.scheduledStartAt = None
+    event.scheduledEndAt = None
+    _clear_calendar_metadata(event)
+    participant.approvalStatus = "ACCEPTED"
+    participant.scheduledTime = None
+    db.add(event)
+    db.add(participant)
+
+    await db.commit()
+
+    candidate = event.application.candidate
+    candidate_email = candidate.email
+    candidate_name = _candidate_display_name(event.application)
+    interviewer_name = participant.member.user.name or participant.member.user.email
+    interviewer_email = participant.member.user.email
+    job_title = event.application.jobPosting.title if event.application.jobPosting else "Interview"
+    proposed_slots_text = _format_slot_lines(normalized_slots)
+
+    email_service = ResendEmailService()
+    if candidate_email:
+        await email_service.send_candidate_slot_proposal_acknowledgement(
+            to_email=candidate_email,
+            candidate_name=candidate_name,
+            interviewer_name=interviewer_name,
+            job_title=job_title,
+            proposed_slots_text=proposed_slots_text,
+        )
+    if interviewer_email:
+        await email_service.send_candidate_slot_proposal_to_interviewer(
+            to_email=interviewer_email,
+            interviewer_name=interviewer_name,
+            candidate_name=candidate_name,
+            candidate_email=candidate_email,
+            job_title=job_title,
+            proposed_slots_text=proposed_slots_text,
+            note=note,
+        )
+
+    return {"message": "Slots proposed successfully"}
+
+
+async def _book_stage_event_slot(
+    db: AsyncSession,
+    event: StageEvent,
+    participant: StageEventParticipant,
+    slot: StageEventProposedSlot,
+) -> InterviewMeetingRead:
+    if participant.member is None or participant.member.user is None:
+        raise HTTPException(status_code=400, detail="Interview participant is missing a linked user")
     if slot.isSelectedByCandidate:
         raise HTTPException(status_code=400, detail="This slot has already been selected")
 
-    participant = next(
-        (p for p in (event.participants or []) if p.id == slot.participantId),
-        None,
-    )
-    if participant is None or participant.member is None or participant.member.user is None:
-        raise HTTPException(status_code=400, detail="Interview participant is missing a linked user")
+    starts_at = slot.startTime
+    if starts_at.tzinfo is None:
+        starts_at = starts_at.replace(tzinfo=UTC)
+    if starts_at.astimezone(UTC) < datetime.now(UTC):
+        raise HTTPException(status_code=400, detail="Interview cannot be scheduled in the past")
 
     candidate_name = _candidate_display_name(event.application)
     job_title = event.application.jobPosting.title if event.application.jobPosting else ""
@@ -2529,6 +2713,8 @@ async def select_candidate_slot(
     ]
     if event.notes:
         description_parts.append(f"Notes: {event.notes.strip()}")
+    if slot.note:
+        description_parts.append(f"Candidate note: {slot.note.strip()}")
 
     meeting = await _create_google_meet_event(
         db,
@@ -2556,12 +2742,9 @@ async def select_candidate_slot(
 
     await db.commit()
 
-    # Send confirmation emails
     candidate = event.application.candidate
     candidate_email = candidate.email
 
-    interviewer_name = "Interviewer"
-    interviewer_email = None
     interviewer_name = participant.member.user.name or participant.member.user.email
     interviewer_email = participant.member.user.email
 
@@ -2589,6 +2772,66 @@ async def select_candidate_slot(
             meeting_url=meeting.meeting_url,
         )
 
+    return _serialize_interview_meeting(event)
+
+
+async def book_candidate_proposed_slot(
+    db: AsyncSession,
+    organization_id: str,
+    organization_name: str,
+    member_id: str,
+    actor_user_id: str,
+    event_id: str,
+    slot_id: str,
+) -> InterviewMeetingRead:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_with_participants(organization_id, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Interview event not found")
+
+    participant = _primary_participant(event)
+    if participant is None or participant.memberId != member_id:
+        raise HTTPException(status_code=403, detail="You are not the primary interviewer for this assignment")
+
+    slot = next(
+        (s for s in (event.proposedSlots or []) if s.id == slot_id),
+        None,
+    )
+    if slot is None:
+        raise HTTPException(status_code=404, detail="Slot not found")
+    if _slot_proposed_by(slot) != "CANDIDATE":
+        raise HTTPException(status_code=400, detail="Only candidate-proposed slots can be booked here")
+
+    return await _book_stage_event_slot(db, event, participant, slot)
+
+
+async def select_candidate_slot(
+    db: AsyncSession,
+    token: str,
+    slot_id: str,
+) -> dict:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_by_candidate_token(token)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Interview not found or token expired")
+
+    slot = next(
+        (s for s in (event.proposedSlots or []) if s.id == slot_id),
+        None,
+    )
+    if slot is None:
+        raise HTTPException(status_code=404, detail="Slot not found")
+    if _slot_proposed_by(slot) != "INTERVIEWER":
+        raise HTTPException(status_code=400, detail="Only interviewer-proposed slots can be selected from this link")
+
+    participant = next(
+        (p for p in (event.participants or []) if p.id == slot.participantId),
+        None,
+    )
+    if participant is None or participant.member is None or participant.member.user is None:
+        raise HTTPException(status_code=400, detail="Interview participant is missing a linked user")
+
+    await _book_stage_event_slot(db, event, participant, slot)
     return {"message": "Slot selected successfully"}
 
 
@@ -2649,4 +2892,92 @@ async def submit_candidate_feedback(
     return FeedbackSubmitResponse(message="Feedback submitted successfully")
 
 
+async def process_interview_slot_reminders(db: AsyncSession) -> dict[str, int]:
+    from app.models.notification import Notification
+
+    now = datetime.now(UTC)
+
+    subquery = (
+        select(StageEventProposedSlot.eventId)
+        .where(
+            StageEventProposedSlot.isSelectedByCandidate == False,
+            StageEventProposedSlot.proposedBy == "INTERVIEWER",
+            StageEventProposedSlot.startTime > now,
+        )
+        .group_by(StageEventProposedSlot.eventId)
+        .having(func.count() > 0)
+    ).subquery()
+
+    result = await db.execute(
+        select(StageEvent)
+        .options(
+            joinedload(StageEvent.application).selectinload(CandidateApplication.candidate),
+            joinedload(StageEvent.application).joinedload(CandidateApplication.jobPosting),
+            selectinload(StageEvent.proposedSlots),
+            selectinload(StageEvent.participants).joinedload(StageEventParticipant.member).joinedload(Member.user),
+        )
+        .where(
+            StageEvent.status == EventStatus.SCHEDULED,
+            StageEvent.candidateToken.isnot(None),
+            StageEvent.slotInvitationSentAt.isnot(None),
+            StageEvent.scheduledStartAt.is_(None),
+            StageEvent.id.in_(subquery),
+        )
+    )
+    events = result.unique().scalars().all()
+
+    sent = 0
+    skipped = 0
+    email_service = ResendEmailService()
+
+    for event in events:
+        interviewer_slots = [
+            s for s in (event.proposedSlots or [])
+            if s.proposedBy == "INTERVIEWER" and not s.isSelectedByCandidate and s.startTime > now
+        ]
+        if not interviewer_slots:
+            skipped += 1
+            continue
+
+        earliest_slot = min(s.startTime for s in interviewer_slots)
+        gap = earliest_slot - event.slotInvitationSentAt
+
+        if gap < timedelta(hours=36):
+            interval = timedelta(hours=4)
+        elif gap <= timedelta(days=7):
+            interval = timedelta(hours=24)
+        else:
+            interval = timedelta(days=5)
+
+        if event.lastSlotReminderSentAt is not None and (now - event.lastSlotReminderSentAt) < interval:
+            skipped += 1
+            continue
+
+        candidate = event.application.candidate
+        job_title = event.application.jobPosting.title if event.application.jobPosting else ""
+
+        participant = next(
+            (p for p in (event.participants or []) if p.role == "INTERVIEWER" or p.role is None),
+            None,
+        )
+        interviewer_name = "Interviewer"
+        if participant is not None and participant.member is not None and participant.member.user is not None:
+            interviewer_name = participant.member.user.name or participant.member.user.email
+
+        if candidate.email:
+            await email_service.send_interview_slot_reminder(
+                to_email=candidate.email,
+                candidate_name=_candidate_display_name(event.application),
+                interviewer_name=interviewer_name,
+                job_title=job_title,
+                organization_name="Kovan Labs",
+                candidate_token=event.candidateToken,
+            )
+
+        event.lastSlotReminderSentAt = now
+        db.add(event)
+        sent += 1
+
+    await db.commit()
+    return {"sent": sent, "skipped": skipped}
 

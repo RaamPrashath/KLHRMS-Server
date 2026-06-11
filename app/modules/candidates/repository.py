@@ -101,6 +101,12 @@ class CandidatePipelineRepository:
                 ).selectinload(StageEvent.participants)
                 .joinedload(StageEventParticipant.member)
                 .joinedload(Member.user),
+                selectinload(PipelineStage.applications).selectinload(
+                    CandidateApplication.stageEvents
+                ).selectinload(StageEvent.proposedSlots),
+                selectinload(PipelineStage.applications).selectinload(
+                    CandidateApplication.stageEvents
+                ).joinedload(StageEvent.stage),
             )
             .where(
                 PipelineStage.organizationId == organization_id,
@@ -165,6 +171,10 @@ class CandidatePipelineRepository:
                     .selectinload(StageEvent.participants)
                     .joinedload(StageEventParticipant.member)
                     .joinedload(Member.user),
+                    selectinload(CandidateApplication.stageEvents)
+                    .selectinload(StageEvent.proposedSlots),
+                    selectinload(CandidateApplication.stageEvents)
+                    .joinedload(StageEvent.stage),
                 ),
                 joinedload(PipelineStage.jobPosting),
             )
@@ -200,6 +210,10 @@ class CandidatePipelineRepository:
                     .selectinload(StageEvent.participants)
                     .joinedload(StageEventParticipant.member)
                     .joinedload(Member.user),
+                    selectinload(CandidateApplication.stageEvents)
+                    .selectinload(StageEvent.proposedSlots),
+                    selectinload(CandidateApplication.stageEvents)
+                    .joinedload(StageEvent.stage),
                 ),
                 joinedload(PipelineStage.jobPosting),
             )
@@ -255,6 +269,21 @@ class CandidatePipelineRepository:
             )
         )
         return list(result.unique().scalars().all())
+
+    async def get_member(
+        self,
+        organization_id: str,
+        member_id: str,
+    ) -> Member | None:
+        result = await self.db.execute(
+            select(Member)
+            .options(joinedload(Member.user))
+            .where(
+                Member.organizationId == organization_id,
+                Member.id == member_id,
+            )
+        )
+        return result.unique().scalar_one_or_none()
 
     async def list_approved_leave_for_members(
         self,
