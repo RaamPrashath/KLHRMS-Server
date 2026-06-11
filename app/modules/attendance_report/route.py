@@ -111,6 +111,7 @@ async def get_attendance_report(
                 totalHours=row.total_hours,
                 departmentName=row.department_name,
                 projectName=row.project_name,
+                clientName=row.client_name,
                 taskName=row.task_name,
                 clockOutDescription=row.clock_out_description,
                 leaveTypeName=row.leave_type_name,
@@ -137,10 +138,59 @@ async def get_attendance_report(
 async def export_attendance_report(
     body: AttendanceReportExportRequest,
     ctx: AttendanceReportCtx,
+    db: AsyncSession = Depends(get_db),  # noqa: B008
 ) -> StreamingResponse:
     _ensure_organization_scope(ctx)
 
-    content = generate_attendance_report_export(body)
+    db_rows = None
+    if body.format == "xlsx" and body.mode == "timesheet":
+        import calendar
+        # We need to fetch rows from the database for the entire range of months.
+        # Let's extract the date range.
+        dates = body.dateColumns or [row.date for row in body.rows]
+        latest_date = max(dates) if dates else (body.dateTo or date.today())
+        
+        # From January 1st of that year to the end of the latest month
+        _, last_day = calendar.monthrange(latest_date.year, latest_date.month)
+        date_from = date(latest_date.year, 1, 1)
+        date_to = date(latest_date.year, latest_date.month, last_day)
+        
+        # Fetch the records for this range
+        employee_ids = [emp.id for emp in body.employees]
+        
+        rows_data, _, _ = await list_attendance_report(
+            db=db,
+            organization_id=ctx.organization.id,
+            date_from=date_from,
+            date_to=date_to,
+            project_id=body.projectId,
+            employee_ids=employee_ids,
+            page=1,
+            page_size=100000,
+        )
+        
+        db_rows = [
+            AttendanceReportRow(
+                attendanceRecordId=row.attendance_record_id,
+                employeeId=row.employee_id,
+                employeeName=row.employee_name,
+                employeeEmail=row.employee_email,
+                date=row.day,
+                clockIn=row.clock_in,
+                clockOut=row.clock_out,
+                totalHours=row.total_hours,
+                departmentName=row.department_name,
+                projectName=row.project_name,
+                clientName=row.client_name,
+                taskName=row.task_name,
+                clockOutDescription=row.clock_out_description,
+                leaveTypeName=row.leave_type_name,
+                entryType=row.entry_type,
+            )
+            for row in rows_data
+        ]
+
+    content = generate_attendance_report_export(body, db_rows=db_rows)
     import io
 
     filename = f"attendance-report.{_FILE_EXTENSIONS[body.format]}"

@@ -100,6 +100,43 @@ def _rows_by_employee(rows: list[AttendanceReportRow]) -> dict[str, list[Attenda
     return grouped
 
 
+def _rows_by_client_employee(rows: list[AttendanceReportRow]) -> dict[str, dict[str, list[AttendanceReportRow]]]:
+    """Group rows by (clientName, employeeId) for client-grouped timesheet."""
+    grouped: dict[str, dict[str, list[AttendanceReportRow]]] = defaultdict(lambda: defaultdict(list))
+    for row in rows:
+        client = row.clientName or ""
+        grouped[client][row.employeeId].append(row)
+    for client_rows in grouped.values():
+        for emp_rows in client_rows.values():
+            emp_rows.sort(key=lambda item: item.date)
+    return grouped
+
+
+def _client_employee_matrix(
+    rows: list[AttendanceReportRow],
+    dates: list[date],
+    employees: list[AttendanceReportExportEmployee],
+) -> list[tuple[str, str, str, dict[str, dict[date, AttendanceReportRow]]]]:
+    """
+    Build (clientName, employeeId, employeeName, date_map) tuples
+    ordered by client name then employee name.
+    """
+    client_employee_map: dict[str, dict[str, dict[date, AttendanceReportRow]]] = defaultdict(lambda: defaultdict(dict))
+    employee_names: dict[str, str] = {}
+    for row in rows:
+        client = row.clientName or ""
+        client_employee_map[client][row.employeeId][row.date] = row
+        employee_names[row.employeeId] = row.employeeName
+
+    result: list[tuple[str, str, str, dict[str, dict[date, AttendanceReportRow]]]] = []
+    for client in sorted(client_employee_map.keys()):
+        emp_map = client_employee_map[client]
+        emp_ids = sorted(emp_map.keys(), key=lambda eid: employee_names.get(eid, "").lower())
+        for eid in emp_ids:
+            result.append((client, eid, employee_names.get(eid, ""), emp_map[eid]))
+    return result
+
+
 def _employees_for_export(payload: AttendanceReportExportRequest) -> list[AttendanceReportExportEmployee]:
     if payload.employees:
         return sorted(payload.employees, key=lambda item: _employee_name(item).lower())
@@ -177,6 +214,7 @@ def generate_report_xlsx(payload: AttendanceReportExportRequest) -> bytes:
                     cell.number_format = "0.00"
                 if _is_weekend(row.date):
                     cell.font = Font(color="FF0000")
+                    cell.fill = PatternFill("solid", fgColor="FFCCCC")
             ws.row_dimensions[row_index].height = max(24, min(96, 18 + (_row_description(row).count("\n") + 1) * 12))
 
         total_row = len(employee_rows) + 3
@@ -210,72 +248,255 @@ def _build_timesheet_maps(
     return dates, employees, grouped
 
 
-def generate_timesheet_xlsx(payload: AttendanceReportExportRequest) -> bytes:
-    dates, employees, grouped = _build_timesheet_maps(payload)
+def generate_timesheet_xlsx(payload: AttendanceReportExportRequest, db_rows: list[AttendanceReportRow] | None = None) -> bytes:
+    # Use database rows if provided (spans the entire year), otherwise fall back to payload.rows
+    rows_to_use = db_rows if db_rows is not None else payload.rows
+
+    # Determine which months to generate based on dates in the payload
+    dates_in_payload = payload.dateColumns or [row.date for row in payload.rows]
+    if dates_in_payload:
+        date_set = set(dates_in_payload)
+        months_to_generate = set()
+        for d in dates_in_payload:
+            months_to_generate.add((d.year, d.month))
+        months_sorted = sorted(months_to_generate, reverse=True)
+    else:
+        today = date.today()
+        months_sorted = [(today.year, today.month)]
+
+    # Group the rows by month key: (year, month)
+    rows_by_month = defaultdict(list)
+    for row in rows_to_use:
+        rows_by_month[(row.date.year, row.date.month)].append(row)
+
+    # Map employee_id to clientName from the entire year's data
+    employee_client_map = {}
+    for row in rows_to_use:
+        if row.employeeId not in employee_client_map and row.clientName:
+            employee_client_map[row.employeeId] = row.clientName
+
+    # Default any remaining employees to ""
+    for emp in payload.employees:
+        if emp.id not in employee_client_map:
+            employee_client_map[emp.id] = ""
+
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = (payload.title or "Timesheet")[:31]
+    # Remove default sheet
+    default_sheet = wb.active
+    wb.remove(default_sheet)
 
-    total_cols = len(dates) + 2
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(total_cols, 2))
-    title_cell = ws.cell(row=1, column=1, value=payload.title)
-    title_cell.font = Font(bold=True, size=13, color="1D1D1F")
-    title_cell.fill = PatternFill("solid", fgColor=_TITLE_FILL)
-    title_cell.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 26
+    import calendar
 
-    ws.cell(row=2, column=1, value="Employee")
-    ws.cell(row=2, column=2, value="Total Hours")
-    for offset, day in enumerate(dates, start=3):
-        is_weekend = _is_weekend(day)
-        for header_row in (2, 3):
-            val = str(day.day) if header_row == 2 else _short_day_label(day)
-            cell = ws.cell(row=header_row, column=offset, value=val)
-            cell.font = Font(bold=True, color="FF0000" if is_weekend else ("FFFFFF" if header_row == 2 else "1D1D1F"))
-            cell.fill = PatternFill("solid", fgColor=_HEADER_FILL if header_row == 2 else _TITLE_FILL)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border = _GRID_BORDER
-    ws.cell(row=3, column=1, value="Day:")
-    ws.cell(row=3, column=2, value="")
+    # Define client group colors
+    CLIENT_COLORS = ["FCE4D6", "F2F2F2", "FFF2CC", "E2EFDA", "D9E1F2"]
 
-    for col in (1, 2):
-        for row in (2, 3):
-            cell = ws.cell(row=row, column=col)
-            cell.font = Font(bold=True, color="FFFFFF" if row == 2 else "1D1D1F")
-            cell.fill = PatternFill("solid", fgColor=_HEADER_FILL if row == 2 else _TITLE_FILL)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border = _GRID_BORDER
+    # Find unique clients across all rows and sort them (putting empty/General at the bottom)
+    unique_clients = sorted(list(set(employee_client_map.values())))
+    sorted_clients = sorted(unique_clients, key=lambda c: (c == "" or c == "General", c.lower()))
+    client_colors_map = {client: CLIENT_COLORS[idx % len(CLIENT_COLORS)] for idx, client in enumerate(sorted_clients)}
 
-    for row_index, employee in enumerate(employees, start=4):
-        employee_rows = grouped.get(employee.id, {})
-        name_cell = ws.cell(row=row_index, column=1, value=_employee_name(employee))
-        name_cell.border = _GRID_BORDER
-        name_cell.alignment = Alignment(horizontal="left", vertical="center")
-        total_cell = ws.cell(row=row_index, column=2, value=f"=SUM(C{row_index}:{get_column_letter(total_cols)}{row_index})")
-        total_cell.number_format = "0.00"
-        total_cell.border = _GRID_BORDER
-        total_cell.alignment = Alignment(horizontal="center", vertical="center")
-        for offset, day in enumerate(dates, start=3):
-            report_row = employee_rows.get(day)
-            value = _display_hours(report_row.totalHours, payload.force8) if report_row else ""
-            cell = ws.cell(row=row_index, column=offset, value=value)
-            cell.border = _GRID_BORDER
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            if value != "":
-                cell.number_format = "0.00"
-            if _is_weekend(day):
-                cell.font = Font(color="FF0000")
-        ws.row_dimensions[row_index].height = 22
+    # Fonts
+    HEADER_FONT = Font(name="Segoe UI", size=10, bold=True, color="000000")
+    HEADER_WEEKEND_FONT = Font(name="Segoe UI", size=10, bold=True, color="C00000")
+    EMPLOYEE_FONT = Font(name="Segoe UI", size=10, bold=True, color="000000")
+    TOTAL_FONT = Font(name="Segoe UI", size=10, bold=True, color="000000")
+    DATA_FONT = Font(name="Segoe UI", size=10, color="000000")
 
-    ws.column_dimensions["A"].width = 32
-    ws.column_dimensions["B"].width = 13
-    for col in range(3, total_cols + 1):
-        ws.column_dimensions[get_column_letter(col)].width = 8
-    ws.freeze_panes = "C4"
-    ws.page_setup.orientation = "landscape"
-    ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 0
-    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    CODE_FONT_L = Font(name="Segoe UI", size=10, bold=True, color="C00000")
+    CODE_FONT_FH = Font(name="Segoe UI", size=10, bold=True, color="1F618D")
+    CODE_FONT_CO = Font(name="Segoe UI", size=10, bold=True, color="B8860B")
+    CODE_FONT_H = Font(name="Segoe UI", size=10, bold=True, color="5B2C6F")
+
+    # Fills
+    HEADER_FILL = PatternFill("solid", fgColor="D9E1F2")
+    HEADER_WEEKEND_FILL = PatternFill("solid", fgColor="FADBD8")
+    WEEKEND_FILL = PatternFill("solid", fgColor="FDF2F4")
+    GREEN_FILL = PatternFill("solid", fgColor="E2EFDA")
+
+    FILL_L = PatternFill("solid", fgColor="FADBD8")
+    FILL_FH = PatternFill("solid", fgColor="D4E6F1")
+    FILL_CO = PatternFill("solid", fgColor="FEF3CD")
+    FILL_H = PatternFill("solid", fgColor="E8DAEF")
+
+    # Borders
+    _THIN_BORDER_SIDE = Side(style="thin", color="D9D9D9")
+    _GRID_BORDER = Border(left=_THIN_BORDER_SIDE, right=_THIN_BORDER_SIDE, top=_THIN_BORDER_SIDE, bottom=_THIN_BORDER_SIDE)
+
+    # Generate sheets only for months in the requested date range
+    for year, m in months_sorted:
+        month_name = calendar.month_name[m]
+        sheet_title = f"{month_name} {year}"
+        ws = wb.create_sheet(title=sheet_title)
+
+        _, num_days = calendar.monthrange(year, m)
+        all_month_dates = [date(year, m, d) for d in range(1, num_days + 1)]
+        dates = [d for d in all_month_dates if d in date_set] if dates_in_payload else all_month_dates
+
+        # Group employees by client name
+        client_employees = defaultdict(list)
+        for emp in payload.employees:
+            client = employee_client_map[emp.id]
+            client_employees[client].append(emp)
+
+        # Build matrix of rows for this sheet
+        month_rows = rows_by_month[(year, m)]
+        matrix = []
+        for client in sorted_clients:
+            emps = sorted(client_employees[client], key=lambda e: e.name.lower())
+            for emp in emps:
+                emp_date_map = {}
+                for row in month_rows:
+                    if row.employeeId == emp.id:
+                        emp_date_map[row.date] = row
+                matrix.append((client, emp.id, emp.name, emp_date_map))
+
+        total_cols = len(dates) + 4  # Client Name + Employee + Total + days + Total
+
+        # Row 1: Title
+        title_value = f"{month_name} {year} MONTHLY REPORT"
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+        title_cell = ws.cell(row=1, column=1, value=title_value)
+        title_cell.font = Font(bold=True, size=14, color="1D1D1F")
+        title_cell.fill = PatternFill("solid", fgColor="EEEEEE")
+        title_cell.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[1].height = 22
+
+        # Row 2: Headers
+        ws.cell(row=2, column=1, value="Client Name")
+        ws.cell(row=2, column=2, value="Employee")
+        ws.cell(row=2, column=3, value="Total")
+        for offset, day in enumerate(dates, start=4):
+            ws.cell(row=2, column=offset, value=day.day)
+        ws.cell(row=2, column=total_cols, value="Total")
+        ws.row_dimensions[2].height = 24
+
+        # Row 3: Days
+        ws.cell(row=3, column=1, value="Day:")
+        ws.cell(row=3, column=2, value="")
+        ws.cell(row=3, column=3, value="Hours")
+        for offset, day in enumerate(dates, start=4):
+            ws.cell(row=3, column=offset, value=_short_day_label(day))
+        ws.cell(row=3, column=total_cols, value="Hours")
+        ws.row_dimensions[3].height = 24
+
+        # Weekend column indices (1-indexed)
+        weekend_cols = {4 + idx for idx, day in enumerate(dates) if _is_weekend(day)}
+
+        # Style headers
+        for col in range(1, total_cols + 1):
+            for r in (2, 3):
+                cell = ws.cell(row=r, column=col)
+                cell.border = _GRID_BORDER
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                if col in weekend_cols:
+                    cell.font = HEADER_WEEKEND_FONT
+                    cell.fill = HEADER_WEEKEND_FILL
+                else:
+                    cell.font = HEADER_FONT
+                    cell.fill = HEADER_FILL
+
+        # Populate data rows
+        row_index = 4
+        for client, emp_id, emp_name, date_map in matrix:
+            client_label = client or "General"
+            ws.cell(row=row_index, column=1, value=client_label)
+            ws.cell(row=row_index, column=2, value=emp_name or emp_id)
+
+            client_color = client_colors_map.get(client or "", "F2F2F2")
+            client_fill = PatternFill("solid", fgColor=client_color)
+
+            # Formulas for Totals
+            first_day_col = get_column_letter(4)
+            last_day_col = get_column_letter(3 + len(dates))
+
+            # Column C: Total Hours formula
+            total_cell_c = ws.cell(row=row_index, column=3, value=f"=SUM({first_day_col}{row_index}:{last_day_col}{row_index})")
+            total_cell_c.number_format = "0"
+            total_cell_c.font = TOTAL_FONT
+            total_cell_c.fill = client_fill
+            total_cell_c.alignment = Alignment(horizontal="center", vertical="center")
+            total_cell_c.border = _GRID_BORDER
+
+            # Last Column: Total Hours formula
+            total_cell_last = ws.cell(row=row_index, column=total_cols, value=f"=C{row_index}")
+            total_cell_last.number_format = "0"
+            total_cell_last.font = TOTAL_FONT
+            total_cell_last.fill = client_fill
+            total_cell_last.alignment = Alignment(horizontal="center", vertical="center")
+            total_cell_last.border = _GRID_BORDER
+
+            # Client Name & Employee styling
+            for col_idx in (1, 2):
+                cell = ws.cell(row=row_index, column=col_idx)
+                cell.border = _GRID_BORDER
+                cell.fill = client_fill
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+                cell.font = EMPLOYEE_FONT if col_idx == 2 else DATA_FONT
+
+            # Day cells
+            for offset, day in enumerate(dates, start=4):
+                report_row = date_map.get(day)
+                cell = ws.cell(row=row_index, column=offset)
+                cell.border = _GRID_BORDER
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
+                # Default values and styles
+                val = ""
+                cell_font = DATA_FONT
+                cell_fill = client_fill
+
+                is_weekend_day = _is_weekend(day)
+                if is_weekend_day:
+                    cell_fill = WEEKEND_FILL
+
+                if report_row:
+                    leave_name = report_row.leaveTypeName
+                    entry_type = report_row.entryType
+                    hours = report_row.totalHours
+
+                    if leave_name or entry_type == "LEAVE":
+                        val = "L"
+                        cell_font = CODE_FONT_L
+                        cell_fill = FILL_L
+                    elif entry_type == "FLOATING_HOLIDAY":
+                        val = "FH"
+                        cell_font = CODE_FONT_FH
+                        cell_fill = FILL_FH
+                    elif entry_type == "COMP_OFF":
+                        val = "CO"
+                        cell_font = CODE_FONT_CO
+                        cell_fill = FILL_CO
+                    elif entry_type == "HOLIDAY":
+                        val = "H"
+                        cell_font = CODE_FONT_H
+                        cell_fill = FILL_H
+                    elif hours is not None and hours > 0:
+                        norm_hours = min(hours, 8.0) if payload.force8 else hours
+                        val = int(norm_hours) if norm_hours.is_integer() else round(norm_hours, 1)
+
+                        if not is_weekend_day:
+                            cell_fill = GREEN_FILL
+
+                cell.value = val
+                cell.font = cell_font
+                cell.fill = cell_fill
+
+            ws.row_dimensions[row_index].height = 20
+            row_index += 1
+
+        # Freeze panes & column dimensions
+        ws.column_dimensions["A"].width = 18
+        ws.column_dimensions["B"].width = 28
+        ws.column_dimensions["C"].width = 10
+        for col in range(4, total_cols):
+            ws.column_dimensions[get_column_letter(col)].width = 6
+        ws.column_dimensions[get_column_letter(total_cols)].width = 10
+
+        ws.freeze_panes = "D4"
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -359,7 +580,8 @@ def generate_report_pdf(payload: AttendanceReportExportRequest) -> bytes:
 
 
 def generate_timesheet_pdf(payload: AttendanceReportExportRequest) -> bytes:
-    dates, employees, grouped = _build_timesheet_maps(payload)
+    dates = payload.dateColumns or sorted({row.date for row in payload.rows})
+    matrix = _client_employee_matrix(payload.rows, dates, payload.employees)
     page_size = landscape(A3) if len(dates) > 10 else landscape(A4)
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -376,44 +598,48 @@ def generate_timesheet_pdf(payload: AttendanceReportExportRequest) -> bytes:
         story.append(Paragraph(html.escape(payload.periodLabel), styles["Normal"]))
     story.append(Spacer(1, 4 * mm))
 
+    # Build table data: Client Name | Employee | Total Hours | dates... | Total Hours
     table_data: list[list[object]] = [
-        ["Employee", "Total Hours", *[str(day.day) for day in dates]],
-        ["Day:", "", *[_short_day_label(day) for day in dates]],
+        ["Client Name", "Employee", "Total Hours", *[str(day.day) for day in dates], "Total"],
+        ["Day:", "", "", *[_short_day_label(day) for day in dates], "Hours"],
     ]
-    for employee in employees:
-        by_date = grouped.get(employee.id, {})
-        values = []
-        total = 0.0
-        for day in dates:
-            report_row = by_date.get(day)
-            hours = _numeric_hours(report_row.totalHours, payload.force8) if report_row else 0.0
-            total += hours
-            values.append(f"{hours:.2f}" if hours else "")
-        table_data.append([_employee_name(employee), f"{total:.2f}" if total else "", *values])
-
-    usable_width = page_size[0] - 16 * mm
-    employee_width = 52 * mm
-    total_width = 20 * mm
-    day_width = max((usable_width - employee_width - total_width) / max(len(dates), 1), 7 * mm)
     weekend_cols: list[int] = []
     for idx, day in enumerate(dates):
         if _is_weekend(day):
-            weekend_cols.append(2 + idx)
+            weekend_cols.append(3 + idx)  # offset by Client+Employee+Total
+
+    for client, emp_id, emp_name, date_map in matrix:
+        values = []
+        total = 0.0
+        for day in dates:
+            report_row = date_map.get(day)
+            hours = _numeric_hours(report_row.totalHours, payload.force8) if report_row else 0.0
+            total += hours
+            values.append(f"{hours:.2f}" if hours else "")
+        table_data.append([client or "—", emp_name or emp_id, f"{total:.2f}" if total else "", *values, f"{total:.2f}" if total else ""])
+
+    usable_width = page_size[0] - 16 * mm
+    client_width = 28 * mm
+    employee_width = 42 * mm
+    total_width = 18 * mm
+    day_width = max((usable_width - client_width - employee_width - total_width - total_width) / max(len(dates), 1), 7 * mm)
+    col_widths = [client_width, employee_width, total_width, *([day_width] * len(dates)), total_width]
+
     style_cmds: list[object] = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(f"#{_HEADER_FILL}")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor(f"#{_TITLE_FILL}")),
         ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("FONTSIZE", (0, 0), (-1, -1), 6),
         ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#D9E2EC")),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("ALIGN", (0, 2), (0, -1), "LEFT"),
+        ("ALIGN", (0, 2), (1, -1), "LEFT"),
         ("FONTNAME", (0, 2), (1, -1), "Helvetica-Bold"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]
     for c in weekend_cols:
         style_cmds.append(("TEXTCOLOR", (c, 0), (c, -1), colors.red))
-    table = Table(table_data, colWidths=[employee_width, total_width, *([day_width] * len(dates))], repeatRows=2)
+    table = Table(table_data, colWidths=col_widths, repeatRows=2)
     table.setStyle(TableStyle(style_cmds))
     story.append(table)
     doc.build(story)
@@ -447,30 +673,31 @@ def generate_report_csv(payload: AttendanceReportExportRequest) -> bytes:
 
 
 def generate_timesheet_csv(payload: AttendanceReportExportRequest) -> bytes:
-    dates, employees, grouped = _build_timesheet_maps(payload)
+    dates = payload.dateColumns or sorted({row.date for row in payload.rows})
+    matrix = _client_employee_matrix(payload.rows, dates, payload.employees)
     output = io.StringIO()
     writer = csv.writer(output)
 
-    headers = ["Employee", "Total Hours", *[str(day.day) for day in dates]]
+    headers = ["Client Name", "Employee", "Total Hours", *[str(day.day) for day in dates], "Total Hours"]
     writer.writerow(headers)
-    writer.writerow(["Day:", "", *[_short_day_label(day) for day in dates]])
+    writer.writerow(["Day:", "", "", *[_short_day_label(day) for day in dates], "Hours"])
 
-    for employee in employees:
-        by_date = grouped.get(employee.id, {})
-        row_values = [_employee_name(employee)]
+    for client, emp_id, emp_name, date_map in matrix:
+        row_values = [client or "—", emp_name or emp_id]
         total = 0.0
         for day in dates:
-            report_row = by_date.get(day)
+            report_row = date_map.get(day)
             hours = _numeric_hours(report_row.totalHours, payload.force8) if report_row else 0.0
             total += hours
             row_values.append(f"{hours:.2f}" if hours else "")
-        row_values.insert(1, f"{total:.2f}" if total else "")
+        row_values.insert(2, f"{total:.2f}" if total else "")
+        row_values.append(f"{total:.2f}" if total else "")
         writer.writerow(row_values)
 
     return output.getvalue().encode("utf-8-sig")
 
 
-def generate_attendance_report_export(payload: AttendanceReportExportRequest) -> bytes:
+def generate_attendance_report_export(payload: AttendanceReportExportRequest, db_rows: list[AttendanceReportRow] | None = None) -> bytes:
     if payload.mode == "report":
         if payload.format == "csv":
             return generate_report_csv(payload)
@@ -480,5 +707,5 @@ def generate_attendance_report_export(payload: AttendanceReportExportRequest) ->
     if payload.format == "csv":
         return generate_timesheet_csv(payload)
     if payload.format == "xlsx":
-        return generate_timesheet_xlsx(payload)
+        return generate_timesheet_xlsx(payload, db_rows=db_rows)
     return generate_timesheet_pdf(payload)

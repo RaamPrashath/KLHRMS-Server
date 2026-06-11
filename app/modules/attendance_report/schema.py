@@ -49,6 +49,7 @@ class AttendanceReportRow(BaseModel):
     totalHours: float | None = None
     departmentName: str | None = None
     projectName: str | None = None
+    clientName: str | None = None
     taskName: str | None = None
     clockOutDescription: str | None = None
     leaveTypeName: str | None = None
@@ -88,3 +89,7 @@ class AttendanceReportExportRequest(BaseModel):
     employees: list[AttendanceReportExportEmployee] = Field(default_factory=list)
     rows: list[AttendanceReportRow] = Field(default_factory=list)
     force8: bool = False
+    projectId: str | None = Field(default=None, max_length=36)
+    dateFrom: date | None = Field(default=None)
+    dateTo: date | None = Field(default=None)
+
