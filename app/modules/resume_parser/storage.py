@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import quote
 
 import httpx
@@ -9,6 +10,7 @@ import httpx
 from app.shared.config import get_settings
 
 RESUME_PARSER_BUCKET = "resume-parser"
+UPLOADS_DIR = Path(__file__).resolve().parents[3] / ".uploads"
 
 
 @dataclass(frozen=True)
@@ -50,16 +52,23 @@ async def upload_resume_parser_artifact(
     settings = get_settings()
     supabase_url = settings.supabase_url.rstrip("/")
     bucket = RESUME_PARSER_BUCKET
+    is_production = settings.mode.strip().lower() == "production"
     if not supabase_url:
+        if not is_production:
+            return _write_local_resume_parser_artifact(
+                bucket=bucket,
+                storage_path=storage_path,
+                content=content,
+            )
         raise RuntimeError("SUPABASE_URL is not configured")
     if not settings.supabase_service_role_key:
+        if not is_production:
+            return _write_local_resume_parser_artifact(
+                bucket=bucket,
+                storage_path=storage_path,
+                content=content,
+            )
         raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY is not configured")
-
-    await _ensure_resume_parser_bucket(
-        supabase_url=supabase_url,
-        service_role_key=settings.supabase_service_role_key,
-        bucket=bucket,
-    )
 
     encoded_path = "/".join(quote(part, safe="") for part in storage_path.split("/"))
     upload_url = f"{supabase_url}/storage/v1/object/{quote(bucket, safe='')}/{encoded_path}"
@@ -69,10 +78,38 @@ async def upload_resume_parser_artifact(
         "Content-Type": content_type,
         "x-upsert": "false",
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(upload_url, headers=headers, content=content)
+    try:
+        await _ensure_resume_parser_bucket(
+            supabase_url=supabase_url,
+            service_role_key=settings.supabase_service_role_key,
+            bucket=bucket,
+        )
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(upload_url, headers=headers, content=content)
+    except httpx.HTTPError as exc:
+        if not is_production:
+            return _write_local_resume_parser_artifact(
+                bucket=bucket,
+                storage_path=storage_path,
+                content=content,
+            )
+        raise RuntimeError("Supabase resume-parser upload failed: network error") from exc
+    except RuntimeError:
+        if not is_production:
+            return _write_local_resume_parser_artifact(
+                bucket=bucket,
+                storage_path=storage_path,
+                content=content,
+            )
+        raise
 
     if response.status_code >= 400:
+        if not is_production:
+            return _write_local_resume_parser_artifact(
+                bucket=bucket,
+                storage_path=storage_path,
+                content=content,
+            )
         raise RuntimeError(_storage_error(response))
 
     public_url = f"{supabase_url}/storage/v1/object/public/{quote(bucket, safe='')}/{encoded_path}"
@@ -127,6 +164,24 @@ def _is_bucket_not_found(response: httpx.Response) -> bool:
 def _safe_path_segment(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._ -]", "", value).strip()
     return cleaned or "item"
+
+
+def _write_local_resume_parser_artifact(
+    *,
+    bucket: str,
+    storage_path: str,
+    content: bytes,
+) -> ResumeParserUpload:
+    relative_path = Path(bucket, *storage_path.split("/"))
+    target_path = UPLOADS_DIR / relative_path
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(content)
+    encoded_relative = "/".join(quote(part, safe="") for part in relative_path.as_posix().split("/"))
+    return ResumeParserUpload(
+        bucket=bucket,
+        path=storage_path,
+        public_url=f"http://localhost:8000/uploads/{encoded_relative}",
+    )
 
 
 def _storage_error(response: httpx.Response) -> str:

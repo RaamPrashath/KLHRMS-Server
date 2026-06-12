@@ -23,11 +23,14 @@ from app.modules.candidates.schema import (
     MyInterviewListResponse,
     PipelineApplicationRead,
     PipelineBoardRead,
+    PipelineJobPostingStatusUpdateRequest,
     PipelineJobPostingRead,
     PipelineStageCreateRequest,
     PipelineStageRead,
     PipelineStageUpdateRequest,
     ReassignmentRequestCreate,
+    RecruitmentReportExportRequest,
+    RecruitmentReportListResponse,
     ReshuffleRequest,
     ReshuffleResponse,
     StageInterviewAssignmentRequest,
@@ -46,6 +49,30 @@ async def handle_list_job_postings(
     db: AsyncSession,
 ) -> list[PipelineJobPostingRead]:
     return await service.list_job_postings(db, ctx.organization.id)
+
+
+async def handle_update_job_posting_status(
+    ctx: MemberContext,
+    db: AsyncSession,
+    job_posting_id: str,
+    body: PipelineJobPostingStatusUpdateRequest,
+) -> PipelineJobPostingRead:
+    return await service.update_job_posting_status(db, ctx.organization.id, job_posting_id, body)
+
+
+async def handle_list_recruitment_report_jobs(
+    ctx: MemberContext,
+    db: AsyncSession,
+) -> RecruitmentReportListResponse:
+    return await service.list_recruitment_report_jobs(db, ctx.organization.id)
+
+
+async def handle_export_recruitment_report(
+    ctx: MemberContext,
+    db: AsyncSession,
+    body: RecruitmentReportExportRequest,
+) -> bytes:
+    return await service.export_recruitment_report(db, ctx.organization.id, body)
 
 
 async def handle_get_pipeline_board(

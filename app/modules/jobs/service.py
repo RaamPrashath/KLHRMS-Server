@@ -431,6 +431,11 @@ def _serialize_pipeline_board(job_posting_id: str, stages: list[PipelineStage]) 
     )
 
 
+def _assert_pipeline_posting_open(posting: JobPosting) -> None:
+    if posting.status == JobPostingStatus.CLOSED:
+        raise HTTPException(status_code=409, detail="This job opening is closed. Pipeline changes are disabled.")
+
+
 def _serialize_requisition(
     requisition: JobRequisition,
     actor_member_id: str,
@@ -1031,6 +1036,7 @@ async def create_pipeline_stage(
         edit_scope,
         requisition_id,
     )
+    _assert_pipeline_posting_open(posting)
     stages = await repository.list_pipeline_stages(organization_id, posting.id)
     next_order = max((stage.order for stage in stages), default=0.0) + 1.0
     stage_type = StageType(body.stageType)
@@ -1074,6 +1080,7 @@ async def create_default_pipeline(
         edit_scope,
         requisition_id,
     )
+    _assert_pipeline_posting_open(posting)
     applied_stage, used_slugs = await _replace_setup_stages(repository, organization_id, posting.id)
     stages: list[PipelineStage] = []
     start_order = applied_stage.order if applied_stage is not None else 0.0
@@ -1119,6 +1126,7 @@ async def import_pipeline(
         edit_scope,
         requisition_id,
     )
+    _assert_pipeline_posting_open(target_posting)
     if body.sourceJobPostingId == target_posting.id:
         raise HTTPException(status_code=400, detail="Choose a different job to import from")
     source_stages = await repository.get_pipeline_stages_for_import(

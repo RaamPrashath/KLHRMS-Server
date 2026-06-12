@@ -22,6 +22,29 @@ class PipelineJobPostingRead(BaseModel):
     openings: int | None = None
 
 
+class PipelineJobPostingStatusUpdateRequest(BaseModel):
+    status: Literal["PUBLISHED", "CLOSED"]
+
+
+class RecruitmentReportJobRead(BaseModel):
+    id: str
+    slug: str
+    name: str
+    totalCandidates: int
+    priority: str
+    status: Literal["ACTIVE", "CLOSED"]
+
+
+class RecruitmentReportListResponse(BaseModel):
+    items: list[RecruitmentReportJobRead]
+
+
+class RecruitmentReportExportRequest(BaseModel):
+    format: Literal["pdf", "xlsx", "csv"]
+    jobPostingIds: list[str] = Field(default_factory=list)
+    includeCandidateHistory: bool = False
+
+
 class CandidateSummaryRead(BaseModel):
     id: str
     firstName: str
@@ -438,6 +461,15 @@ class ApplicationInterviewEventRead(BaseModel):
     createdAt: datetime
 
 
+class CandidateApplicationFileRead(BaseModel):
+    id: str
+    label: str
+    category: str
+    url: str
+    source: str
+    uploadedAt: datetime | None = None
+
+
 class CandidateApplicationDetailRead(BaseModel):
     id: str
     jobPostingId: str
@@ -455,6 +487,7 @@ class CandidateApplicationDetailRead(BaseModel):
     stageHistory: list[PipelineStageHistoryRead]
     interviewEvents: list[ApplicationInterviewEventRead] = Field(default_factory=list)
     notes: list[CandidateApplicationNoteRead] = Field(default_factory=list)
+    files: list[CandidateApplicationFileRead] = Field(default_factory=list)
 
 
 class CandidateApplicationUpdateRequest(BaseModel):

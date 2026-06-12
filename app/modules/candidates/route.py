@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import io
+
 from fastapi import APIRouter, Body, Depends, Query, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.candidates.controller import (
@@ -25,6 +28,7 @@ from app.modules.candidates.controller import (
     handle_get_stage_workspace_by_job_slug,
     handle_list_interviewers,
     handle_list_job_postings,
+    handle_list_recruitment_report_jobs,
     handle_list_my_interviews,
     handle_move_application_stage,
     handle_move_interview_assignment,
@@ -33,10 +37,12 @@ from app.modules.candidates.controller import (
     handle_reopen_stage,
     handle_reshuffle_interview_assignment,
     handle_start_interview_meeting,
+    handle_update_job_posting_status,
     handle_update_application_detail,
     handle_update_application_note,
     handle_update_interview_meeting,
     handle_update_stage,
+    handle_export_recruitment_report,
 )
 from app.modules.candidates.schema import (
     CandidateApplicationDetailRead,
@@ -58,11 +64,14 @@ from app.modules.candidates.schema import (
     MyInterviewListResponse,
     PipelineApplicationRead,
     PipelineBoardRead,
+    PipelineJobPostingStatusUpdateRequest,
     PipelineJobPostingRead,
     PipelineStageCreateRequest,
     PipelineStageRead,
     PipelineStageUpdateRequest,
     ReassignmentRequestCreate,
+    RecruitmentReportExportRequest,
+    RecruitmentReportListResponse,
     ReshuffleRequest,
     ReshuffleResponse,
     StageInterviewAssignmentRequest,
@@ -79,6 +88,12 @@ from app.shared.deps.permissions import require_any_permission, require_permissi
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
+_REPORT_MIME_TYPES = {
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pdf": "application/pdf",
+    "csv": "text/csv; charset=utf-8",
+}
+
 
 @router.get("/pipeline/postings", response_model=list[PipelineJobPostingRead])
 async def list_pipeline_job_postings(
@@ -86,6 +101,42 @@ async def list_pipeline_job_postings(
     db: AsyncSession = Depends(get_db),
 ) -> list[PipelineJobPostingRead]:
     return await handle_list_job_postings(ctx, db)
+
+
+@router.patch("/pipeline/postings/{job_posting_id}/status", response_model=PipelineJobPostingRead)
+async def update_pipeline_job_posting_status(
+    job_posting_id: str,
+    body: PipelineJobPostingStatusUpdateRequest,
+    ctx: Annotated[MemberContext, Depends(require_any_permission(("jobs", "edit"), ("candidates", "edit")))],
+    db: AsyncSession = Depends(get_db),
+) -> PipelineJobPostingRead:
+    return await handle_update_job_posting_status(ctx, db, job_posting_id, body)
+
+
+@router.get("/recruitment-report/jobs", response_model=RecruitmentReportListResponse)
+async def list_recruitment_report_jobs(
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
+    db: AsyncSession = Depends(get_db),
+) -> RecruitmentReportListResponse:
+    return await handle_list_recruitment_report_jobs(ctx, db)
+
+
+@router.post("/recruitment-report/export")
+async def export_recruitment_report(
+    body: RecruitmentReportExportRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("candidates", "view", allow_self=True))],
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    content = await handle_export_recruitment_report(ctx, db, body)
+    filename = f"recruitment-report.{body.format}"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=_REPORT_MIME_TYPES[body.format],
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(content)),
+        },
+    )
 
 
 @router.get("/pipeline", response_model=PipelineBoardRead)

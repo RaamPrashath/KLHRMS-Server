@@ -12,7 +12,7 @@ class FakeResult:
     def __init__(self, value: object) -> None:
         self.value = value
 
-    def unique(self) -> "FakeResult":
+    def unique(self) -> FakeResult:
         return self
 
     def scalar_one_or_none(self) -> object:
