@@ -150,7 +150,8 @@ def _can_finance_approve(
         return False
     if actor.role is None:
         return False
-    return get_permission_scope(actor.role.permissions, "procurement", "approve") == "organization"
+    scope = get_permission_scope(actor.role.permissions, "procurement", "approve")
+    return scope is not None and scope not in ("none", "self")
 
 
 async def _get_org_finance_approvers(db: AsyncSession, organization_id: str) -> list[Member]:
@@ -164,14 +165,15 @@ async def _get_org_finance_approvers(db: AsyncSession, organization_id: str) -> 
         member
         for member in members
         if member.role is not None
-        and get_permission_scope(member.role.permissions, "procurement", "approve") == "organization"
+        and get_permission_scope(member.role.permissions, "procurement", "approve") not in (None, "none", "self")
     ]
 
 
 def _can_issue_purchase_order(requisition: AssetPurchaseRequisition, actor: Member) -> bool:
     if requisition.status != "APPROVED" or actor.role is None:
         return False
-    return get_permission_scope(actor.role.permissions, "procurement", "approve") == "organization"
+    scope = get_permission_scope(actor.role.permissions, "procurement", "approve")
+    return scope is not None and scope not in ("none", "self")
 
 
 def _should_receive_procurement_po(role: Role | None) -> bool:
@@ -179,17 +181,8 @@ def _should_receive_procurement_po(role: Role | None) -> bool:
         return False
 
     permissions = role.permissions or {}
-    organization_permissions = permissions.get("organization") or {}
-    permission_permissions = permissions.get("permission") or {}
     procurement_permissions = permissions.get("procurement") or {}
-
-    if organization_permissions.get("view") == "organization":
-        return True
-    if permission_permissions.get("view") == "organization":
-        return True
-    if procurement_permissions.get("view") == "organization":
-        return True
-    return False
+    return procurement_permissions.get("view") == "organization"
 
 
 async def _get_procurement_admin_recipients(
@@ -376,7 +369,7 @@ def _serialize_requisition(
         updatedAt=requisition.updatedAt,
         currentUserCanApprove=_can_finance_approve(requisition, actor),
         canSubmit=requisition.status == "DRAFT" and requisition.raisedByMemberId == actor.id,
-        approvalsPendingFinance=requisition.status == "PENDING_FINANCE_APPROVAL",
+        approvalsPendingFinance=requisition.status == "PENDING",
         activities=activities,
         purchaseOrders=purchase_orders,
     )
@@ -1370,7 +1363,8 @@ async def get_procurement_admin_recipients(
     db: AsyncSession,
     ctx: MemberContext,
 ) -> ProcurementAdminRecipientsResponse:
-    if ctx.member.role is None or get_permission_scope(ctx.member.role.permissions, "procurement", "approve") != "organization":
+    scope = get_permission_scope(ctx.member.role.permissions, "procurement", "approve")
+    if ctx.member.role is None or scope in (None, "none", "self"):
         raise HTTPException(status_code=403, detail="Only procurement approvers can access admin recipients")
 
     recipients = await _get_procurement_admin_recipients(db, ctx.organization.id)
@@ -1393,7 +1387,8 @@ async def list_procurement_purchase_orders(
 ) -> ProcurementPurchaseOrderListResponse:
     pagination = pagination or PaginationParams()
 
-    if ctx.member.role is None or get_permission_scope(ctx.member.role.permissions, "procurement", "approve") != "organization":
+    scope = get_permission_scope(ctx.member.role.permissions, "procurement", "approve")
+    if ctx.member.role is None or scope in (None, "none", "self"):
         raise HTTPException(status_code=403, detail="Only procurement approvers can access generated purchase orders")
 
     count_result = await db.execute(
@@ -1441,7 +1436,8 @@ async def get_procurement_purchase_order_download(
     ctx: MemberContext,
     purchase_order_id: str,
 ) -> ProcurementPurchaseOrderDownloadResponse:
-    if ctx.member.role is None or get_permission_scope(ctx.member.role.permissions, "procurement", "approve") != "organization":
+    scope = get_permission_scope(ctx.member.role.permissions, "procurement", "approve")
+    if ctx.member.role is None or scope in (None, "none", "self"):
         raise HTTPException(status_code=403, detail="Only procurement approvers can download generated purchase orders")
 
     purchase_order = await _load_purchase_order(db, ctx.organization.id, purchase_order_id)
@@ -1891,7 +1887,7 @@ async def update_procurement_requisition(
         raise HTTPException(status_code=404, detail="Procurement requisition not found")
     if requisition.raisedByMemberId != ctx.member.id and ctx.scope == "self":
         raise HTTPException(status_code=403, detail="You can only update your own requisitions")
-    if requisition.status not in {"DRAFT", "PENDING_FINANCE_APPROVAL"}:
+    if requisition.status not in {"DRAFT", "PENDING"}:
         raise HTTPException(status_code=400, detail="Only draft or pending requisitions can be edited")
 
     update_data = payload.model_dump(exclude_none=True)
@@ -1931,7 +1927,7 @@ async def submit_procurement_requisition(
     if not approvers:
         raise HTTPException(status_code=400, detail="No finance managers are configured for procurement approval")
 
-    requisition.status = "PENDING_FINANCE_APPROVAL"
+    requisition.status = "PENDING"
     db.add(requisition)
     await _log_activity(db, ctx.organization.id, requisition.id, ctx.member.id, "SUBMITTED")
     await db.commit()
@@ -2122,7 +2118,7 @@ async def cancel_procurement_requisition(
         raise HTTPException(status_code=404, detail="Procurement requisition not found")
     if requisition.raisedByMemberId != ctx.member.id and ctx.scope == "self":
         raise HTTPException(status_code=403, detail="you dont have permission")
-    if requisition.status not in {"DRAFT", "PENDING_FINANCE_APPROVAL"}:
+    if requisition.status not in {"DRAFT", "PENDING"}:
         raise HTTPException(status_code=400, detail="This requisition cannot be cancelled")
 
     requisition.status = "CANCELLED"
