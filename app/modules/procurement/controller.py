@@ -17,6 +17,7 @@ from app.modules.procurement.schema import (
     ProcurementPurchaseOrderGenerateRequest,
     ProcurementPurchaseOrderIssueResponse,
     ProcurementPurchaseOrderListResponse,
+    ProcurementPurchaseOrderSendEmailRequest,
     ProcurementPurchaseOrderTemplateRead,
     ProcurementPurchaseOrderTemplateUpdateRequest,
     ProcurementPurchaseOrderPreviewRequest,
@@ -36,6 +37,7 @@ from app.modules.procurement.service import (
     list_procurement_requisitions,
     preview_procurement_purchase_order,
     reject_procurement_requisition,
+    send_procurement_purchase_order_email,
     submit_procurement_requisition,
     update_procurement_requisition,
     upsert_procurement_purchase_order_template,
@@ -175,3 +177,12 @@ async def handle_get_purchase_order_download(
     purchase_order_id: str,
 ) -> ProcurementPurchaseOrderDownloadResponse:
     return await get_procurement_purchase_order_download(db, ctx, purchase_order_id)
+
+
+async def handle_send_po_email(
+    ctx: MemberContext,
+    db: AsyncSession,
+    purchase_order_id: str,
+    body: ProcurementPurchaseOrderSendEmailRequest,
+) -> dict[str, str]:
+    return await send_procurement_purchase_order_email(db, ctx, purchase_order_id, body)

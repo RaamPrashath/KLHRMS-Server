@@ -37,6 +37,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from app.integrations.storage.supabase_storage import (
     SupabaseStorageError,
     create_private_file_signed_url,
+    download_private_file,
     upload_private_file,
 )
 from app.models.asset import Asset
@@ -84,6 +85,7 @@ from app.modules.procurement.schema import (
     ProcurementPurchaseOrderListResponse,
     ProcurementPurchaseOrderPreviewRequest,
     ProcurementPurchaseOrderRead,
+    ProcurementPurchaseOrderSendEmailRequest,
     ProcurementPurchaseOrderTemplatePayload,
     ProcurementPurchaseOrderTemplateRead,
     ProcurementPurchaseOrderTemplateUpdateRequest,
@@ -471,10 +473,10 @@ def _default_purchase_order_template(org: Organization) -> ProcurementPurchaseOr
         company={
             "displayName": org.name,
             "name": org.name,
-            "logoUrl": org.logo,
-            "address": None,
-            "contactEmail": None,
-            "contactPhone": None,
+            "logoUrl": "https://res.cloudinary.com/dxhree9z7/image/upload/v1781259055/procurement_logo_ewuz9m.png",
+            "address": "GF44, Tidel Park\nCoimbatore, 641 014\nIndia",
+            "contactEmail": "support@kovanlabs.com",
+            "contactPhone": "9999999999",
             "taxId": None,
         },
         signatory={"name": None, "title": "Authorized Signatory", "signatureImageUrl": None},
@@ -489,12 +491,26 @@ def _default_purchase_order_template(org: Organization) -> ProcurementPurchaseOr
     )
 
 
+_DEFAULT_COMPANY_FIELDS: dict[str, Any] = {
+    "logoUrl": "https://res.cloudinary.com/dxhree9z7/image/upload/v1781259055/procurement_logo_ewuz9m.png",
+    "contactEmail": "support@kovanlabs.com",
+    "contactPhone": "9999999999",
+    "address": "GF44, Tidel Park\nCoimbatore, 641 014\nIndia",
+}
+
+
 def _coerce_template_payload(
     value: ProcurementPurchaseOrderTemplatePayload | dict[str, Any],
 ) -> ProcurementPurchaseOrderTemplatePayload:
     if isinstance(value, ProcurementPurchaseOrderTemplatePayload):
         return value
-    return ProcurementPurchaseOrderTemplatePayload(**value)
+    company = dict(value.get("company") or {})
+    for key, default in _DEFAULT_COMPANY_FIELDS.items():
+        if not company.get(key):
+            company[key] = default
+    coerced = dict(value)
+    coerced["company"] = company
+    return ProcurementPurchaseOrderTemplatePayload(**coerced)
 
 
 def _legacy_notes_to_html(
@@ -1014,11 +1030,10 @@ async def _render_purchase_order_pdf(
 
     item_rows: list[list[Any]] = [
         [
-            Paragraph("<b>Description</b>", label_style),
-            Paragraph("<b>SKU</b>", label_style),
+            Paragraph("<b>Product Name</b>", label_style),
+            Paragraph("<b>Asset Code</b>", label_style),
             Paragraph("<b>Qty</b>", label_style),
             Paragraph("<b>Unit Price</b>", label_style),
-            Paragraph("<b>Tax</b>", label_style),
             Paragraph("<b>Total</b>", label_style),
         ]
     ]
@@ -1029,7 +1044,6 @@ async def _render_purchase_order_pdf(
                 Paragraph(html.escape(item.sku or "-"), body_style),
                 Paragraph(str(item.quantity), body_style),
                 Paragraph(f"{currency} {item.unitPrice:,.2f}", body_style),
-                Paragraph(f"{item.taxPercent:.2f}%", body_style),
                 Paragraph(f"{currency} {item.total:,.2f}", body_style),
             ]
         )
@@ -1038,11 +1052,10 @@ async def _render_purchase_order_pdf(
             item_rows,
             repeatRows=1,
             colWidths=[
-                doc.width * 0.33,
-                doc.width * 0.12,
-                doc.width * 0.08,
-                doc.width * 0.16,
-                doc.width * 0.11,
+                doc.width * 0.32,
+                doc.width * 0.18,
+                doc.width * 0.10,
+                doc.width * 0.20,
                 doc.width * 0.20,
             ],
             style=TableStyle(
@@ -1424,6 +1437,8 @@ async def list_procurement_purchase_orders(
                 assetName=entry.requisition.assetName if entry.requisition is not None else None,
                 storageBucket=entry.storageBucket,
                 storagePath=entry.storagePath,
+                sentAt=entry.sentAt,
+                emailError=entry.emailError,
             )
             for entry in purchase_orders
         ],
@@ -1730,10 +1745,7 @@ async def issue_procurement_purchase_order(
 
     if payload.sendToAdmin:
         if not _is_procurement_email_configured():
-            raise HTTPException(
-                status_code=400,
-                detail="Purchase order email is not configured on the server",
-            )
+            payload.sendToAdmin = False
         if recipient is None or recipient.user is None:
             raise HTTPException(status_code=400, detail="Selected recipient is not a valid admin contact")
 
@@ -2129,3 +2141,64 @@ async def cancel_procurement_requisition(
     if saved is None:
         raise HTTPException(status_code=404, detail="Procurement requisition not found")
     return _serialize_requisition(saved, ctx.member)
+
+
+async def send_procurement_purchase_order_email(
+    db: AsyncSession,
+    ctx: MemberContext,
+    purchase_order_id: str,
+    payload: ProcurementPurchaseOrderSendEmailRequest,
+) -> dict[str, str]:
+    scope = get_permission_scope(ctx.member.role.permissions, "procurement", "approve")
+    if ctx.member.role is None or scope in (None, "none", "self"):
+        raise HTTPException(status_code=403, detail="Only procurement approvers can send purchase order emails")
+
+    if not _is_procurement_email_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="Purchase order email is not configured on the server",
+        )
+
+    purchase_order = await _load_purchase_order(db, ctx.organization.id, purchase_order_id)
+    if purchase_order is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+
+    org = await _get_org(db, ctx.organization.id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    try:
+        pdf_bytes = await download_private_file(
+            bucket=purchase_order.storageBucket,
+            path=purchase_order.storagePath,
+        )
+    except SupabaseStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    recipient_name = _member_display_name(purchase_order.recipient) or payload.recipientEmail
+
+    try:
+        await send_procurement_purchase_order(
+            to_email=payload.recipientEmail,
+            recipient_name=recipient_name,
+            org_slug=org.slug,
+            po_number=purchase_order.poNumber,
+            requisition_label=_requisition_label(purchase_order.requisition) if purchase_order.requisition else purchase_order.id,
+            asset_name=purchase_order.requisition.assetName if purchase_order.requisition else "Purchase order",
+            generated_by_name=_member_display_name(ctx.member) or "Finance",
+            pdf_bytes=pdf_bytes,
+            file_name=purchase_order.fileName,
+        )
+        purchase_order.status = "SENT"
+        purchase_order.sentAt = datetime.now(UTC)
+        purchase_order.recipientMemberId = payload.recipientMemberId
+        purchase_order.recipientEmail = payload.recipientEmail
+        purchase_order.emailError = None
+        db.add(purchase_order)
+        await db.commit()
+        return {"status": "sent"}
+    except Exception as exc:
+        purchase_order.emailError = str(exc)[:1000]
+        db.add(purchase_order)
+        await db.commit()
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(exc)[:200]}")

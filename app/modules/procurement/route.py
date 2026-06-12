@@ -20,6 +20,7 @@ from app.modules.procurement.controller import (
     handle_list_requisitions,
     handle_preview_purchase_order,
     handle_reject_requisition,
+    handle_send_po_email,
     handle_submit_requisition,
     handle_update_requisition,
     handle_upsert_purchase_order_template,
@@ -39,6 +40,7 @@ from app.modules.procurement.schema import (
     ProcurementPurchaseOrderGenerateRequest,
     ProcurementPurchaseOrderIssueResponse,
     ProcurementPurchaseOrderListResponse,
+    ProcurementPurchaseOrderSendEmailRequest,
     ProcurementPurchaseOrderTemplateRead,
     ProcurementPurchaseOrderTemplateUpdateRequest,
     ProcurementPurchaseOrderPreviewRequest,
@@ -220,3 +222,13 @@ async def issue_procurement_purchase_order_route(
     db: DbSession,
 ) -> ProcurementPurchaseOrderIssueResponse:
     return await handle_issue_purchase_order(access, db, requisition_id, body)
+
+
+@router.post("/purchase-orders/{purchase_order_id}/send-email")
+async def send_procurement_purchase_order_email_route(
+    purchase_order_id: str,
+    body: ProcurementPurchaseOrderSendEmailRequest,
+    access: Annotated[MemberContext, Depends(require_permission("procurement", "approve"))],
+    db: DbSession,
+) -> dict[str, str]:
+    return await handle_send_po_email(access, db, purchase_order_id, body)

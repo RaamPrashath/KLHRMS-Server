@@ -369,6 +369,13 @@ class ProcurementPurchaseOrderListItemRead(BaseModel):
     assetName: str | None
     storageBucket: str
     storagePath: str
+    sentAt: datetime | None = None
+    emailError: str | None = None
+
+
+class ProcurementPurchaseOrderSendEmailRequest(BaseModel):
+    recipientMemberId: str
+    recipientEmail: str
 
 
 class ProcurementPurchaseOrderDownloadResponse(BaseModel):

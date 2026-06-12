@@ -108,3 +108,32 @@ async def create_private_file_signed_url(
     if signed_url.startswith("http://") or signed_url.startswith("https://"):
         return signed_url
     return f"{settings.supabase_url.rstrip('/')}/storage/v1{signed_url}"
+
+
+async def download_private_file(*, bucket: str, path: str) -> bytes:
+    settings = get_settings()
+    if not settings.supabase_url or not settings.supabase_service_role_key:
+        raise SupabaseStorageError("Supabase storage is not configured")
+
+    encoded_path = quote(path, safe="/")
+    url = f"{settings.supabase_url.rstrip('/')}/storage/v1/object/{bucket}/{encoded_path}"
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {settings.supabase_service_role_key}",
+                    "apikey": settings.supabase_service_role_key,
+                },
+            )
+            if response.is_error:
+                raise SupabaseStorageError(
+                    _extract_supabase_error_message(
+                        response,
+                        f"Failed to download file from bucket '{bucket}' at '{path}'",
+                    )
+                )
+            return response.content
+    except httpx.HTTPError as exc:
+        raise SupabaseStorageError("Failed to download file from Supabase storage: network error") from exc
