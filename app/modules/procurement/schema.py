@@ -134,6 +134,32 @@ class ProcurementDecisionRequest(BaseModel):
     comment: str | None = None
 
 
+class AssetPurchaseRequisitionUpdateRequest(BaseModel):
+    justification: str | None = Field(default=None, min_length=1)
+    requiredByDate: date | None = None
+    estimatedUnitCost: float | None = Field(default=None, ge=0)
+    estimatedQuantity: int | None = Field(default=None, ge=1)
+    estimatedTotalCost: float | None = Field(default=None, ge=0)
+    vendorPreference: str | None = Field(default=None, max_length=160)
+    urgency: str | None = None
+    costCenterOrDepartmentId: str | None = None
+    assetName: str | None = Field(default=None, max_length=255)
+    assetCode: str | None = Field(default=None, max_length=120)
+    categoryDefinitionId: str | None = None
+    specificationNotes: str | None = None
+    replacementReason: str | None = None
+
+    @field_validator("urgency")
+    @classmethod
+    def validate_urgency(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        normalized = _normalize_enum(value)
+        if normalized not in PROCUREMENT_URGENCY:
+            raise ValueError("Invalid urgency")
+        return normalized
+
+
 class ProcurementPurchaseOrderCompanyPayload(BaseModel):
     displayName: str = Field(min_length=1, max_length=255)
     name: str = Field(min_length=1, max_length=255)
@@ -240,6 +266,11 @@ class ProcurementPurchaseOrderTemplateRead(BaseModel):
     templateVersion: str
     updatedAt: datetime | None = None
     template: ProcurementPurchaseOrderTemplatePayload
+
+
+class PaginationParams(BaseModel):
+    limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
 
 
 class ProcurementPurchaseOrderPreviewRequest(BaseModel):
@@ -426,8 +457,20 @@ class AssetPurchaseRequisitionRead(BaseModel):
     purchaseOrders: list[ProcurementPurchaseOrderRead]
 
 
+class PaginationMeta(BaseModel):
+    total: int
+    limit: int
+    offset: int
+
+
 class AssetPurchaseRequisitionListResponse(BaseModel):
     items: list[AssetPurchaseRequisitionRead]
+    pagination: PaginationMeta
+
+
+class ProcurementPurchaseOrderListResponse(BaseModel):
+    items: list[ProcurementPurchaseOrderListItemRead]
+    pagination: PaginationMeta
 
 
 ProcurementPurchaseOrderDraftResponse.model_rebuild()

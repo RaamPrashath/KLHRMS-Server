@@ -6,6 +6,8 @@ from app.modules.procurement.schema import (
     AssetPurchaseRequisitionCreateRequest,
     AssetPurchaseRequisitionListResponse,
     AssetPurchaseRequisitionRead,
+    AssetPurchaseRequisitionUpdateRequest,
+    PaginationParams,
     ProcurementAdminRecipientsResponse,
     ProcurementDecisionRequest,
     ProcurementMetaResponse,
@@ -35,6 +37,7 @@ from app.modules.procurement.service import (
     preview_procurement_purchase_order,
     reject_procurement_requisition,
     submit_procurement_requisition,
+    update_procurement_requisition,
     upsert_procurement_purchase_order_template,
 )
 from app.shared.deps.organization_member import MemberContext
@@ -53,15 +56,17 @@ async def handle_get_admin_recipients(
 async def handle_list_requisitions(
     ctx: MemberContext,
     db: AsyncSession,
+    pagination: PaginationParams,
 ) -> AssetPurchaseRequisitionListResponse:
-    return await list_procurement_requisitions(db, ctx)
+    return await list_procurement_requisitions(db, ctx, pagination)
 
 
 async def handle_list_purchase_orders(
     ctx: MemberContext,
     db: AsyncSession,
+    pagination: PaginationParams,
 ) -> ProcurementPurchaseOrderListResponse:
-    return await list_procurement_purchase_orders(db, ctx)
+    return await list_procurement_purchase_orders(db, ctx, pagination)
 
 
 async def handle_get_requisition(
@@ -112,6 +117,15 @@ async def handle_cancel_requisition(
     requisition_id: str,
 ) -> AssetPurchaseRequisitionRead:
     return await cancel_procurement_requisition(db, ctx, requisition_id)
+
+
+async def handle_update_requisition(
+    ctx: MemberContext,
+    db: AsyncSession,
+    requisition_id: str,
+    payload: AssetPurchaseRequisitionUpdateRequest,
+) -> AssetPurchaseRequisitionRead:
+    return await update_procurement_requisition(db, ctx, requisition_id, payload)
 
 
 async def handle_get_purchase_order_draft(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.procurement.controller import (
@@ -21,12 +21,15 @@ from app.modules.procurement.controller import (
     handle_preview_purchase_order,
     handle_reject_requisition,
     handle_submit_requisition,
+    handle_update_requisition,
     handle_upsert_purchase_order_template,
 )
 from app.modules.procurement.schema import (
     AssetPurchaseRequisitionCreateRequest,
     AssetPurchaseRequisitionListResponse,
     AssetPurchaseRequisitionRead,
+    AssetPurchaseRequisitionUpdateRequest,
+    PaginationParams,
     ProcurementAdminRecipientsResponse,
     ProcurementDecisionRequest,
     ProcurementMetaResponse,
@@ -78,8 +81,11 @@ async def get_procurement_purchase_order_template_route(
 async def list_procurement_purchase_orders_route(
     access: Annotated[MemberContext, Depends(require_permission("procurement", "approve"))],
     db: DbSession,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> ProcurementPurchaseOrderListResponse:
-    return await handle_list_purchase_orders(access, db)
+    pagination = PaginationParams(limit=limit, offset=offset)
+    return await handle_list_purchase_orders(access, db, pagination)
 
 
 @router.get("/purchase-orders/{purchase_order_id}/download", response_model=ProcurementPurchaseOrderDownloadResponse)
@@ -106,8 +112,11 @@ async def list_procurement_requisitions_route(
         MemberContext, Depends(require_permission("procurement", "view", allow_self=True))
     ],
     db: DbSession,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> AssetPurchaseRequisitionListResponse:
-    return await handle_list_requisitions(access, db)
+    pagination = PaginationParams(limit=limit, offset=offset)
+    return await handle_list_requisitions(access, db, pagination)
 
 
 @router.get("/{requisition_id}", response_model=AssetPurchaseRequisitionRead)
@@ -159,6 +168,18 @@ async def reject_procurement_requisition_route(
     db: DbSession,
 ) -> AssetPurchaseRequisitionRead:
     return await handle_reject_requisition(access, db, requisition_id, body)
+
+
+@router.patch("/{requisition_id}", response_model=AssetPurchaseRequisitionRead)
+async def update_procurement_requisition_route(
+    requisition_id: str,
+    body: AssetPurchaseRequisitionUpdateRequest,
+    access: Annotated[
+        MemberContext, Depends(require_permission("procurement", "edit", allow_self=True))
+    ],
+    db: DbSession,
+) -> AssetPurchaseRequisitionRead:
+    return await handle_update_requisition(access, db, requisition_id, body)
 
 
 @router.post("/{requisition_id}/cancel", response_model=AssetPurchaseRequisitionRead)
