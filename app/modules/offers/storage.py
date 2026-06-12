@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from uuid import uuid4
 from urllib.parse import quote
+from uuid import uuid4
 
 import httpx
 
@@ -98,8 +98,11 @@ async def upload_offer_file(
         "Content-Type": content_type,
         "x-upsert": "true" if upsert else "false",
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(upload_url, headers=headers, content=content)
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(upload_url, headers=headers, content=content)
+    except httpx.HTTPError as exc:
+        raise RuntimeError("Supabase offer upload failed: network error") from exc
 
     if response.status_code >= 400:
         raise RuntimeError(_storage_error(response))

@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from app.integrations.microsoft_graph.schema import MicrosoftUser
-from app.modules.microsoft_graph.repository import MicrosoftGraphRepository
 from app.models.account import Account
 from app.models.member import Member
 from app.models.user import User
+from app.modules.microsoft_graph.repository import MicrosoftGraphRepository
 
 
 class FakeResult:

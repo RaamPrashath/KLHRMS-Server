@@ -1,0 +1,87 @@
+{
+  "personal_info": {
+    "name": "First Last",
+    "email": null,
+    "phone": null,
+    "linkedin": null,
+    "portfolio_url": null
+  },
+  "summary": [
+    "Over 9 years of professional experience in software development, technical support, and ethical hacking roles.",
+    "Expert Python Developer creating robust back-end financial systems for 20+ applications, ensuring user-friendly navigation.",
+    "Successfully developed and updated productivity applications, boosting user downloads by 30% within 96 hours of release.",
+    "Supervised programming tasks and maintained 10+ company websites with a 50% success rate in product update deployment.",
+    "Designed a marketing lead MySQL database that categorized and filtered 740+ leads from several sources.",
+    "Responded to and resolved 300+ customer technical questions regarding access software, CMS, IP Cameras, DVRs, and Access Control.",
+    "Provided technical solutions for 70+ Small and Medium-sized enterprises (SMEs) and 20+ micro-merchants, accounting for 38% of card payments.",
+    "Discovered and resolved a critical software glitch that prevented 150+ customers from accessing their accounts.",
+    "Created a user interface as a single-page application using React and MobX, increasing productivity for 1100+ users by 64%.",
+    "Implemented functionality for disconnected client machines, enabling 420+ customers to work offline without data loss."
+  ],
+  "experience": [
+    {
+      "title": "Python Developer",
+      "company": "Resume Worded",
+      "dates": "01/2022 – Present",
+      "client": null,
+      "project": null,
+      "project_desc": null,
+      "technologies": [
+        "Python",
+        "MySQL"
+      ],
+      "responsibilities": [
+        "Created the back-end financial systems that made 20+ RW applications user-friendly and seamless to navigate.",
+        "Developed and updated productivity applications, which increased user downloads by 30% within 96 hours of release.",
+        "Supervised programming tasks and maintained 10+ company websites with a 50% success rate in product update deployment.",
+        "Designed a marketing lead MySQL database that categorized and filtered 740+ leads from several sources."
+      ]
+    },
+    {
+      "title": "Technical Support Specialist",
+      "company": "Polyhire",
+      "dates": "10/2019 – 12/2021",
+      "client": null,
+      "project": null,
+      "project_desc": null,
+      "technologies": [
+        "CMS",
+        "IP Cameras",
+        "DVRs",
+        "Access Control"
+      ],
+      "responsibilities": [
+        "Responded to and resolved 300+ customer questions about implementing access software, CMS, IP Cameras, DVRs, and Access Control.",
+        "Provided technical solutions for 70+ Small and Medium-sized enterprises (SMEs) and 20+ micro-merchants, which accounted for 38% of Polyhire card payments.",
+        "Discovered a software glitch that prevented 150+ customers from accessing their accounts in the first week of employment.",
+        "Answered customers' inquiries within 60+ seconds of contact via chat sessions and live support."
+      ]
+    },
+    {
+      "title": "Junior Software Developer",
+      "company": "Growthsi",
+      "dates": "11/2018 – 09/2019",
+      "client": null,
+      "project": null,
+      "project_desc": null,
+      "technologies": [
+        "React",
+        "MobX"
+      ],
+      "responsibilities": [
+        "Created a user interface as a single-page application using React and MobX; increased the productivity of 1100+ users by 64%.",
+        "Implemented functionality to support disconnected client machines, which enabled 420+ customers to work offline without losing data.",
+        "Designed a data dictionary generator that creates documentation for 1200+ developers as spreadsheets and web pages.",
+        "Launched a search engine for consumers to search for ATM locations in 20+ states, saving institutions $50K on data research."
+      ]
+    }
+  ],
+  "education": [],
+  "skills": [],
+  "awards": [],
+  "projects": [],
+  "additional_info": {
+    "areas_of_expertise": [],
+    "business_overview": ""
+  }
+}

@@ -3,13 +3,16 @@ from __future__ import annotations
 import sys
 import types
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.integrations.email.resend_service import ResendEmailService
 from app.models.organization import Organization
 from app.models.recruitment import Candidate, JobPosting, JobRequisition, OfferLetter
 from app.modules.offers import render as offer_render
+from app.modules.offers import storage as offer_storage
 from app.modules.offers.render import OfferRenderError, render_offer_html
 from app.modules.offers.schema import OfferTemplateUpdateRequest
 from app.modules.offers.service import _batch_status_for_counts
@@ -212,6 +215,41 @@ def test_template_asset_urls_reject_local_offer_uploads() -> None:
     with pytest.raises(ValueError):
         OfferTemplateUpdateRequest(
             logoUrl="http://localhost:8000/uploads/offers/org/template/logo.png",
+        )
+
+
+@pytest.mark.asyncio
+async def test_offer_upload_network_error_is_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            pass
+
+        async def post(self, *args: object, **kwargs: object) -> httpx.Response:
+            request = httpx.Request("POST", "https://supabase.example/storage/v1/object")
+            raise httpx.ConnectError("getaddrinfo failed", request=request)
+
+    monkeypatch.setattr(offer_storage.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        offer_storage,
+        "get_settings",
+        lambda: SimpleNamespace(
+            supabase_url="https://supabase.example",
+            supabase_service_role_key="service-role-key",
+            supabase_offer_bucket="offer-letter",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Supabase offer upload failed: network error"):
+        await offer_storage.upload_offer_file(
+            content=b"pdf",
+            storage_path="org/offers/test.pdf",
+            content_type="application/pdf",
         )
 
 

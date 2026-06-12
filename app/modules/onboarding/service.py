@@ -83,6 +83,39 @@ def _onboarding_read(record: OnboardingRecord | None) -> OnboardingRecordRead | 
     return OnboardingRecordRead.model_validate(record)
 
 
+def _is_browser_document_url(value: str | None) -> bool:
+    return bool(value and (value.startswith("http://") or value.startswith("https://")))
+
+
+def _has_usable_submitted_documents(record: OnboardingRecord) -> bool:
+    return _is_browser_document_url(record.aadharUrl) and _is_browser_document_url(record.panUrl)
+
+
+def _document_upload_error(document_label: str, error: RuntimeError) -> HTTPException:
+    detail = f"Could not upload {document_label} document. Please try again."
+    if get_settings().mode.strip().lower() != "production":
+        detail = f"{detail} Storage error: {error}"
+    return HTTPException(status_code=502, detail=detail)
+
+
+def _document_file_name(default_stem: str, file_name: str) -> str:
+    safe_name = _safe_path_segment(file_name)
+    if "." not in safe_name:
+        return f"{default_stem}.pdf"
+    return safe_name
+
+
+def _document_content_type(file_name: str) -> str:
+    extension = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else "pdf"
+    if extension in {"jpg", "jpeg"}:
+        return "image/jpeg"
+    if extension == "png":
+        return "image/png"
+    if extension == "webp":
+        return "image/webp"
+    return "application/pdf"
+
+
 def _onboarding_status(record: OnboardingRecord | None) -> str:
     if record is None:
         return "UNSENT"
@@ -436,7 +469,7 @@ async def get_public_onboarding(
         candidateName=f"{candidate.firstName or ''} {candidate.lastName or ''}".strip(),
         jobTitle=job_posting.title,
         organizationName=org_name,
-        status=record.status.value,
+        status=record.status.value if _has_usable_submitted_documents(record) else OnboardingStatus.PENDING.value,
         submittedAt=record.submittedAt,
     )
 
@@ -450,7 +483,7 @@ async def submit_documents(
     record = await repository.get_onboarding_by_token(token)
     if record is None:
         raise HTTPException(status_code=404, detail="Onboarding request not found")
-    if record.status != OnboardingStatus.PENDING:
+    if record.status != OnboardingStatus.PENDING and _has_usable_submitted_documents(record):
         return OnboardingSubmitDocumentsResponse(
             status=record.status.value,
             message="Documents have already been submitted",
@@ -460,43 +493,34 @@ async def submit_documents(
     if application is None:
         raise HTTPException(status_code=404, detail="Application not found")
 
-    settings = get_settings()
+    aadhar_file_name = _document_file_name("aadhar", body.aadharFileName)
+    pan_file_name = _document_file_name("pan", body.panFileName)
+    aadhar_path = f"{_safe_path_segment(record.organizationId)}/onboarding/{_safe_path_segment(application.id)}/{_safe_path_segment(record.id)}/{aadhar_file_name}"
+    pan_path = f"{_safe_path_segment(record.organizationId)}/onboarding/{_safe_path_segment(application.id)}/{_safe_path_segment(record.id)}/{pan_file_name}"
 
-    aadhar_path = f"{_safe_path_segment(record.organizationId)}/onboarding/{_safe_path_segment(application.id)}/{_safe_path_segment(record.id)}/aadhar.pdf"
-    pan_path = f"{_safe_path_segment(record.organizationId)}/onboarding/{_safe_path_segment(application.id)}/{_safe_path_segment(record.id)}/pan.pdf"
-
-    upload_success = True
     try:
         aadhar_upload = await upload_onboarding_document(
             file_base64=body.aadharBase64,
             storage_path=aadhar_path,
-            content_type="application/pdf",
+            content_type=_document_content_type(aadhar_file_name),
         )
         record.aadharUrl = aadhar_upload.public_url
         record.aadharBucket = aadhar_upload.bucket
         record.aadharStoragePath = aadhar_upload.path
-    except RuntimeError:
-        if settings.mode.strip().lower() == "production":
-            raise
-        upload_success = False
+    except RuntimeError as exc:
+        raise _document_upload_error("Aadhar", exc) from exc
 
     try:
         pan_upload = await upload_onboarding_document(
             file_base64=body.panBase64,
             storage_path=pan_path,
-            content_type="application/pdf",
+            content_type=_document_content_type(pan_file_name),
         )
         record.panUrl = pan_upload.public_url
         record.panBucket = pan_upload.bucket
         record.panStoragePath = pan_upload.path
-    except RuntimeError:
-        if settings.mode.strip().lower() == "production":
-            raise
-        upload_success = False
-
-    if not upload_success and settings.mode.strip().lower() != "production":
-        record.aadharUrl = record.aadharUrl or "mock://aadhar"
-        record.panUrl = record.panUrl or "mock://pan"
+    except RuntimeError as exc:
+        raise _document_upload_error("PAN", exc) from exc
 
     record.status = OnboardingStatus.DOCUMENTS_SUBMITTED
     record.submittedAt = datetime.now(UTC)

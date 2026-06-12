@@ -131,10 +131,10 @@ async def test_list_procurement_purchase_orders_returns_flat_org_rows() -> None:
     )
 
     class FakeResult:
-        def unique(self) -> "FakeResult":
+        def unique(self) -> FakeResult:
             return self
 
-        def scalars(self) -> "FakeResult":
+        def scalars(self) -> FakeResult:
             return self
 
         def all(self) -> list[SimpleNamespace]:
@@ -214,7 +214,7 @@ async def test_approve_replacement_requisition_cancels_linked_ticket(monkeypatch
         def __init__(self, value: object) -> None:
             self.value = value
 
-        def unique(self) -> "FakeResult":
+        def unique(self) -> FakeResult:
             return self
 
         def scalar_one_or_none(self) -> object:
@@ -378,7 +378,7 @@ async def test_approve_replacement_requisition_keeps_cancelled_ticket_unchanged(
         def __init__(self, value: object) -> None:
             self.value = value
 
-        def unique(self) -> "FakeResult":
+        def unique(self) -> FakeResult:
             return self
 
         def scalar_one_or_none(self) -> object:

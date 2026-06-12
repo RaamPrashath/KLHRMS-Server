@@ -1,0 +1,135 @@
+{
+  "personal_info": {
+    "name": "First Last",
+    "email": "first.last@gmail.com",
+    "phone": "+44 1234567890",
+    "linkedin": null,
+    "portfolio_url": null
+  },
+  "summary": [
+    "Over 10 years of professional experience in software development, technical support, and cybersecurity roles.",
+    "Expert Python Developer specializing in back-end financial systems and productivity application development.",
+    "Successfully developed and updated productivity applications, increasing user downloads by 30% within 96 hours.",
+    "Designed and maintained a marketing lead MySQL database, categorizing over 740 leads from diverse sources.",
+    "Supervised programming tasks and maintained 10+ company websites with a 50% success rate in product deployment.",
+    "Created a user interface as a single-page application using React and MobX, boosting productivity for 1100+ users by 64%.",
+    "Implemented functionality to support disconnected client machines, enabling 420+ customers to work offline without data loss.",
+    "Provided technical support, resolving 300+ customer questions and delivering solutions to 70+ Small and Medium-sized enterprises (SMEs).",
+    "Discovered and resolved a critical software glitch that prevented 150+ customers from accessing their accounts.",
+    "Certified Entry-Level Python Programmer and Certified Associate in Python Programming, demonstrating strong foundational skills."
+  ],
+  "experience": [
+    {
+      "title": "Python Developer",
+      "company": "Resume Worded",
+      "dates": "01/2022 – Present",
+      "client": null,
+      "project": null,
+      "project_desc": null,
+      "technologies": [],
+      "responsibilities": [
+        "Created the back-end financial systems that made 20+ RW applications user-friendly and seamless to navigate.",
+        "Developed and updated productivity applications, which increased user downloads by 30% within 96 hours of release.",
+        "Supervised programming tasks and maintained 10+ company websites with a 50% success rate in product update deployment.",
+        "Designed a marketing lead MySQL database that categorized and filtered 740+ leads from several sources."
+      ]
+    },
+    {
+      "title": "Technical Support Specialist",
+      "company": "Polyhire",
+      "dates": "10/2019 – 12/2021",
+      "client": null,
+      "project": null,
+      "project_desc": null,
+      "technologies": [],
+      "responsibilities": [
+        "Responded to and resolved 300+ customer questions about implementing access software, CMS, IP Cameras, DVRs, and Access Control.",
+        "Provided technical solutions for 70+ Small and Medium-sized enterprises (SMEs) and 20+ micro-merchants, which accounted for 38% of Polyhire card payments.",
+        "Discovered a software glitch that prevented 150+ customers from accessing their accounts in the first week of employment.",
+        "Answered customers' inquiries within 60+ seconds of contact via chat sessions and live support."
+      ]
+    },
+    {
+      "title": "Junior Software Developer",
+      "company": "Growthsi",
+      "dates": "11/2018 – 09/2019",
+      "client": null,
+      "project": null,
+      "project_desc": null,
+      "technologies": [
+        "React",
+        "MobX"
+      ],
+      "responsibilities": [
+        "Created a user interface as a single-page application using React and MobX; increased the productivity of 1100+ users by 64%.",
+        "Implemented functionality to support disconnected client machines, which enabled 420+ customers to work offline without losing data.",
+        "Designed a data dictionary generator that creates documentation for 1200+ developers as spreadsheets and web pages.",
+        "Launched a search engine for consumers to search for ATM locations in 20+ states, saving institutions $50K on data research."
+      ]
+    },
+    {
+      "title": "Coder",
+      "company": "ABC Company",
+      "dates": "06/2017 – 10/2018",
+      "client": null,
+      "project": null,
+      "project_desc": null,
+      "technologies": [],
+      "responsibilities": []
+    },
+    {
+      "title": "Ethical Hacker",
+      "company": "XYZ Company",
+      "dates": "01/2016 – 05/2017",
+      "client": null,
+      "project": null,
+      "project_desc": null,
+      "technologies": [],
+      "responsibilities": []
+    },
+    {
+      "title": "Application Developer",
+      "company": "ABC",
+      "dates": "07/2014 – 12/2015",
+      "client": null,
+      "project": null,
+      "project_desc": null,
+      "technologies": [],
+      "responsibilities": []
+    }
+  ],
+  "education": [
+    {
+      "degree": "Associate in Applied Science, Computer Science, Cultural Studies",
+      "school": "Unknown School, New York City, New York",
+      "dates": "10/2011 - 06/2014"
+    }
+  ],
+  "skills": [
+    "Deep Learning",
+    "Data Structures",
+    "Generators",
+    "Iterators",
+    "Multi-Process Architecture",
+    "Object Relational Mapping",
+    "Python",
+    "Shell",
+    "Perl",
+    "GitLab",
+    "Mercurial",
+    "Apache Subversion (SVN)",
+    "CVS",
+    "English (Native)",
+    "Romanian (Native)",
+    "Spanish (Conversational)"
+  ],
+  "awards": [
+    "Certified Entry-Level Python Programmer",
+    "Certified Associate in Python Programming"
+  ],
+  "projects": [],
+  "additional_info": {
+    "areas_of_expertise": [],
+    "business_overview": ""
+  }
+}

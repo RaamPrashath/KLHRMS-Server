@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -24,6 +24,8 @@ class FakeRepo:
         self.upsert_settings_args: tuple[str, str, str, str] | None = None
         self.upsert_payloads: list[dict[str, object]] = []
         self.identity_payloads: list[dict[str, object]] = []
+        self.link_args: list[tuple[str, str, str]] = []
+        self.profile_updates: list[tuple[str, str, dict[str, object]]] = []
         self.user_image_updates: list[tuple[str, str]] = []
         self.summary_args: tuple[str, str, dict[str, int] | None] | None = None
         self.finalize_args: dict[str, int] | None = None
@@ -118,6 +120,17 @@ class FakeRepo:
         self.upsert_payloads.append(data)
         return SimpleNamespace(id="employee-1"), True
 
+    async def link_employee_to_user(self, org_id: str, microsoft_id: str, user_id: str) -> None:
+        self.link_args.append((org_id, microsoft_id, user_id))
+
+    async def update_employee_profile(
+        self,
+        org_id: str,
+        microsoft_id: str,
+        data: dict[str, object],
+    ) -> None:
+        self.profile_updates.append((org_id, microsoft_id, data))
+
     async def find_employee_by_microsoft_id(
         self,
         org_id: str,
@@ -156,7 +169,7 @@ class FakeRepo:
         run.skipped_count = skipped_count
         run.failed_count = failed_count
         run.errors = errors or []
-        run.completed_at = datetime.now(timezone.utc)
+        run.completed_at = datetime.now(UTC)
 
     async def update_sync_summary(
         self,
@@ -275,13 +288,31 @@ async def test_sync_employees_creates_auth_identity_bundle_and_employee_link() -
         department="Engineering",
         job_title="Engineering Manager",
         mobile_phone="+1 555 0100",
+        business_phones=["+1 555 0101"],
         office_location="HQ-12",
+        given_name="Ada",
+        surname="Lovelace",
+        street_address=None,
+        city=None,
+        state=None,
+        postal_code=None,
+        country=None,
+        company_name=None,
+        employee_type=None,
+        employee_hire_date=None,
+        usage_location=None,
+        user_type=None,
+        preferred_language=None,
+        created_date_time=None,
         account_enabled=True,
     )
 
     class FakeGraphClient:
         async def get_users(self) -> list[SimpleNamespace]:
             return [graph_user]
+
+        async def get_user_manager(self, _graph_id: str) -> None:
+            return None
 
     service._get_credentials = AsyncMock(
         return_value={
@@ -320,6 +351,8 @@ async def test_sync_employees_creates_auth_identity_bundle_and_employee_link() -
     ]
     assert payload["microsoft_id"] == "graph-user-1"
     assert payload["display_name"] == "Ada Lovelace"
+    assert payload["given_name"] == "Ada"
+    assert payload["surname"] == "Lovelace"
     assert payload["user_principal_name"] == "ada.lovelace@example.com"
     assert payload["email"] == "ada.lovelace@example.com"
     assert payload["employee_id"] == "EMP-001"
@@ -329,10 +362,13 @@ async def test_sync_employees_creates_auth_identity_bundle_and_employee_link() -
     assert payload["account_enabled"] is True
     assert payload["status"] == "ACTIVE"
     assert payload["synced_at"].tzinfo is not None
-    assert "mobile_phone" not in payload
-    assert "office_location" not in payload
+    assert payload["mobile_phone"] == "+1 555 0100"
+    assert payload["business_phones"] == ["+1 555 0101"]
+    assert payload["office_location"] == "HQ-12"
     assert payload["profile_photo_url"] == "/microsoft-graph/profile-photos/org-1/graph-user-1"
     assert fake_repo.user_image_updates == [
         ("user-1", "/microsoft-graph/profile-photos/org-1/graph-user-1")
     ]
+    assert fake_repo.link_args == [("org-1", "graph-user-1", "user-1")]
+    assert fake_repo.profile_updates == [("org-1", "graph-user-1", payload)]
     assert "manager_id" not in payload

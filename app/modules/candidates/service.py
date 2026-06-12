@@ -1,14 +1,27 @@
 from __future__ import annotations
 
+import csv
+import html
+import io
+import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import select
+import openpyxl
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from sqlalchemy import and_, func, select
+from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.email.resend_service import ResendEmailService
 from app.integrations.google.calendar_service import CreatedCalendarMeeting, GoogleCalendarService
+from app.integrations.storage.supabase_storage import SupabaseStorageError, create_private_file_signed_url
 from app.models.member import Member
 from app.models.recruitment import (
     ApplicationStageHistory,
@@ -19,6 +32,10 @@ from app.models.recruitment import (
     InterviewFeedback,
     InterviewRejectionRecord,
     InterviewType,
+    JobPosting,
+    JobPostingStatus,
+    OfferStatus,
+    OnboardingStatus,
     PipelineStage,
     StageEvent,
     StageEventParticipant,
@@ -30,10 +47,12 @@ from app.modules.candidates.schema import (
     ApplicationInterviewEventRead,
     ApplicationInterviewMeetingRead,
     CandidateApplicationDetailRead,
+    CandidateApplicationFileRead,
     CandidateApplicationNoteCreateRequest,
     CandidateApplicationNoteRead,
     CandidateApplicationNoteUpdateRequest,
     CandidateApplicationUpdateRequest,
+    CandidateSlotProposalRequest,
     CandidateSummaryRead,
     FeedbackInfoResponse,
     FeedbackSubmitRequest,
@@ -49,12 +68,14 @@ from app.modules.candidates.schema import (
     InterviewMoveRequest,
     InterviewMoveResponse,
     InterviewParticipantRead,
+    InterviewRejectRequest,
     InterviewRejectResponse,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
     MyInterviewRead,
     PipelineApplicationRead,
     PipelineBoardRead,
+    PipelineJobPostingStatusUpdateRequest,
     PipelineJobPostingRead,
     PipelineStageCreateRequest,
     PipelineStageHistoryRead,
@@ -62,6 +83,8 @@ from app.modules.candidates.schema import (
     PipelineStageUpdateRequest,
     PublicProposedSlotRead,
     ReassignmentRequestCreate,
+    RecruitmentReportJobRead,
+    RecruitmentReportListResponse,
     ReshuffleRequest,
     ReshuffleResponse,
     StageInterviewAssignmentInput,
@@ -85,6 +108,34 @@ DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
 STAGE_ORDER_MIN_GAP = 1e-6
 LOCKED_ASSIGNMENT_STATUSES = {"ACCEPTED", "SCHEDULED", "COMPLETED"}
 ACTIVE_ASSIGNMENT_STATUSES = {"PENDING", "PENDING_ACCEPTANCE", "ACCEPTED", "SCHEDULED"}
+REPORT_HEADER_FILL = "D7E8F7"
+REPORT_HEADER_TEXT = "16324F"
+REPORT_TITLE_FILL = "E6F4EA"
+REPORT_TITLE_TEXT = "1E7E34"
+REPORT_SECTION_FILL = "EEF6F1"
+REPORT_MUTED_FILL = "F6F8FA"
+REPORT_BORDER = Border(
+    left=Side(style="thin", color="D9E2EC"),
+    right=Side(style="thin", color="D9E2EC"),
+    top=Side(style="thin", color="D9E2EC"),
+    bottom=Side(style="thin", color="D9E2EC"),
+)
+OVERALL_REPORT_HEADERS = ["S. No", "Name", "Total Candidates", "Priority", "Status"]
+CANDIDATE_REPORT_HEADERS = ["S. No", "Candidate Name", "Ai Score", "Stage Name", "Status"]
+STAGE_SUMMARY_HEADERS = ["S. No", "Stage Name", "Candidates"]
+
+
+def _posting_report_status(posting: JobPosting) -> str:
+    return "CLOSED" if posting.status == JobPostingStatus.CLOSED else "ACTIVE"
+
+
+def _assert_job_posting_open(posting: JobPosting | None) -> None:
+    if posting is not None and posting.status == JobPostingStatus.CLOSED:
+        raise HTTPException(status_code=409, detail="This job opening is closed. Pipeline changes are disabled.")
+
+
+def _assert_stage_job_posting_open(stage: PipelineStage) -> None:
+    _assert_job_posting_open(stage.jobPosting)
 
 
 def _is_protected_stage(stage: PipelineStage) -> bool:
@@ -432,12 +483,35 @@ def _serialize_application_interview_meeting(
     )
 
 
-def _serialize_detail(application: CandidateApplication, actor_member_id: str) -> CandidateApplicationDetailRead:
+def _is_browser_url(value: str | None) -> bool:
+    return bool(value and (value.startswith("http://") or value.startswith("https://")))
+
+
+async def _resolve_document_url(
+    *,
+    stored_url: str | None,
+    bucket: str | None,
+    path: str | None,
+) -> str | None:
+    if bucket and path:
+        try:
+            return await create_private_file_signed_url(bucket=bucket, path=path, expires_in=3600)
+        except SupabaseStorageError:
+            if _is_browser_url(stored_url):
+                return stored_url
+            return None
+    if _is_browser_url(stored_url):
+        return stored_url
+    return None
+
+
+async def _serialize_detail(application: CandidateApplication, actor_member_id: str) -> CandidateApplicationDetailRead:
     histories = sorted(
         application.stageHistory or [],
         key=lambda history: history.createdAt,
         reverse=True,
     )
+    files = await _serialize_application_files(application)
     return CandidateApplicationDetailRead(
         id=application.id,
         jobPostingId=application.jobPostingId,
@@ -470,7 +544,65 @@ def _serialize_detail(application: CandidateApplication, actor_member_id: str) -
                 reverse=True,
             )
         ],
+        files=files,
     )
+
+
+async def _serialize_application_files(application: CandidateApplication) -> list[CandidateApplicationFileRead]:
+    files: list[CandidateApplicationFileRead] = []
+    if _is_browser_url(application.candidate.resumeUrl):
+        files.append(
+            CandidateApplicationFileRead(
+                id=f"{application.id}:resume",
+                label="Resume",
+                category="Resume",
+                url=application.candidate.resumeUrl,
+                source="Candidate application",
+                uploadedAt=application.appliedAt,
+            )
+        )
+
+    onboarding_records = sorted(
+        application.__dict__.get("onboardingRecords", []) or [],
+        key=lambda record: record.submittedAt or record.updatedAt or record.createdAt,
+        reverse=True,
+    )
+    for record in onboarding_records:
+        uploaded_at = record.submittedAt or record.updatedAt or record.createdAt
+        aadhar_url = await _resolve_document_url(
+            stored_url=record.aadharUrl,
+            bucket=record.aadharBucket,
+            path=record.aadharStoragePath,
+        )
+        if aadhar_url:
+            files.append(
+                CandidateApplicationFileRead(
+                    id=f"{record.id}:aadhar",
+                    label="Aadhar",
+                    category="Identity document",
+                    url=aadhar_url,
+                    source="Onboarding",
+                    uploadedAt=uploaded_at,
+                )
+            )
+        pan_url = await _resolve_document_url(
+            stored_url=record.panUrl,
+            bucket=record.panBucket,
+            path=record.panStoragePath,
+        )
+        if pan_url:
+            files.append(
+                CandidateApplicationFileRead(
+                    id=f"{record.id}:pan",
+                    label="PAN",
+                    category="Tax document",
+                    url=pan_url,
+                    source="Onboarding",
+                    uploadedAt=uploaded_at,
+                )
+            )
+
+    return files
 
 
 def _serialize_interviewer(member: Member, department: str | None = None) -> StageWorkspaceInterviewerRead:
@@ -516,6 +648,130 @@ def _primary_participant(event: StageEvent) -> StageEventParticipant | None:
     return None
 
 
+async def _delete_event_participants(
+    db: AsyncSession,
+    event: StageEvent,
+    participants: list[StageEventParticipant],
+) -> None:
+    if not participants:
+        return
+    removed_ids: set[str] = set()
+    if event.participants is not None:
+        participant_ids = {participant.id for participant in participants}
+        remaining_participants: list[StageEventParticipant] = []
+        for participant in event.participants:
+            if participant.id in participant_ids:
+                removed_ids.add(participant.id)
+            else:
+                remaining_participants.append(participant)
+        event.participants[:] = remaining_participants
+    for participant in participants:
+        if participant.id not in removed_ids:
+            await db.delete(participant)
+    await db.flush()
+
+
+def _slot_proposed_by(slot: StageEventProposedSlot) -> str:
+    value = (slot.proposedBy or "INTERVIEWER").strip().upper()
+    return "CANDIDATE" if value == "CANDIDATE" else "INTERVIEWER"
+
+
+def _slot_to_read(slot: StageEventProposedSlot) -> PublicProposedSlotRead:
+    return PublicProposedSlotRead(
+        id=slot.id,
+        startTime=slot.startTime,
+        endTime=slot.endTime,
+        proposedBy=_slot_proposed_by(slot),
+        note=slot.note,
+    )
+
+
+def _active_proposed_slots(event: StageEvent) -> list[StageEventProposedSlot]:
+    return [
+        slot
+        for slot in (event.proposedSlots or [])
+        if not slot.isSelectedByCandidate
+    ]
+
+
+def _interview_display_status(
+    event: StageEvent | None,
+    participant: StageEventParticipant | None = None,
+) -> str:
+    if event is None:
+        return "UNASSIGNED"
+    if participant is None:
+        participant = _primary_participant(event)
+
+    participant_status = (participant.approvalStatus if participant is not None else None) or ""
+    if participant_status == "PENDING":
+        participant_status = "PENDING_ACCEPTANCE"
+    if participant_status == "REJECTED":
+        return "REJECTED"
+
+    application = event.__dict__.get("application")
+    if application is not None and application.pipelineStageId != event.stageId:
+        return "CLOSED"
+
+    if event.status == EventStatus.COMPLETED:
+        return "COMPLETED"
+    if event.status == EventStatus.ONGOING:
+        return "ONGOING"
+    if event.status == EventStatus.CANCELLED:
+        return "UNASSIGNED"
+
+    if participant_status == "PENDING_ACCEPTANCE":
+        return "PENDING_ACCEPTANCE"
+
+    if event.scheduledStartAt is not None and event.scheduledEndAt is not None:
+        return "SCHEDULED"
+
+    active_slots = _active_proposed_slots(event)
+    if any(_slot_proposed_by(slot) == "CANDIDATE" for slot in active_slots):
+        return "PENDING_INTERVIEWER"
+    if any(_slot_proposed_by(slot) == "INTERVIEWER" for slot in active_slots):
+        return "CANDIDATE_PENDING"
+
+    if participant_status in {"ACCEPTED", "PENDING_CANDIDATE", "PENDING_CANDIDATE_ACCEPTANCE"}:
+        return "CANDIDATE_PENDING"
+    if participant_status == "SCHEDULED":
+        return "SCHEDULED"
+
+    computed = _computed_interview_status(event)
+    return "SCHEDULED" if computed == "PENDING" else computed
+
+
+def _normalize_proposed_slot_inputs(
+    event: StageEvent,
+    proposed_slots: list,
+) -> list[tuple[datetime, datetime]]:
+    now = datetime.now(UTC)
+    normalized_slots: list[tuple[datetime, datetime]] = []
+    for slot in proposed_slots:
+        starts_at = slot.startTime
+        ends_at = slot.endTime
+        if starts_at.tzinfo is None:
+            starts_at = starts_at.replace(tzinfo=UTC)
+        if ends_at.tzinfo is None:
+            ends_at = ends_at.replace(tzinfo=UTC)
+        starts_at = starts_at.astimezone(UTC)
+        ends_at = ends_at.astimezone(UTC)
+
+        if starts_at < now:
+            raise HTTPException(status_code=400, detail="Interview cannot be scheduled in the past")
+        if ends_at <= starts_at:
+            raise HTTPException(status_code=400, detail="End time must be after start time")
+        if event.stage is not None and event.stage.dueDate is not None:
+            due_date = event.stage.dueDate
+            if due_date.tzinfo is None:
+                due_date = due_date.replace(tzinfo=UTC)
+            if starts_at > due_date.astimezone(UTC):
+                raise HTTPException(status_code=400, detail="Interview cannot be scheduled after the stage due date")
+
+        normalized_slots.append((starts_at, ends_at))
+    return normalized_slots
+
+
 def _is_primary_interviewer(event: StageEvent, member_id: str) -> bool:
     participant = _primary_participant(event)
     return (
@@ -548,19 +804,20 @@ def _serialize_workspace_assignment(event: StageEvent | None) -> StageWorkspaceA
     interviewer = None
     if primary is not None and primary.member is not None:
         interviewer = _serialize_interviewer(primary.member)
-    status = event.status.value if event.status in {EventStatus.ONGOING, EventStatus.COMPLETED} else (
-        primary.approvalStatus if primary is not None else event.status.value
-    )
-    if status == "PENDING":
-        status = "PENDING_ACCEPTANCE"
+    status = _interview_display_status(event, primary)
     return StageWorkspaceAssignmentRead(
         eventId=event.id,
+        stageSlug=event.__dict__.get("stage").slug if event.__dict__.get("stage") is not None else None,
         interviewer=interviewer,
         scheduledStartAt=event.scheduledStartAt,
         scheduledEndAt=event.scheduledEndAt,
         meetLink=event.meetingUrl,
         status=status,
         emailSentAt=event.emailSentAt,
+        proposedSlots=[
+            _slot_to_read(slot)
+            for slot in sorted(_active_proposed_slots(event), key=lambda item: item.startTime)
+        ],
     )
 
 
@@ -755,6 +1012,526 @@ async def list_job_postings(
     ]
 
 
+async def update_job_posting_status(
+    db: AsyncSession,
+    organization_id: str,
+    job_posting_id: str,
+    body: PipelineJobPostingStatusUpdateRequest,
+) -> PipelineJobPostingRead:
+    repository = CandidatePipelineRepository(db)
+    posting = await repository.get_job_posting(organization_id, job_posting_id)
+    if posting is None:
+        raise HTTPException(status_code=404, detail="Job posting not found")
+    posting.status = JobPostingStatus(body.status)
+    if posting.status == JobPostingStatus.PUBLISHED and posting.publishedAt is None:
+        posting.publishedAt = datetime.now(UTC)
+    db.add(posting)
+    await db.commit()
+    postings = await repository.list_job_postings(organization_id)
+    refreshed = next((item for item in postings if item.id == job_posting_id), posting)
+    return PipelineJobPostingRead(
+        id=refreshed.id,
+        slug=refreshed.slug,
+        title=refreshed.title,
+        status=refreshed.status.value,
+        requisitionId=refreshed.requisitionId,
+        candidateCount=len(refreshed.applications or []),
+        stageCount=len(refreshed.pipelineStages or []),
+        priority=refreshed.requisition.priority if refreshed.requisition is not None else None,
+        openings=refreshed.requisition.openings if refreshed.requisition is not None else None,
+    )
+
+
+def _safe_sheet_name(name: str, used: set[str]) -> str:
+    cleaned = re.sub(r"[\[\]\:\*\?\/\\]", " ", name).strip() or "Job"
+    base = cleaned[:31]
+    candidate = base
+    counter = 2
+    while candidate in used:
+        suffix = f" {counter}"
+        candidate = f"{base[:31 - len(suffix)]}{suffix}"
+        counter += 1
+    used.add(candidate)
+    return candidate
+
+
+def _candidate_display(application: CandidateApplication) -> str:
+    return _display_candidate_name(_candidate_display_name(application) or application.candidate.email)
+
+
+def _title_case_label(value: object) -> str:
+    text = str(value or "").replace("_", " ").strip()
+    if not text:
+        return ""
+    return " ".join(word[:1].upper() + word[1:].lower() for word in text.split())
+
+
+def _display_candidate_name(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        return "Candidate"
+    return " ".join(part[:1].upper() + part[1:].lower() for part in stripped.split())
+
+
+def _ordered_report_stages(posting: JobPosting) -> list[PipelineStage]:
+    return sorted(posting.pipelineStages or [], key=lambda item: item.order, reverse=True)
+
+
+def _priority_fill(value: object) -> str:
+    normalized = str(value or "").upper()
+    return {
+        "LOW": "E6F4EA",
+        "MEDIUM": "E8F0FE",
+        "HIGH": "FEF7E0",
+        "CRITICAL": "FCE8E6",
+    }.get(normalized, REPORT_MUTED_FILL)
+
+
+def _priority_text(value: object) -> str:
+    normalized = str(value or "").upper()
+    return {
+        "LOW": "1E7E34",
+        "MEDIUM": "1A56C4",
+        "HIGH": "A07000",
+        "CRITICAL": "B31412",
+    }.get(normalized, "3A3A3C")
+
+
+def _status_fill(value: object) -> str:
+    normalized = str(value or "").lower()
+    if "accepted" in normalized or "completed" in normalized or normalized == "active" or "credentials sent" in normalized:
+        return "E6F4EA"
+    if "ongoing" in normalized or "scheduled" in normalized or "sent" in normalized:
+        return "E8F0FE"
+    if "pending" in normalized or "unsent" in normalized or "draft" in normalized:
+        return "FEF7E0"
+    if "rejected" in normalized or "failed" in normalized or normalized == "closed":
+        return "FCE8E6"
+    return REPORT_MUTED_FILL
+
+
+def _status_text(value: object) -> str:
+    normalized = str(value or "").lower()
+    if "accepted" in normalized or "completed" in normalized or normalized == "active" or "credentials sent" in normalized:
+        return "1E7E34"
+    if "ongoing" in normalized or "scheduled" in normalized or "sent" in normalized:
+        return "1A56C4"
+    if "pending" in normalized or "unsent" in normalized or "draft" in normalized:
+        return "A07000"
+    if "rejected" in normalized or "failed" in normalized or normalized == "closed":
+        return "B31412"
+    return "3A3A3C"
+
+
+def _candidate_history_text(application: CandidateApplication) -> str:
+    histories = sorted(application.stageHistory or [], key=lambda item: item.createdAt)
+    parts: list[str] = []
+    for history in histories:
+        from_name = history.fromStage.name if history.fromStage is not None else "Start"
+        to_name = history.toStage.name if history.toStage is not None else "Unknown"
+        moved_at = history.createdAt.strftime("%Y-%m-%d") if history.createdAt else ""
+        label = f"{from_name} to {to_name}"
+        if moved_at:
+            label = f"{label} ({moved_at})"
+        if history.note:
+            label = f"{label}: {history.note}"
+        parts.append(label)
+    return "; ".join(parts)
+
+
+def _latest_offer_status(application: CandidateApplication) -> str:
+    offers = sorted(application.offerLetters or [], key=lambda item: item.createdAt, reverse=True)
+    if not offers:
+        return "Offer Letter Unsent"
+    latest = offers[0]
+    labels = {
+        OfferStatus.DRAFT: "Offer Letter Drafted, Not Sent",
+        OfferStatus.SENT: "Offer Letter Sent",
+        OfferStatus.FAILED: "Offer Letter Sending Failed",
+        OfferStatus.ACCEPTED: "Offer Letter Accepted",
+        OfferStatus.REJECTED: "Offer Letter Rejected",
+        OfferStatus.EXPIRED: "Offer Letter Expired",
+        OfferStatus.WITHDRAWN: "Offer Letter Withdrawn",
+    }
+    return labels.get(latest.status, f"Offer Letter {_title_case_label(latest.status.value)}")
+
+
+def _latest_onboarding_status(application: CandidateApplication) -> str:
+    records = sorted(application.onboardingRecords or [], key=lambda item: item.createdAt, reverse=True)
+    if not records:
+        return "Onboarding Not Started"
+    latest = records[0]
+    labels = {
+        OnboardingStatus.PENDING: "Onboarding Pending",
+        OnboardingStatus.DOCUMENTS_SUBMITTED: "Onboarding Documents Submitted",
+        OnboardingStatus.CREDENTIALS_SENT: "Credentials Sent",
+    }
+    return labels.get(latest.status, f"Onboarding {_title_case_label(latest.status.value)}")
+
+
+def _candidate_stage_status(application: CandidateApplication, stage: PipelineStage) -> str:
+    if stage.stageType == StageType.DEFAULT:
+        return ""
+    if stage.stageType == StageType.OFFER:
+        return _latest_offer_status(application)
+    if stage.stageType in {StageType.HIRED, StageType.ONBOARDING}:
+        return _latest_onboarding_status(application)
+    if stage.stageType == StageType.REJECTED:
+        return "Candidate Rejected"
+    if stage.stageType != StageType.INTERVIEW:
+        return application.__dict__.get("status", "") or ""
+
+    event = _latest_assignment_event(application, stage.id) or _latest_stage_event(application, stage.id)
+    assignment = _serialize_workspace_assignment(event)
+    status = assignment.status if assignment is not None else "UNASSIGNED"
+    interviewer = assignment.interviewer.name if assignment is not None and assignment.interviewer is not None else "interviewer"
+    candidate = _candidate_display(application)
+    labels = {
+        "UNASSIGNED": "Interview Unassigned",
+        "PENDING_ACCEPTANCE": f"Pending Acceptance By {_display_candidate_name(interviewer)}",
+        "ACCEPTED": f"{candidate} Pending To Accept Slots From {_display_candidate_name(interviewer)}",
+        "CANDIDATE_PENDING": f"{candidate} Pending To Accept Slots From {_display_candidate_name(interviewer)}",
+        "PENDING_CANDIDATE": f"{candidate} Pending To Accept Slots From {_display_candidate_name(interviewer)}",
+        "PENDING_INTERVIEWER": f"{_display_candidate_name(interviewer)} Pending To Choose A Candidate Proposed Slot",
+        "SCHEDULED": f"Interview Scheduled With {_display_candidate_name(interviewer)}",
+        "ONGOING": f"Interview Ongoing With {_display_candidate_name(interviewer)}",
+        "COMPLETED": f"Completed Interview With {_display_candidate_name(interviewer)}",
+        "REJECTED": f"Interview Rejected By {_display_candidate_name(interviewer)}",
+        "CLOSED": f"Interview Closed With {_display_candidate_name(interviewer)}",
+    }
+    return labels.get(status, _title_case_label(status))
+
+
+def _report_overall_rows(postings: list[JobPosting]) -> list[list[object]]:
+    rows: list[list[object]] = []
+    for index, posting in enumerate(postings, start=1):
+        rows.append([
+            index,
+            posting.title,
+            sum(len(stage.applications or []) for stage in posting.pipelineStages or []),
+            _title_case_label(posting.requisition.priority if posting.requisition is not None else "MEDIUM"),
+            _title_case_label(_posting_report_status(posting)),
+        ])
+    return rows
+
+
+def _report_candidate_rows(posting: JobPosting, include_history: bool) -> list[list[object]]:
+    rows: list[list[object]] = []
+    stages = _ordered_report_stages(posting)
+    serial = 1
+    for stage in stages:
+        applications = sorted(stage.applications or [], key=lambda item: item.appliedAt)
+        for application in applications:
+            analysis = application.resumeAnalysis
+            row: list[object] = [
+                serial,
+                _candidate_display(application),
+                analysis.compositeScore if analysis is not None and analysis.compositeScore is not None else "",
+                _title_case_label(stage.name),
+                _candidate_stage_status(application, stage),
+            ]
+            if include_history:
+                row.append(_candidate_history_text(application))
+            rows.append(row)
+            serial += 1
+    return rows
+
+
+def _report_stage_summary_rows(posting: JobPosting) -> list[list[object]]:
+    return [
+        [index, _title_case_label(stage.name), len(stage.applications or [])]
+        for index, stage in enumerate(_ordered_report_stages(posting), start=1)
+    ]
+
+
+async def list_recruitment_report_jobs(
+    db: AsyncSession,
+    organization_id: str,
+) -> RecruitmentReportListResponse:
+    repository = CandidatePipelineRepository(db)
+    postings = await repository.list_recruitment_report_postings(organization_id)
+    return RecruitmentReportListResponse(
+        items=[
+            RecruitmentReportJobRead(
+                id=posting.id,
+                slug=posting.slug,
+                name=posting.title,
+                totalCandidates=sum(len(stage.applications or []) for stage in posting.pipelineStages or []),
+                priority=posting.requisition.priority if posting.requisition is not None else "MEDIUM",
+                status=_posting_report_status(posting),
+            )
+            for posting in postings
+        ]
+    )
+
+
+async def _report_postings_for_export(
+    db: AsyncSession,
+    organization_id: str,
+    job_posting_ids: list[str],
+) -> list[JobPosting]:
+    if not job_posting_ids:
+        raise HTTPException(status_code=422, detail="Select at least one visible job opening to export")
+    repository = CandidatePipelineRepository(db)
+    postings = await repository.list_recruitment_report_postings(organization_id, job_posting_ids)
+    found_ids = {posting.id for posting in postings}
+    if any(job_id not in found_ids for job_id in job_posting_ids):
+        raise HTTPException(status_code=404, detail="One or more selected job openings were not found")
+    order = {job_id: index for index, job_id in enumerate(job_posting_ids)}
+    return sorted(postings, key=lambda posting: order.get(posting.id, 0))
+
+
+def generate_recruitment_report_csv(postings: list[JobPosting], include_history: bool) -> bytes:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(OVERALL_REPORT_HEADERS)
+    writer.writerows(_report_overall_rows(postings))
+    for posting in postings:
+        writer.writerow([])
+        writer.writerow([posting.title])
+        headers = CANDIDATE_REPORT_HEADERS.copy()
+        if include_history:
+            headers.append("Candidate History")
+        writer.writerow(headers)
+        writer.writerows(_report_candidate_rows(posting, include_history))
+        writer.writerow([])
+        writer.writerow(["Stage Summary"])
+        writer.writerow(STAGE_SUMMARY_HEADERS)
+        writer.writerows(_report_stage_summary_rows(posting))
+    return buffer.getvalue().encode("utf-8-sig")
+
+
+def _style_header_row(ws, row_number: int, max_col: int) -> None:
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=row_number, column=col)
+        cell.font = Font(bold=True, color=REPORT_HEADER_TEXT)
+        cell.fill = PatternFill("solid", fgColor=REPORT_HEADER_FILL)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = REPORT_BORDER
+
+
+def _style_title_row(ws, row_number: int, max_col: int, title: str) -> None:
+    ws.cell(row=row_number, column=1, value=title)
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=row_number, column=col)
+        cell.fill = PatternFill("solid", fgColor=REPORT_TITLE_FILL)
+        cell.font = Font(bold=True, color=REPORT_TITLE_TEXT, size=14)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        cell.border = REPORT_BORDER
+    ws.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=max_col)
+    ws.row_dimensions[row_number].height = 26
+
+
+def _style_section_row(ws, row_number: int, max_col: int, title: str) -> None:
+    ws.cell(row=row_number, column=1, value=title)
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=row_number, column=col)
+        cell.fill = PatternFill("solid", fgColor=REPORT_SECTION_FILL)
+        cell.font = Font(bold=True, color=REPORT_TITLE_TEXT)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        cell.border = REPORT_BORDER
+    ws.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=max_col)
+
+
+def _style_priority_cell(cell, value: object) -> None:
+    cell.fill = PatternFill("solid", fgColor=_priority_fill(value))
+    cell.font = Font(color=_priority_text(value), bold=True)
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+
+def _style_status_cell(cell, value: object) -> None:
+    cell.fill = PatternFill("solid", fgColor=_status_fill(value))
+    cell.font = Font(color=_status_text(value), bold=True)
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+
+def _style_used_cells(ws) -> None:
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
+        for cell in row:
+            if cell.value in (None, ""):
+                continue
+            cell.border = REPORT_BORDER
+            if cell.alignment is None:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+            else:
+                cell.alignment = Alignment(
+                    horizontal=cell.alignment.horizontal,
+                    vertical=cell.alignment.vertical or "top",
+                    wrap_text=True,
+                )
+
+
+def _set_column_widths(ws, widths: list[int]) -> None:
+    for index, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(index)].width = width
+
+
+def _auto_width(ws, max_col: int) -> None:
+    for col in range(1, max_col + 1):
+        letter = get_column_letter(col)
+        max_len = 12
+        for cell in ws[letter]:
+            max_len = max(max_len, min(len(str(cell.value or "")) + 2, 60))
+        ws.column_dimensions[letter].width = max_len
+
+
+def generate_recruitment_report_xlsx(postings: list[JobPosting], include_history: bool) -> bytes:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Overall"
+    _style_title_row(ws, 1, len(OVERALL_REPORT_HEADERS), "Recruitment Report")
+    ws.append([])
+    ws.append(OVERALL_REPORT_HEADERS)
+    for row in _report_overall_rows(postings):
+        ws.append(row)
+    _style_header_row(ws, 3, len(OVERALL_REPORT_HEADERS))
+    for row_number in range(4, ws.max_row + 1):
+        _style_priority_cell(ws.cell(row=row_number, column=4), ws.cell(row=row_number, column=4).value)
+        _style_status_cell(ws.cell(row=row_number, column=5), ws.cell(row=row_number, column=5).value)
+    ws.freeze_panes = "A4"
+    _set_column_widths(ws, [8, 34, 18, 16, 16])
+    used = {"Overall"}
+    for posting in postings:
+        headers = CANDIDATE_REPORT_HEADERS.copy()
+        if include_history:
+            headers.append("Candidate History")
+        sheet = wb.create_sheet(_safe_sheet_name(posting.title, used))
+        _style_title_row(sheet, 1, len(headers), _title_case_label(posting.title))
+        sheet.append([])
+        sheet.append(headers)
+        _style_header_row(sheet, 3, len(headers))
+        for row in _report_candidate_rows(posting, include_history):
+            sheet.append(row)
+            current_row = sheet.max_row
+            _style_status_cell(sheet.cell(row=current_row, column=5), sheet.cell(row=current_row, column=5).value)
+
+        summary_title_row = sheet.max_row + 2
+        _style_section_row(sheet, summary_title_row, len(STAGE_SUMMARY_HEADERS), "Stage Summary")
+        summary_header_row = summary_title_row + 1
+        for col, header in enumerate(STAGE_SUMMARY_HEADERS, start=1):
+            sheet.cell(row=summary_header_row, column=col, value=header)
+        _style_header_row(sheet, summary_header_row, len(STAGE_SUMMARY_HEADERS))
+        for row in _report_stage_summary_rows(posting):
+            sheet.append(row)
+
+        sheet.freeze_panes = "A4"
+        _set_column_widths(sheet, [8, 28, 12, 22, 42, 42] if include_history else [8, 28, 12, 22, 42])
+
+    for sheet in wb.worksheets:
+        _style_used_cells(sheet)
+    if "Results" in wb.sheetnames:
+        del wb["Results"]
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+def _paragraph(text: object, style):
+    return Paragraph(html.escape(str(text or "")).replace("\n", "<br/>"), style)
+
+
+def _pdf_widths(total_width: float, weights: list[float]) -> list[float]:
+    return [total_width * weight for weight in weights]
+
+
+def _pdf_base_style() -> list[tuple]:
+    return [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(f"#{REPORT_HEADER_FILL}")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(f"#{REPORT_HEADER_TEXT}")),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D9E2EC")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8.5),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor(f"#{REPORT_MUTED_FILL}")]),
+    ]
+
+
+def generate_recruitment_report_pdf(postings: list[JobPosting], include_history: bool) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), leftMargin=18, rightMargin=18, topMargin=20, bottomMargin=20)
+    styles = getSampleStyleSheet()
+    normal = styles["BodyText"]
+    normal.fontSize = 8
+    normal.leading = 10
+    title = styles["Heading2"]
+    title.textColor = colors.HexColor(f"#{REPORT_TITLE_TEXT}")
+    elements: list[object] = [Paragraph("Recruitment Report", styles["Title"]), Spacer(1, 10)]
+
+    overall = [OVERALL_REPORT_HEADERS, *_report_overall_rows(postings)]
+    overall_table = Table(
+        [[_paragraph(value, normal) for value in row] for row in overall],
+        colWidths=_pdf_widths(doc.width, [0.08, 0.38, 0.2, 0.17, 0.17]),
+        repeatRows=1,
+        hAlign="LEFT",
+    )
+    overall_style = _pdf_base_style()
+    for row_index, row in enumerate(overall[1:], start=1):
+        overall_style.extend([
+            ("BACKGROUND", (3, row_index), (3, row_index), colors.HexColor(f"#{_priority_fill(row[3])}")),
+            ("TEXTCOLOR", (3, row_index), (3, row_index), colors.HexColor(f"#{_priority_text(row[3])}")),
+            ("BACKGROUND", (4, row_index), (4, row_index), colors.HexColor(f"#{_status_fill(row[4])}")),
+            ("TEXTCOLOR", (4, row_index), (4, row_index), colors.HexColor(f"#{_status_text(row[4])}")),
+        ])
+    overall_table.setStyle(TableStyle(overall_style))
+    elements.extend([overall_table, Spacer(1, 14)])
+
+    for index, posting in enumerate(postings):
+        if index > 0:
+            elements.append(PageBreak())
+        elements.append(Paragraph(_title_case_label(posting.title), title))
+        headers = CANDIDATE_REPORT_HEADERS.copy()
+        if include_history:
+            headers.append("Candidate History")
+        rows = [headers]
+        candidate_rows = _report_candidate_rows(posting, include_history)
+        rows.extend(candidate_rows)
+        width_weights = [0.07, 0.2, 0.09, 0.16, 0.28, 0.2] if include_history else [0.07, 0.24, 0.1, 0.18, 0.41]
+        table = Table(
+            [[_paragraph(value, normal) for value in headers], *[[_paragraph(value, normal) for value in row] for row in candidate_rows]],
+            colWidths=_pdf_widths(doc.width, width_weights),
+            repeatRows=1,
+            hAlign="LEFT",
+        )
+        candidate_style = _pdf_base_style()
+        for row_index, row in enumerate(candidate_rows, start=1):
+            candidate_style.extend([
+                ("BACKGROUND", (4, row_index), (4, row_index), colors.HexColor(f"#{_status_fill(row[4])}")),
+                ("TEXTCOLOR", (4, row_index), (4, row_index), colors.HexColor(f"#{_status_text(row[4])}")),
+            ])
+        table.setStyle(TableStyle(candidate_style))
+        elements.append(table)
+
+        summary_rows = [STAGE_SUMMARY_HEADERS, *_report_stage_summary_rows(posting)]
+        summary_table = Table(
+            [[_paragraph(value, normal) for value in row] for row in summary_rows],
+            colWidths=_pdf_widths(doc.width, [0.1, 0.68, 0.22]),
+            repeatRows=1,
+            hAlign="LEFT",
+        )
+        summary_table.setStyle(TableStyle(_pdf_base_style()))
+        elements.extend([Spacer(1, 12), Paragraph("Stage Summary", title), summary_table])
+    doc.build(elements)
+    return buffer.getvalue()
+
+
+async def export_recruitment_report(
+    db: AsyncSession,
+    organization_id: str,
+    body: RecruitmentReportExportRequest,
+) -> bytes:
+    postings = await _report_postings_for_export(db, organization_id, body.jobPostingIds)
+    if body.format == "xlsx":
+        return generate_recruitment_report_xlsx(postings, body.includeCandidateHistory)
+    if body.format == "pdf":
+        return generate_recruitment_report_pdf(postings, body.includeCandidateHistory)
+    return generate_recruitment_report_csv(postings, body.includeCandidateHistory)
+
+
 async def get_pipeline_board(
     db: AsyncSession,
     organization_id: str,
@@ -797,6 +1574,7 @@ async def move_application_stage(
     application = await repository.get_application(organization_id, application_id)
     if application is None:
         raise HTTPException(status_code=404, detail="Application not found")
+    _assert_job_posting_open(application.jobPosting)
 
     target_stage = await repository.get_stage(organization_id, body.toStageId)
     if target_stage is None:
@@ -811,13 +1589,6 @@ async def move_application_stage(
     )
     if _computed_interview_status(current_event) == "ONGOING":
         raise HTTPException(status_code=400, detail="Candidate cannot be moved while an interview is ongoing")
-    if current_event is not None and current_event.status not in {
-        EventStatus.COMPLETED,
-        EventStatus.CANCELLED,
-    }:
-        current_event.status = EventStatus.COMPLETED
-        current_event.completedByMemberId = actor_member_id
-        db.add(current_event)
 
     from_stage_id = application.pipelineStageId
     application.pipelineStageId = target_stage.id
@@ -852,6 +1623,7 @@ async def create_stage(
     posting = await repository.get_job_posting(organization_id, body.jobPostingId)
     if posting is None:
         raise HTTPException(status_code=404, detail="Job posting not found")
+    _assert_job_posting_open(posting)
 
     stages = await _ensure_default_stages(db, repository, organization_id, body.jobPostingId)
     next_order = await _resolve_inserted_stage_order(db, stages, body.afterStageId)
@@ -889,6 +1661,7 @@ async def update_stage(
     stage = await repository.get_stage(organization_id, stage_id)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    _assert_stage_job_posting_open(stage)
 
     if body.name is not None:
         stage.name = body.name.strip()
@@ -917,6 +1690,7 @@ async def extend_stage_due_date(
     stage = await repository.get_stage(organization_id, stage_id)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    _assert_stage_job_posting_open(stage)
     if not stage.extendToNextWorkingDay:
         raise HTTPException(status_code=400, detail="Extension is not enabled for this stage")
 
@@ -937,6 +1711,7 @@ async def complete_stage(
     stage = await repository.get_stage(organization_id, stage_id)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    _assert_stage_job_posting_open(stage)
     if stage.completedAt is not None:
         raise HTTPException(status_code=409, detail="Stage is already completed")
     stage.completedAt = datetime.now(UTC)
@@ -956,6 +1731,7 @@ async def reopen_stage(
     stage = await repository.get_stage(organization_id, stage_id)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    _assert_stage_job_posting_open(stage)
     if stage.completedAt is None:
         raise HTTPException(status_code=409, detail="Stage is not completed")
     stage.completedAt = None
@@ -975,6 +1751,7 @@ async def delete_stage(
     stage = await repository.get_stage(organization_id, stage_id)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    _assert_stage_job_posting_open(stage)
     if _is_protected_stage(stage):
         raise HTTPException(status_code=400, detail="Applied stage cannot be deleted")
     application_count = await repository.count_stage_applications(organization_id, stage_id)
@@ -1002,7 +1779,7 @@ async def get_application_detail(
     application = await repository.get_application_detail(organization_id, application_id)
     if application is None:
         raise HTTPException(status_code=404, detail="Application not found")
-    return _serialize_detail(application, actor_member_id)
+    return await _serialize_detail(application, actor_member_id)
 
 
 async def get_stage_workspace(
@@ -1014,6 +1791,7 @@ async def get_stage_workspace(
     stage = await repository.get_stage_by_slug(organization_id, stage_slug)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    _assert_job_posting_open(stage.jobPosting)
     if stage.stageType != StageType.INTERVIEW:
         raise HTTPException(status_code=409, detail="Stage is not an interview stage")
     assignment_team_id = None
@@ -1091,7 +1869,7 @@ async def update_candidate_application(
     refreshed = await repository.get_application_detail(organization_id, application_id)
     if refreshed is None:
         raise HTTPException(status_code=404, detail="Application not found")
-    return _serialize_detail(refreshed, actor_member_id)
+    return await _serialize_detail(refreshed, actor_member_id)
 
 
 async def create_application_note(
@@ -1116,7 +1894,7 @@ async def create_application_note(
     refreshed = await repository.get_application_detail(organization_id, application_id)
     if refreshed is None:
         raise HTTPException(status_code=404, detail="Application not found")
-    return _serialize_detail(refreshed, actor_member_id)
+    return await _serialize_detail(refreshed, actor_member_id)
 
 
 async def update_application_note(
@@ -1139,7 +1917,7 @@ async def update_application_note(
     refreshed = await repository.get_application_detail(organization_id, application_id)
     if refreshed is None:
         raise HTTPException(status_code=404, detail="Application not found")
-    return _serialize_detail(refreshed, actor_member_id)
+    return await _serialize_detail(refreshed, actor_member_id)
 
 
 def _assignment_date(value: datetime) -> date:
@@ -1228,6 +2006,7 @@ async def preview_stage_interview_warnings(
     stage = await repository.get_stage_by_slug(organization_id, stage_slug)
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    _assert_job_posting_open(stage.jobPosting)
     if body.jobPostingId and stage.jobPostingId != body.jobPostingId:
         raise HTTPException(status_code=400, detail="Stage does not belong to the specified job posting")
     warnings = await _build_assignment_warnings(repository, organization_id, body.assignments)
@@ -1321,9 +2100,7 @@ async def assign_stage_interviews(
         if existing_event is None:
             await repository.add_stage_event(event)
         else:
-            for participant in list(existing_event.participants or []):
-                await db.delete(participant)
-            await db.flush()
+            await _delete_event_participants(db, existing_event, list(existing_event.participants or []))
 
         await repository.add_stage_event_participant(
             StageEventParticipant(
@@ -1504,6 +2281,8 @@ async def reshuffle_interview_assignment(
     event = await repository.get_stage_event_with_participants(organization_id, event_id)
     if event is None or event.applicationId != application_id:
         raise HTTPException(status_code=404, detail="Interview event not found")
+    if event.application is not None:
+        _assert_job_posting_open(event.application.jobPosting)
     if event.stage is not None and event.stage.completedAt is not None:
         raise HTTPException(status_code=409, detail="Cannot reshuffle in a completed stage")
 
@@ -1607,6 +2386,8 @@ async def move_interview_assignment(
     event = await repository.get_stage_event_with_participants(organization_id, event_id)
     if event is None or event.applicationId != application_id:
         raise HTTPException(status_code=404, detail="Interview event not found")
+    if event.application is not None:
+        _assert_job_posting_open(event.application.jobPosting)
     if event.stage is not None and event.stage.completedAt is not None:
         raise HTTPException(status_code=409, detail="Cannot move assignments in a completed stage")
 
@@ -1624,8 +2405,7 @@ async def move_interview_assignment(
             break
 
     if old_primary is not None:
-        await db.delete(old_primary)
-        await db.flush()
+        await _delete_event_participants(db, event, [old_primary])
 
     # Add new primary interviewer with PENDING_ACCEPTANCE
     new_participant = StageEventParticipant(
@@ -1676,6 +2456,8 @@ async def accept_interview(
     event = await repository.get_stage_event_with_participants(organization_id, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Interview event not found")
+    if event.application is not None:
+        _assert_job_posting_open(event.application.jobPosting)
 
     participant = next(
         (
@@ -1690,35 +2472,13 @@ async def accept_interview(
     if participant.approvalStatus == "REJECTED":
         raise HTTPException(status_code=400, detail="Rejected assignments cannot be accepted")
 
-    now = datetime.now(UTC)
     is_reschedule = (
         event.status in {EventStatus.SCHEDULED, EventStatus.ONGOING, EventStatus.COMPLETED}
         or participant.approvalStatus == "SCHEDULED"
     )
 
-    normalized_slots: list[tuple[datetime, datetime]] = []
-    for slot in body.proposedSlots:
-        starts_at = slot.startTime
-        ends_at = slot.endTime
-        if starts_at.tzinfo is None:
-            starts_at = starts_at.replace(tzinfo=UTC)
-        if ends_at.tzinfo is None:
-            ends_at = ends_at.replace(tzinfo=UTC)
-        starts_at = starts_at.astimezone(UTC)
-        ends_at = ends_at.astimezone(UTC)
-
-        if starts_at < now:
-            raise HTTPException(status_code=400, detail="Interview cannot be scheduled in the past")
-        if ends_at <= starts_at:
-            raise HTTPException(status_code=400, detail="End time must be after start time")
-        if event.stage is not None and event.stage.dueDate is not None:
-            due_date = event.stage.dueDate
-            if due_date.tzinfo is None:
-                due_date = due_date.replace(tzinfo=UTC)
-            if starts_at > due_date.astimezone(UTC):
-                raise HTTPException(status_code=400, detail="Interview cannot be scheduled after the stage due date")
-
-        normalized_slots.append((starts_at, ends_at))
+    normalized_slots = _normalize_proposed_slot_inputs(event, body.proposedSlots)
+    now = datetime.now(UTC)
 
     participant.approvedAt = now
     participant.approvalStatus = "ACCEPTED"
@@ -1739,6 +2499,7 @@ async def accept_interview(
                 participantId=participant.id,
                 startTime=starts_at,
                 endTime=ends_at,
+                proposedBy="INTERVIEWER",
             )
         )
 
@@ -1771,6 +2532,10 @@ async def accept_interview(
             is_reschedule=is_reschedule,
         )
 
+    event.slotInvitationSentAt = datetime.now(UTC)
+    db.add(event)
+    await db.commit()
+
     return InterviewAcceptResponse(
         eventId=event_id,
         status=participant.approvalStatus,
@@ -1785,11 +2550,16 @@ async def reject_interview(
     organization_name: str,
     member_id: str,
     event_id: str,
+    body: InterviewRejectRequest | None = None,
 ) -> InterviewRejectResponse:
     repository = CandidatePipelineRepository(db)
     event = await repository.get_stage_event_with_participants(organization_id, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Interview event not found")
+    if event.application is not None:
+        _assert_job_posting_open(event.application.jobPosting)
+    if event.stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
 
     participant = next(
         (
@@ -1802,6 +2572,7 @@ async def reject_interview(
     if participant is None:
         raise HTTPException(status_code=400, detail="You are not the primary interviewer for this assignment")
 
+    reject_mode = body.mode if body is not None else "AUTO"
     now = datetime.now(UTC)
     participant.approvalStatus = "REJECTED"
     participant.rejectedAt = now
@@ -1819,20 +2590,18 @@ async def reject_interview(
         )
         rejected_member_ids.add(member_id)
 
-    # Find available team member with lowest active interview count
-    existing_participant_ids = {p.memberId for p in (event.participants or [])}
+    event.candidateToken = None
+    event.slotInvitationSentAt = None
+    event.lastSlotReminderSentAt = None
+    event.proposedSlots.clear()
 
     team_member_ids = await repository.get_primary_hiring_team_member_ids(
         organization_id,
         event.stage.jobPostingId,
         event.stage.id,
     )
-    available_member_ids = [
-        mid for mid in team_member_ids
-        if mid not in rejected_member_ids and mid not in existing_participant_ids
-    ]
 
-    if not available_member_ids:
+    if reject_mode == "UNASSIGN":
         event.status = EventStatus.CANCELLED
         db.add(event)
         await db.commit()
@@ -1843,36 +2612,75 @@ async def reject_interview(
             warnings=[],
         )
 
-    active_counts = await repository.count_active_interviews_for_members(
-        organization_id,
-        available_member_ids,
-    )
-    new_member_id = min(
-        available_member_ids,
-        key=lambda mid: (active_counts.get(mid, 0), mid),
-    )
+    existing_participant_ids = {p.memberId for p in (event.participants or [])}
+
+    if reject_mode == "REASSIGN":
+        new_member_id = body.newInterviewerMemberId if body is not None else None
+        if not new_member_id:
+            raise HTTPException(status_code=400, detail="Select an interviewer to reassign")
+        if new_member_id == member_id:
+            raise HTTPException(status_code=400, detail="Cannot reassign to the rejecting interviewer")
+        if new_member_id not in team_member_ids:
+            raise HTTPException(status_code=400, detail="Selected interviewer is not in this interview team")
+        if new_member_id in rejected_member_ids:
+            raise HTTPException(status_code=400, detail="Selected interviewer has already rejected this interview")
+    else:
+        available_member_ids = [
+            mid for mid in team_member_ids
+            if mid not in rejected_member_ids and mid not in existing_participant_ids
+        ]
+
+        if not available_member_ids:
+            event.status = EventStatus.CANCELLED
+            db.add(event)
+            await db.commit()
+            return InterviewRejectResponse(
+                eventId=event.id,
+                newInterviewerMemberId=None,
+                status="UNASSIGNED",
+                warnings=[],
+            )
+
+        active_counts = await repository.count_active_interviews_for_members(
+            organization_id,
+            available_member_ids,
+        )
+        new_member_id = min(
+            available_member_ids,
+            key=lambda mid: (active_counts.get(mid, 0), mid),
+        )
 
     new_members = await repository.get_members_by_ids(organization_id, [new_member_id])
     new_member = new_members[0] if new_members else None
     if new_member is None:
-        event.status = EventStatus.CANCELLED
-        db.add(event)
-        await db.commit()
-        return InterviewRejectResponse(
-            eventId=event.id,
-            newInterviewerMemberId=None,
-            status="UNASSIGNED",
-            warnings=[],
-        )
+        raise HTTPException(status_code=400, detail="Selected interviewer was not found")
+    if new_member.user is None or not new_member.user.email:
+        raise HTTPException(status_code=400, detail="Selected interviewer email is missing")
 
-    new_participant = StageEventParticipant(
-        eventId=event.id,
-        memberId=new_member_id,
-        role="INTERVIEWER",
-        isBackup=False,
-        approvalStatus="PENDING_ACCEPTANCE",
+    existing_new_participant = next(
+        (
+            item
+            for item in (event.participants or [])
+            if item.memberId == new_member_id and (item.role == "INTERVIEWER" or item.role is None)
+        ),
+        None,
     )
-    await repository.add_stage_event_participant(new_participant)
+    if existing_new_participant is not None:
+        existing_new_participant.role = "INTERVIEWER"
+        existing_new_participant.isBackup = False
+        existing_new_participant.approvalStatus = "PENDING_ACCEPTANCE"
+        existing_new_participant.rejectedAt = None
+        db.add(existing_new_participant)
+    else:
+        await repository.add_stage_event_participant(
+            StageEventParticipant(
+                eventId=event.id,
+                memberId=new_member_id,
+                role="INTERVIEWER",
+                isBackup=False,
+                approvalStatus="PENDING_ACCEPTANCE",
+            )
+        )
     event.status = EventStatus.RESCHEDULED
     db.add(event)
     await db.commit()
@@ -1892,19 +2700,18 @@ async def reject_interview(
             ],
         )
 
-    if new_member.user is not None:
-        email_service = ResendEmailService()
-        candidate_name = _candidate_display_name(event.application)
-        starts_at_text = _meeting_time_text(event.scheduledStartAt) if event.scheduledStartAt else "To be scheduled"
-        await email_service.send_stage_interview_assignment_to_interviewer(
-            to_email=new_member.user.email,
-            interviewer_name=new_member.user.name or new_member.user.email,
-            candidate_name=candidate_name,
-            candidate_email=event.application.candidate.email,
-            stage_name=event.stage.name if event.stage else "Interview",
-            organization_name=organization_name,
-            starts_at_text=starts_at_text,
-        )
+    email_service = ResendEmailService()
+    candidate_name = _candidate_display_name(event.application)
+    starts_at_text = _meeting_time_text(event.scheduledStartAt) if event.scheduledStartAt else "To be scheduled"
+    await email_service.send_stage_interview_assignment_to_interviewer(
+        to_email=new_member.user.email,
+        interviewer_name=new_member.user.name or new_member.user.email,
+        candidate_name=candidate_name,
+        candidate_email=event.application.candidate.email,
+        stage_name=event.stage.name if event.stage else "Interview",
+        organization_name=organization_name,
+        starts_at_text=starts_at_text,
+    )
 
     return InterviewRejectResponse(
         eventId=event.id,
@@ -1931,24 +2738,11 @@ async def list_my_interviews(
             continue
         candidate = application.candidate
         stage = event.stage
-        status = participant.approvalStatus
-        if status == "PENDING":
-            status = "PENDING_ACCEPTANCE"
-        if status in {"PENDING_ACCEPTANCE", "ACCEPTED", "REJECTED"}:
-            display_status = status
-        elif status == "SCHEDULED":
-            computed_status = _computed_interview_status(event)
-            display_status = "SCHEDULED" if computed_status == "PENDING" else computed_status
-        else:
-            display_status = _computed_interview_status(event)
+        display_status = _interview_display_status(event, participant)
         proposed_slots = [
-            PublicProposedSlotRead(
-                id=slot.id,
-                startTime=slot.startTime,
-                endTime=slot.endTime,
-            )
+            _slot_to_read(slot)
             for slot in sorted(
-                event.proposedSlots or [],
+                _active_proposed_slots(event),
                 key=lambda item: item.startTime,
             )
         ]
@@ -1958,6 +2752,7 @@ async def list_my_interviews(
                 applicationId=application.id,
                 stageId=stage.id if stage else "",
                 stageName=stage.name if stage else "",
+                stageSlug=stage.slug if stage else None,
                 candidate=_serialize_candidate(candidate),
                 jobTitle=application.jobPosting.title if application.jobPosting else "",
                 jobPostingId=application.jobPosting.id if application.jobPosting else "",
@@ -2086,6 +2881,7 @@ async def create_interview_meeting(
     application = await repository.get_application(organization_id, application_id)
     if application is None:
         raise HTTPException(status_code=404, detail="Application not found")
+    _assert_job_posting_open(application.jobPosting)
     stage = application.pipelineStage
     if stage is None:
         raise HTTPException(status_code=404, detail="Pipeline stage not found")
@@ -2322,6 +3118,8 @@ async def start_interview_meeting(
     event = await repository.get_stage_event(organization_id, application_id, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Interview meeting not found")
+    if event.application is not None:
+        _assert_job_posting_open(event.application.jobPosting)
     _ensure_self_interview_access(event, actor_member_id, access_scope)
     if event.status != EventStatus.SCHEDULED:
         raise HTTPException(status_code=400, detail="Only scheduled interviews can be started")
@@ -2379,6 +3177,8 @@ async def complete_interview_meeting(
     event = await repository.get_stage_event(organization_id, application_id, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Interview meeting not found")
+    if event.application is not None:
+        _assert_job_posting_open(event.application.jobPosting)
     _ensure_self_interview_access(event, actor_member_id, access_scope)
     if event.scheduledStartAt is None or event.scheduledEndAt is None:
         raise HTTPException(status_code=400, detail="Interview meeting is missing schedule metadata")
@@ -2475,48 +3275,123 @@ async def get_candidate_slots_by_token(
         interviewer_name = participant.member.user.name or participant.member.user.email
 
     slots = []
-    for slot in (event.proposedSlots or []):
-        if not slot.isSelectedByCandidate:
-            slots.append({
-                "id": slot.id,
-                "startTime": slot.startTime,
-                "endTime": slot.endTime,
-            })
+    if event.scheduledStartAt is None:
+        for slot in (event.proposedSlots or []):
+            if not slot.isSelectedByCandidate and _slot_proposed_by(slot) == "INTERVIEWER":
+                slots.append({
+                    "id": slot.id,
+                    "startTime": slot.startTime,
+                    "endTime": slot.endTime,
+                    "proposedBy": _slot_proposed_by(slot),
+                    "note": slot.note,
+                })
 
     return {
         "candidateName": candidate_name,
         "jobTitle": job_title,
         "interviewerName": interviewer_name,
         "candidateToken": token,
+        "stageDueDate": event.stage.dueDate if event.stage else None,
         "slots": slots,
     }
 
 
-async def select_candidate_slot(
+def _format_slot_lines(slots: list[tuple[datetime, datetime]]) -> str:
+    return "\n".join(f"- {_meeting_time_text(start)} to {_meeting_time_text(end)}" for start, end in slots)
+
+
+async def propose_candidate_slots(
     db: AsyncSession,
     token: str,
-    slot_id: str,
+    body: CandidateSlotProposalRequest,
 ) -> dict:
     repository = CandidatePipelineRepository(db)
     event = await repository.get_stage_event_by_candidate_token(token)
     if event is None:
         raise HTTPException(status_code=404, detail="Interview not found or token expired")
 
-    slot = next(
-        (s for s in (event.proposedSlots or []) if s.id == slot_id),
-        None,
-    )
-    if slot is None:
-        raise HTTPException(status_code=404, detail="Slot not found")
+    participant = _primary_participant(event)
+    if participant is None or participant.member is None or participant.member.user is None:
+        raise HTTPException(status_code=400, detail="Interview participant is missing a linked user")
+    if participant.approvalStatus == "SCHEDULED" or event.scheduledStartAt is not None:
+        raise HTTPException(status_code=400, detail="This interview has already been scheduled")
+    if participant.approvalStatus not in {"ACCEPTED", "PENDING_CANDIDATE", "PENDING_CANDIDATE_ACCEPTANCE"}:
+        raise HTTPException(status_code=400, detail="The interviewer must accept the interview before alternate slots can be proposed")
+
+    normalized_slots = _normalize_proposed_slot_inputs(event, body.proposedSlots)
+    note = body.note.strip() if body.note else None
+
+    event.proposedSlots.clear()
+    for starts_at, ends_at in normalized_slots:
+        event.proposedSlots.append(
+            StageEventProposedSlot(
+                eventId=event.id,
+                participantId=participant.id,
+                startTime=starts_at,
+                endTime=ends_at,
+                proposedBy="CANDIDATE",
+                note=note,
+            )
+        )
+
+    event.status = EventStatus.SCHEDULED
+    event.scheduledStartAt = None
+    event.scheduledEndAt = None
+    _clear_calendar_metadata(event)
+    participant.approvalStatus = "ACCEPTED"
+    participant.scheduledTime = None
+    db.add(event)
+    db.add(participant)
+
+    await db.commit()
+
+    candidate = event.application.candidate
+    candidate_email = candidate.email
+    candidate_name = _candidate_display_name(event.application)
+    interviewer_name = participant.member.user.name or participant.member.user.email
+    interviewer_email = participant.member.user.email
+    job_title = event.application.jobPosting.title if event.application.jobPosting else "Interview"
+    proposed_slots_text = _format_slot_lines(normalized_slots)
+
+    email_service = ResendEmailService()
+    if candidate_email:
+        await email_service.send_candidate_slot_proposal_acknowledgement(
+            to_email=candidate_email,
+            candidate_name=candidate_name,
+            interviewer_name=interviewer_name,
+            job_title=job_title,
+            proposed_slots_text=proposed_slots_text,
+        )
+    if interviewer_email:
+        await email_service.send_candidate_slot_proposal_to_interviewer(
+            to_email=interviewer_email,
+            interviewer_name=interviewer_name,
+            candidate_name=candidate_name,
+            candidate_email=candidate_email,
+            job_title=job_title,
+            proposed_slots_text=proposed_slots_text,
+            note=note,
+        )
+
+    return {"message": "Slots proposed successfully"}
+
+
+async def _book_stage_event_slot(
+    db: AsyncSession,
+    event: StageEvent,
+    participant: StageEventParticipant,
+    slot: StageEventProposedSlot,
+) -> InterviewMeetingRead:
+    if participant.member is None or participant.member.user is None:
+        raise HTTPException(status_code=400, detail="Interview participant is missing a linked user")
     if slot.isSelectedByCandidate:
         raise HTTPException(status_code=400, detail="This slot has already been selected")
 
-    participant = next(
-        (p for p in (event.participants or []) if p.id == slot.participantId),
-        None,
-    )
-    if participant is None or participant.member is None or participant.member.user is None:
-        raise HTTPException(status_code=400, detail="Interview participant is missing a linked user")
+    starts_at = slot.startTime
+    if starts_at.tzinfo is None:
+        starts_at = starts_at.replace(tzinfo=UTC)
+    if starts_at.astimezone(UTC) < datetime.now(UTC):
+        raise HTTPException(status_code=400, detail="Interview cannot be scheduled in the past")
 
     candidate_name = _candidate_display_name(event.application)
     job_title = event.application.jobPosting.title if event.application.jobPosting else ""
@@ -2529,6 +3404,8 @@ async def select_candidate_slot(
     ]
     if event.notes:
         description_parts.append(f"Notes: {event.notes.strip()}")
+    if slot.note:
+        description_parts.append(f"Candidate note: {slot.note.strip()}")
 
     meeting = await _create_google_meet_event(
         db,
@@ -2556,12 +3433,9 @@ async def select_candidate_slot(
 
     await db.commit()
 
-    # Send confirmation emails
     candidate = event.application.candidate
     candidate_email = candidate.email
 
-    interviewer_name = "Interviewer"
-    interviewer_email = None
     interviewer_name = participant.member.user.name or participant.member.user.email
     interviewer_email = participant.member.user.email
 
@@ -2589,6 +3463,68 @@ async def select_candidate_slot(
             meeting_url=meeting.meeting_url,
         )
 
+    return _serialize_interview_meeting(event)
+
+
+async def book_candidate_proposed_slot(
+    db: AsyncSession,
+    organization_id: str,
+    organization_name: str,
+    member_id: str,
+    actor_user_id: str,
+    event_id: str,
+    slot_id: str,
+) -> InterviewMeetingRead:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_with_participants(organization_id, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Interview event not found")
+    if event.application is not None:
+        _assert_job_posting_open(event.application.jobPosting)
+
+    participant = _primary_participant(event)
+    if participant is None or participant.memberId != member_id:
+        raise HTTPException(status_code=403, detail="You are not the primary interviewer for this assignment")
+
+    slot = next(
+        (s for s in (event.proposedSlots or []) if s.id == slot_id),
+        None,
+    )
+    if slot is None:
+        raise HTTPException(status_code=404, detail="Slot not found")
+    if _slot_proposed_by(slot) != "CANDIDATE":
+        raise HTTPException(status_code=400, detail="Only candidate-proposed slots can be booked here")
+
+    return await _book_stage_event_slot(db, event, participant, slot)
+
+
+async def select_candidate_slot(
+    db: AsyncSession,
+    token: str,
+    slot_id: str,
+) -> dict:
+    repository = CandidatePipelineRepository(db)
+    event = await repository.get_stage_event_by_candidate_token(token)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Interview not found or token expired")
+
+    slot = next(
+        (s for s in (event.proposedSlots or []) if s.id == slot_id),
+        None,
+    )
+    if slot is None:
+        raise HTTPException(status_code=404, detail="Slot not found")
+    if _slot_proposed_by(slot) != "INTERVIEWER":
+        raise HTTPException(status_code=400, detail="Only interviewer-proposed slots can be selected from this link")
+
+    participant = next(
+        (p for p in (event.participants or []) if p.id == slot.participantId),
+        None,
+    )
+    if participant is None or participant.member is None or participant.member.user is None:
+        raise HTTPException(status_code=400, detail="Interview participant is missing a linked user")
+
+    await _book_stage_event_slot(db, event, participant, slot)
     return {"message": "Slot selected successfully"}
 
 
@@ -2649,4 +3585,91 @@ async def submit_candidate_feedback(
     return FeedbackSubmitResponse(message="Feedback submitted successfully")
 
 
+async def process_interview_slot_reminders(db: AsyncSession) -> dict[str, int]:
+    from app.models.notification import Notification
 
+    now = datetime.now(UTC)
+
+    subquery = (
+        select(StageEventProposedSlot.eventId)
+        .where(
+            StageEventProposedSlot.isSelectedByCandidate == False,
+            StageEventProposedSlot.proposedBy == "INTERVIEWER",
+            StageEventProposedSlot.startTime > now,
+        )
+        .group_by(StageEventProposedSlot.eventId)
+        .having(func.count() > 0)
+    ).subquery()
+
+    result = await db.execute(
+        select(StageEvent)
+        .options(
+            joinedload(StageEvent.application).selectinload(CandidateApplication.candidate),
+            joinedload(StageEvent.application).joinedload(CandidateApplication.jobPosting),
+            selectinload(StageEvent.proposedSlots),
+            selectinload(StageEvent.participants).joinedload(StageEventParticipant.member).joinedload(Member.user),
+        )
+        .where(
+            StageEvent.status == EventStatus.SCHEDULED,
+            StageEvent.candidateToken.isnot(None),
+            StageEvent.slotInvitationSentAt.isnot(None),
+            StageEvent.scheduledStartAt.is_(None),
+            StageEvent.id.in_(subquery),
+        )
+    )
+    events = result.unique().scalars().all()
+
+    sent = 0
+    skipped = 0
+    email_service = ResendEmailService()
+
+    for event in events:
+        interviewer_slots = [
+            s for s in (event.proposedSlots or [])
+            if s.proposedBy == "INTERVIEWER" and not s.isSelectedByCandidate and s.startTime > now
+        ]
+        if not interviewer_slots:
+            skipped += 1
+            continue
+
+        earliest_slot = min(s.startTime for s in interviewer_slots)
+        gap = earliest_slot - event.slotInvitationSentAt
+
+        if gap < timedelta(hours=36):
+            interval = timedelta(hours=4)
+        elif gap <= timedelta(days=7):
+            interval = timedelta(hours=24)
+        else:
+            interval = timedelta(days=5)
+
+        if event.lastSlotReminderSentAt is not None and (now - event.lastSlotReminderSentAt) < interval:
+            skipped += 1
+            continue
+
+        candidate = event.application.candidate
+        job_title = event.application.jobPosting.title if event.application.jobPosting else ""
+
+        participant = next(
+            (p for p in (event.participants or []) if p.role == "INTERVIEWER" or p.role is None),
+            None,
+        )
+        interviewer_name = "Interviewer"
+        if participant is not None and participant.member is not None and participant.member.user is not None:
+            interviewer_name = participant.member.user.name or participant.member.user.email
+
+        if candidate.email:
+            await email_service.send_interview_slot_reminder(
+                to_email=candidate.email,
+                candidate_name=_candidate_display_name(event.application),
+                interviewer_name=interviewer_name,
+                job_title=job_title,
+                organization_name="Kovan Labs",
+                candidate_token=event.candidateToken,
+            )
+
+        event.lastSlotReminderSentAt = now
+        db.add(event)
+        sent += 1
+
+    await db.commit()
+    return {"sent": sent, "skipped": skipped}

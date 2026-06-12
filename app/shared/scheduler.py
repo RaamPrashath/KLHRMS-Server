@@ -9,6 +9,7 @@ Scheduled jobs
 annual_holiday_sync            - runs on January 1st at 00:00 every year.
 warranty_tracker_scan          - runs daily at 09:00 IST.
 temp_replacement_reminder_scan - runs daily at 08:00 IST.
+interview_slot_reminder_scan   - runs every hour for interview slot picking reminders.
 """
 
 from __future__ import annotations
@@ -67,6 +68,20 @@ async def _temp_replacement_reminder_job() -> None:
             logger.exception("Temp replacement reminder scan job failed")
 
 
+async def _interview_slot_reminder_job() -> None:
+    from app.modules.candidates.service import process_interview_slot_reminders
+    from app.shared.database import AsyncSessionLocal
+
+    logger.info("Interview slot reminder scan job triggered")
+
+    async with AsyncSessionLocal() as db:
+        try:
+            summary = await process_interview_slot_reminders(db)
+            logger.info("Interview slot reminder scan completed: %s", summary)
+        except Exception:
+            logger.exception("Interview slot reminder scan job failed")
+
+
 def register_jobs() -> None:
     scheduler.add_job(
         _annual_holiday_sync_job,
@@ -114,3 +129,16 @@ def register_jobs() -> None:
         misfire_grace_time=3600,
     )
     logger.info("Registered job: temp_replacement_reminder_scan (Daily 08:00 IST)")
+
+    scheduler.add_job(
+        _interview_slot_reminder_job,
+        trigger=CronTrigger(
+            minute="0",
+            timezone="Asia/Kolkata",
+        ),
+        id="interview_slot_reminder_scan",
+        name="Interview Slot Reminder Scan (Every hour)",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    logger.info("Registered job: interview_slot_reminder_scan (Every hour)")

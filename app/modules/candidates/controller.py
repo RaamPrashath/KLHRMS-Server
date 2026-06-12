@@ -17,16 +17,20 @@ from app.modules.candidates.schema import (
     InterviewMeetingUpdateRequest,
     InterviewMoveRequest,
     InterviewMoveResponse,
+    InterviewRejectRequest,
     InterviewRejectResponse,
     MoveApplicationStageRequest,
     MyInterviewListResponse,
     PipelineApplicationRead,
     PipelineBoardRead,
+    PipelineJobPostingStatusUpdateRequest,
     PipelineJobPostingRead,
     PipelineStageCreateRequest,
     PipelineStageRead,
     PipelineStageUpdateRequest,
     ReassignmentRequestCreate,
+    RecruitmentReportExportRequest,
+    RecruitmentReportListResponse,
     ReshuffleRequest,
     ReshuffleResponse,
     StageInterviewAssignmentRequest,
@@ -45,6 +49,30 @@ async def handle_list_job_postings(
     db: AsyncSession,
 ) -> list[PipelineJobPostingRead]:
     return await service.list_job_postings(db, ctx.organization.id)
+
+
+async def handle_update_job_posting_status(
+    ctx: MemberContext,
+    db: AsyncSession,
+    job_posting_id: str,
+    body: PipelineJobPostingStatusUpdateRequest,
+) -> PipelineJobPostingRead:
+    return await service.update_job_posting_status(db, ctx.organization.id, job_posting_id, body)
+
+
+async def handle_list_recruitment_report_jobs(
+    ctx: MemberContext,
+    db: AsyncSession,
+) -> RecruitmentReportListResponse:
+    return await service.list_recruitment_report_jobs(db, ctx.organization.id)
+
+
+async def handle_export_recruitment_report(
+    ctx: MemberContext,
+    db: AsyncSession,
+    body: RecruitmentReportExportRequest,
+) -> bytes:
+    return await service.export_recruitment_report(db, ctx.organization.id, body)
 
 
 async def handle_get_pipeline_board(
@@ -355,6 +383,7 @@ async def handle_reject_interview(
     ctx: MemberContext,
     db: AsyncSession,
     event_id: str,
+    body: InterviewRejectRequest | None = None,
 ) -> InterviewRejectResponse:
     return await service.reject_interview(
         db,
@@ -362,6 +391,24 @@ async def handle_reject_interview(
         ctx.organization.name,
         ctx.member.id,
         event_id,
+        body,
+    )
+
+
+async def handle_book_candidate_proposed_slot(
+    ctx: MemberContext,
+    db: AsyncSession,
+    event_id: str,
+    slot_id: str,
+) -> InterviewMeetingRead:
+    return await service.book_candidate_proposed_slot(
+        db,
+        ctx.organization.id,
+        ctx.organization.name,
+        ctx.member.id,
+        ctx.member.userId,
+        event_id,
+        slot_id,
     )
 
 

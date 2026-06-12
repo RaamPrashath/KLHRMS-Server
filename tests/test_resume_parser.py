@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -141,6 +142,43 @@ async def test_resume_parser_bucket_is_created_when_supabase_returns_400_bucket_
     )
 
     assert calls == ["get", "resume-parser"]
+
+
+@pytest.mark.asyncio
+async def test_resume_parser_upload_network_error_uses_local_dev_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    async def fake_ensure_bucket(*args: object, **kwargs: object) -> None:
+        request = httpx.Request("GET", "https://supabase.example/storage/v1/bucket/resume-parser")
+        raise httpx.ConnectError("getaddrinfo failed", request=request)
+
+    monkeypatch.setattr(storage, "UPLOADS_DIR", tmp_path)
+    monkeypatch.setattr(storage, "_ensure_resume_parser_bucket", fake_ensure_bucket)
+    monkeypatch.setattr(
+        storage,
+        "get_settings",
+        lambda: SimpleNamespace(
+            supabase_url="https://supabase.example",
+            supabase_service_role_key="service-role-key",
+            mode="dev",
+        ),
+    )
+
+    upload = await storage.upload_resume_parser_artifact(
+        content=b'{"ok":true}',
+        storage_path="org-1/resume-parser/run-1/resume.json",
+        content_type="application/json",
+    )
+
+    assert upload.bucket == "resume-parser"
+    assert upload.path == "org-1/resume-parser/run-1/resume.json"
+    assert upload.public_url.endswith(
+        "/uploads/resume-parser/org-1/resume-parser/run-1/resume.json"
+    )
+    assert (
+        tmp_path / "resume-parser" / "org-1" / "resume-parser" / "run-1" / "resume.json"
+    ).read_bytes() == b'{"ok":true}'
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,10 @@ from app.models.recruitment import (
     HiringTeamMember,
     InterviewFeedback,
     InterviewRejectionRecord,
+    JobRequisition,
+    JobPostingStatus,
     JobPosting,
+    JobRequisitionStatus,
     PipelineStage,
     StageEvent,
     StageEventParticipant,
@@ -71,6 +74,58 @@ class CandidatePipelineRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_recruitment_report_postings(
+        self,
+        organization_id: str,
+        job_posting_ids: list[str] | None = None,
+    ) -> list[JobPosting]:
+        approved_statuses = [
+            JobRequisitionStatus.DRAFT,
+            JobRequisitionStatus.APPROVED,
+            JobRequisitionStatus.PUBLISHED,
+            JobRequisitionStatus.ACTIVE_HIRING,
+            JobRequisitionStatus.FILLED,
+            JobRequisitionStatus.CLOSED,
+        ]
+        query = (
+            select(JobPosting)
+            .join(JobPosting.requisition)
+            .options(
+                joinedload(JobPosting.requisition),
+                selectinload(JobPosting.pipelineStages)
+                .selectinload(PipelineStage.applications)
+                .options(
+                    selectinload(CandidateApplication.candidate),
+                    selectinload(CandidateApplication.resumeAnalysis),
+                    selectinload(CandidateApplication.stageHistory).options(
+                        joinedload(ApplicationStageHistory.fromStage),
+                        joinedload(ApplicationStageHistory.toStage),
+                    ),
+                    selectinload(CandidateApplication.stageEvents)
+                    .selectinload(StageEvent.participants)
+                    .joinedload(StageEventParticipant.member)
+                    .joinedload(Member.user),
+                    selectinload(CandidateApplication.stageEvents)
+                    .selectinload(StageEvent.proposedSlots),
+                    selectinload(CandidateApplication.stageEvents)
+                    .joinedload(StageEvent.completedBy)
+                    .joinedload(Member.user),
+                    selectinload(CandidateApplication.offerLetters),
+                    selectinload(CandidateApplication.onboardingRecords),
+                ),
+            )
+            .where(
+                JobPosting.organizationId == organization_id,
+                JobPosting.status.in_([JobPostingStatus.DRAFT, JobPostingStatus.PUBLISHED, JobPostingStatus.CLOSED]),
+                JobPosting.requisition.has(JobRequisition.status.in_(approved_statuses)),
+            )
+            .order_by(JobPosting.createdAt.desc())
+        )
+        if job_posting_ids:
+            query = query.where(JobPosting.id.in_(job_posting_ids))
+        result = await self.db.execute(query)
+        return list(result.unique().scalars().all())
+
     async def list_stages_for_job(
         self,
         organization_id: str,
@@ -101,6 +156,12 @@ class CandidatePipelineRepository:
                 ).selectinload(StageEvent.participants)
                 .joinedload(StageEventParticipant.member)
                 .joinedload(Member.user),
+                selectinload(PipelineStage.applications).selectinload(
+                    CandidateApplication.stageEvents
+                ).selectinload(StageEvent.proposedSlots),
+                selectinload(PipelineStage.applications).selectinload(
+                    CandidateApplication.stageEvents
+                ).joinedload(StageEvent.stage),
             )
             .where(
                 PipelineStage.organizationId == organization_id,
@@ -165,6 +226,10 @@ class CandidatePipelineRepository:
                     .selectinload(StageEvent.participants)
                     .joinedload(StageEventParticipant.member)
                     .joinedload(Member.user),
+                    selectinload(CandidateApplication.stageEvents)
+                    .selectinload(StageEvent.proposedSlots),
+                    selectinload(CandidateApplication.stageEvents)
+                    .joinedload(StageEvent.stage),
                 ),
                 joinedload(PipelineStage.jobPosting),
             )
@@ -200,6 +265,10 @@ class CandidatePipelineRepository:
                     .selectinload(StageEvent.participants)
                     .joinedload(StageEventParticipant.member)
                     .joinedload(Member.user),
+                    selectinload(CandidateApplication.stageEvents)
+                    .selectinload(StageEvent.proposedSlots),
+                    selectinload(CandidateApplication.stageEvents)
+                    .joinedload(StageEvent.stage),
                 ),
                 joinedload(PipelineStage.jobPosting),
             )
@@ -255,6 +324,21 @@ class CandidatePipelineRepository:
             )
         )
         return list(result.unique().scalars().all())
+
+    async def get_member(
+        self,
+        organization_id: str,
+        member_id: str,
+    ) -> Member | None:
+        result = await self.db.execute(
+            select(Member)
+            .options(joinedload(Member.user))
+            .where(
+                Member.organizationId == organization_id,
+                Member.id == member_id,
+            )
+        )
+        return result.unique().scalar_one_or_none()
 
     async def list_approved_leave_for_members(
         self,
@@ -350,6 +434,7 @@ class CandidatePipelineRepository:
                 .selectinload(StageEvent.feedbacks)
                 .joinedload(InterviewFeedback.member)
                 .joinedload(Member.user),
+                selectinload(CandidateApplication.onboardingRecords),
                 selectinload(CandidateApplication.internalNoteEntries)
                 .joinedload(CandidateApplicationNote.author)
                 .joinedload(Member.user),
