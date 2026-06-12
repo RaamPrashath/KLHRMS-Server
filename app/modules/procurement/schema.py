@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 PROCUREMENT_REQUEST_TYPES = ("BULK", "REPLACEMENT")
 PROCUREMENT_STATUSES = (
     "DRAFT",
-    "PENDING_FINANCE_APPROVAL",
+    "PENDING",
     "APPROVED",
     "REJECTED",
     "CANCELLED",
@@ -369,10 +369,13 @@ class ProcurementPurchaseOrderListItemRead(BaseModel):
     assetName: str | None
     storageBucket: str
     storagePath: str
+    sentAt: datetime | None = None
+    emailError: str | None = None
 
 
-class ProcurementPurchaseOrderListResponse(BaseModel):
-    items: list[ProcurementPurchaseOrderListItemRead]
+class ProcurementPurchaseOrderSendEmailRequest(BaseModel):
+    recipientMemberId: str
+    recipientEmail: str
 
 
 class ProcurementPurchaseOrderDownloadResponse(BaseModel):
