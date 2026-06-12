@@ -91,35 +91,80 @@ def _write_xlsx(headers: list[str], rows: list[list[str]], sheet_name: str) -> b
 # ── PDF helpers ────────────────────────────────────────────────────────────────
 
 
-def _write_pdf(title: str, headers: list[str], rows: list[list[str]]) -> bytes:
+def _write_pdf(
+    title: str,
+    headers: list[str],
+    rows: list[list[str]],
+    col_weights: list[float] | None = None,
+    metadata: list[str] | None = None,
+) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=landscape(A4), topMargin=15 * mm, bottomMargin=15 * mm
     )
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("Title", parent=styles["Title"], fontSize=14, spaceAfter=10 * mm)
+    title_style = ParagraphStyle("Title", parent=styles["Title"], fontSize=14, spaceAfter=8 * mm)
 
     elements: list = [Paragraph(title, title_style)]
 
-    table_data = [headers] + rows
+    if metadata:
+        meta_style = ParagraphStyle(
+            "Meta",
+            parent=styles["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=10,
+            textColor=colors.HexColor("#475569"),
+            spaceAfter=3 * mm
+        )
+        for line in metadata:
+            elements.append(Paragraph(line, meta_style))
+        elements.append(Spacer(1, 4 * mm))
+
+    # Wrap headers and row cells in Paragraphs to support text auto-wrap
+    header_style = ParagraphStyle(
+        "TableHeader",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=9,
+        textColor=colors.white,
+        alignment=0 # Left aligned
+    )
+    body_style = ParagraphStyle(
+        "TableBody",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor("#1D1D1F"),
+        alignment=0 # Left aligned
+    )
+
+    formatted_headers = [Paragraph(h, header_style) for h in headers]
+    formatted_rows = []
+    for r in rows:
+        formatted_rows.append([Paragraph(str(cell) if cell is not None else "", body_style) for cell in r])
+
+    table_data = [formatted_headers] + formatted_rows
     col_count = len(headers)
     page_width = landscape(A4)[0] - 30 * mm
-    col_width = page_width / max(col_count, 1)
+
+    if col_weights:
+        total_weight = sum(col_weights)
+        col_widths = [w / total_weight * page_width for w in col_weights]
+    else:
+        col_widths = [page_width / max(col_count, 1)] * col_count
 
     style = TableStyle([
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(_HEADER_FILL)),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.Color(217, 226, 236)),
-        ("FONTSIZE", (0, 0), (-1, 0), 9),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
-        ("TOPPADDING", (0, 0), (-1, 0), 6),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9E2EC")),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
     ])
 
-    pdf_table = Table(table_data, colWidths=[col_width] * col_count, repeatRows=1)
+    pdf_table = Table(table_data, colWidths=col_widths, repeatRows=1)
     pdf_table.setStyle(style)
     elements.append(pdf_table)
     doc.build(elements)
@@ -172,11 +217,13 @@ async def generate_register_export(
     result = await db.execute(query)
     assets = result.unique().scalars().all()
 
-    headers = ["Asset Code", "Asset Name", "Category", "Status", "Condition", "Holder", "Location", "Created Date"]
+    # Brand column added after Asset Name
+    headers = ["Asset Code", "Asset Name", "Brand", "Category", "Status", "Condition", "Holder", "Location", "Created Date"]
     rows = [
         [
             a.assetCode,
             a.name,
+            a.brand or "",
             a.category or "",
             a.status,
             a.condition,
@@ -190,7 +237,13 @@ async def generate_register_export(
     if request.format == "csv":
         return _write_csv(headers, rows)
     elif request.format == "pdf":
-        return _write_pdf("Asset Register Report", headers, rows)
+        month_name = start.strftime("%B %Y")
+        metadata = [
+            f"Month: {month_name}",
+            f"No. of Assets Registered: {len(assets)}",
+        ]
+        col_weights = [1.0, 1.2, 1.1, 1.2, 1.0, 0.9, 1.5, 1.2, 1.0]
+        return _write_pdf("Asset Register Report", headers, rows, col_weights=col_weights, metadata=metadata)
     else:
         return _write_xlsx(headers, rows, "Asset Register")
 
@@ -243,7 +296,13 @@ async def generate_issued_export(
     if request.format == "csv":
         return _write_csv(headers, rows)
     elif request.format == "pdf":
-        return _write_pdf("Issued Assets Report", headers, rows)
+        month_name = start.strftime("%B %Y")
+        metadata = [
+            f"Month: {month_name}",
+            f"No. of Assets Issued: {len(assignments)}",
+        ]
+        col_weights = [1.0, 1.2, 1.2, 1.5, 1.1, 0.9, 3.0]
+        return _write_pdf("Issued Assets Report", headers, rows, col_weights=col_weights, metadata=metadata)
     else:
         return _write_xlsx(headers, rows, "Issued Assets")
 
@@ -301,7 +360,13 @@ async def generate_returned_export(
     if request.format == "csv":
         return _write_csv(headers, rows)
     elif request.format == "pdf":
-        return _write_pdf("Returned Assets Report", headers, rows)
+        month_name = start.strftime("%B %Y")
+        metadata = [
+            f"Month: {month_name}",
+            f"No. of Assets Returned: {len(assignments)}",
+        ]
+        col_weights = [1.0, 1.2, 1.2, 1.5, 1.1, 1.1, 1.1, 2.5]
+        return _write_pdf("Returned Assets Report", headers, rows, col_weights=col_weights, metadata=metadata)
     else:
         return _write_xlsx(headers, rows, "Returned Assets")
 
@@ -361,6 +426,10 @@ async def generate_inventory_export(
     if request.format == "csv":
         return _write_csv(headers, rows)
     elif request.format == "pdf":
-        return _write_pdf("Inventory Report", headers, rows)
+        metadata = [
+            f"No. of Inventory Assets: {len(assets)}",
+        ]
+        col_weights = [1.1, 1.1, 1.0, 1.2, 1.2, 0.8, 0.8, 0.8, 0.8, 0.8, 1.0, 1.0, 0.9]
+        return _write_pdf("Inventory Report", headers, rows, col_weights=col_weights, metadata=metadata)
     else:
         return _write_xlsx(headers, rows, "Inventory")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import functools
 import html
 import io
 import os
@@ -61,6 +62,9 @@ from app.modules.procurement.schema import (
     AssetPurchaseRequisitionCreateRequest,
     AssetPurchaseRequisitionListResponse,
     AssetPurchaseRequisitionRead,
+    AssetPurchaseRequisitionUpdateRequest,
+    PaginationMeta,
+    PaginationParams,
     ProcurementActivityEntry,
     ProcurementAdminRecipientOption,
     ProcurementAdminRecipientsResponse,
@@ -89,6 +93,7 @@ from app.modules.procurement.schema import (
 from app.shared.config import get_settings
 from app.shared.deps.organization_member import MemberContext
 from app.shared.notifications.email import (
+
     is_resend_email_configured,
     send_procurement_purchase_order,
     send_procurement_requisition_decided,
@@ -137,17 +142,15 @@ def _can_view_requisition(
     return True
 
 
-def _is_finance_manager(member: Member | None) -> bool:
-    return bool(member and member.role and (member.role.name or "").strip().lower() == "finance manager")
-
-
 def _can_finance_approve(
     requisition: AssetPurchaseRequisition,
     actor: Member,
 ) -> bool:
     if requisition.status != "PENDING_FINANCE_APPROVAL":
         return False
-    return _is_finance_manager(actor) and get_permission_scope(actor.role.permissions, "procurement", "approve") == "organization"  # type: ignore[union-attr]
+    if actor.role is None:
+        return False
+    return get_permission_scope(actor.role.permissions, "procurement", "approve") == "organization"
 
 
 async def _get_org_finance_approvers(db: AsyncSession, organization_id: str) -> list[Member]:
@@ -160,8 +163,7 @@ async def _get_org_finance_approvers(db: AsyncSession, organization_id: str) -> 
     return [
         member
         for member in members
-        if _is_finance_manager(member)
-        and member.role is not None
+        if member.role is not None
         and get_permission_scope(member.role.permissions, "procurement", "approve") == "organization"
     ]
 
@@ -187,7 +189,7 @@ def _should_receive_procurement_po(role: Role | None) -> bool:
         return True
     if procurement_permissions.get("view") == "organization":
         return True
-    return "admin" in (role.name or "").strip().lower()
+    return False
 
 
 async def _get_procurement_admin_recipients(
@@ -689,31 +691,36 @@ def _serialize_template_record(
     )
 
 
-_PDF_FONT_CACHE: dict[str, str] | None = None
-
-
+@functools.lru_cache(maxsize=1)
 def _resolve_pdf_font_family() -> dict[str, str]:
-    global _PDF_FONT_CACHE
-    if _PDF_FONT_CACHE is not None:
-        return _PDF_FONT_CACHE
-
-    font_pairs = [
-        ("KLPODefault", r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\arialbd.ttf"),
-        ("KLPODefault", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    _FONT_CANDIDATES = [
+        ("KLPODefault", [
+            r"C:\Windows\Fonts\arial.ttf",
+            r"C:\Windows\Fonts\Arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+        ], [
+            r"C:\Windows\Fonts\arialbd.ttf",
+            r"C:\Windows\Fonts\Arialbd.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        ]),
     ]
-    for name, regular_path, bold_path in font_pairs:
-        if os.path.exists(regular_path) and os.path.exists(bold_path):
+    for name, regular_candidates, bold_candidates in _FONT_CANDIDATES:
+        regular_path = next((p for p in regular_candidates if os.path.exists(p)), None)
+        bold_path = next((p for p in bold_candidates if os.path.exists(p)), None)
+        if regular_path is not None and bold_path is not None:
             regular_name = f"{name}Regular"
             bold_name = f"{name}Bold"
             if regular_name not in pdfmetrics.getRegisteredFontNames():
                 pdfmetrics.registerFont(TTFont(regular_name, regular_path))
             if bold_name not in pdfmetrics.getRegisteredFontNames():
                 pdfmetrics.registerFont(TTFont(bold_name, bold_path))
-            _PDF_FONT_CACHE = {"regular": regular_name, "bold": bold_name}
-            return _PDF_FONT_CACHE
+            return {"regular": regular_name, "bold": bold_name}
 
-    _PDF_FONT_CACHE = {"regular": "Helvetica", "bold": "Helvetica-Bold"}
-    return _PDF_FONT_CACHE
+    return {"regular": "Helvetica", "bold": "Helvetica-Bold"}
 
 
 async def _load_remote_image_bytes(url: str | None) -> bytes | None:
@@ -1382,9 +1389,17 @@ async def get_procurement_admin_recipients(
 async def list_procurement_purchase_orders(
     db: AsyncSession,
     ctx: MemberContext,
+    pagination: PaginationParams | None = None,
 ) -> ProcurementPurchaseOrderListResponse:
+    pagination = pagination or PaginationParams()
+
     if ctx.member.role is None or get_permission_scope(ctx.member.role.permissions, "procurement", "approve") != "organization":
         raise HTTPException(status_code=403, detail="Only procurement approvers can access generated purchase orders")
+
+    count_result = await db.execute(
+        select(func.count(AssetPurchaseOrder.id)).where(AssetPurchaseOrder.organizationId == ctx.organization.id)
+    )
+    total = count_result.scalar() or 0
 
     result = await db.execute(
         select(AssetPurchaseOrder)
@@ -1395,6 +1410,8 @@ async def list_procurement_purchase_orders(
         )
         .where(AssetPurchaseOrder.organizationId == ctx.organization.id)
         .order_by(AssetPurchaseOrder.generatedAt.desc(), AssetPurchaseOrder.createdAt.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     purchase_orders = result.unique().scalars().all()
     return ProcurementPurchaseOrderListResponse(
@@ -1414,7 +1431,8 @@ async def list_procurement_purchase_orders(
                 storagePath=entry.storagePath,
             )
             for entry in purchase_orders
-        ]
+        ],
+        pagination=PaginationMeta(total=total, limit=pagination.limit, offset=pagination.offset),
     )
 
 
@@ -1450,7 +1468,18 @@ async def get_procurement_purchase_order_download(
 async def list_procurement_requisitions(
     db: AsyncSession,
     ctx: MemberContext,
+    pagination: PaginationParams | None = None,
 ) -> AssetPurchaseRequisitionListResponse:
+    pagination = pagination or PaginationParams()
+
+    count_query = select(func.count(AssetPurchaseRequisition.id)).where(
+        AssetPurchaseRequisition.organizationId == ctx.organization.id
+    )
+    if ctx.scope == "self":
+        count_query = count_query.where(AssetPurchaseRequisition.raisedByMemberId == ctx.member.id)
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
     query = (
         select(AssetPurchaseRequisition)
         .options(
@@ -1472,13 +1501,16 @@ async def list_procurement_requisitions(
         )
         .where(AssetPurchaseRequisition.organizationId == ctx.organization.id)
         .order_by(AssetPurchaseRequisition.createdAt.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     if ctx.scope == "self":
         query = query.where(AssetPurchaseRequisition.raisedByMemberId == ctx.member.id)
     result = await db.execute(query)
     items = result.unique().scalars().all()
     return AssetPurchaseRequisitionListResponse(
-        items=[_serialize_requisition(item, ctx.member) for item in items]
+        items=[_serialize_requisition(item, ctx.member) for item in items],
+        pagination=PaginationMeta(total=total, limit=pagination.limit, offset=pagination.offset),
     )
 
 
@@ -1677,6 +1709,9 @@ async def issue_procurement_purchase_order(
     if not _can_issue_purchase_order(requisition, ctx.member):
         raise HTTPException(status_code=403, detail="Only finance approvers can issue purchase orders")
 
+    if requisition.purchaseOrders:
+        raise HTTPException(status_code=400, detail="A purchase order has already been issued for this requisition")
+
     org = await _get_org(db, ctx.organization.id)
     if org is None:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -1843,6 +1878,38 @@ async def issue_procurement_purchase_order(
             base64=base64.b64encode(pdf_bytes).decode("utf-8"),
         ),
     )
+
+
+async def update_procurement_requisition(
+    db: AsyncSession,
+    ctx: MemberContext,
+    requisition_id: str,
+    payload: AssetPurchaseRequisitionUpdateRequest,
+) -> AssetPurchaseRequisitionRead:
+    requisition = await _load_requisition(db, ctx.organization.id, requisition_id)
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Procurement requisition not found")
+    if requisition.raisedByMemberId != ctx.member.id and ctx.scope == "self":
+        raise HTTPException(status_code=403, detail="You can only update your own requisitions")
+    if requisition.status not in {"DRAFT", "PENDING_FINANCE_APPROVAL"}:
+        raise HTTPException(status_code=400, detail="Only draft or pending requisitions can be edited")
+
+    update_data = payload.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    if "urgency" in update_data:
+        update_data["urgency"] = payload.urgency.upper()
+
+    for field, value in update_data.items():
+        setattr(requisition, field, value)
+
+    db.add(requisition)
+    await _log_activity(db, ctx.organization.id, requisition.id, ctx.member.id, "UPDATED")
+    await db.commit()
+    saved = await _load_requisition(db, ctx.organization.id, requisition.id)
+    if saved is None:
+        raise HTTPException(status_code=500, detail="Failed to reload updated requisition")
+    return _serialize_requisition(saved, ctx.member)
 
 
 async def submit_procurement_requisition(

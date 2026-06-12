@@ -24,7 +24,7 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
-from sqlalchemy import Select, extract, func, or_, select
+from sqlalchemy import Select, extract, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import contains_eager, joinedload, selectinload
 
@@ -931,6 +931,11 @@ def _asset_summary(
         if active_provision and active_provision.member and active_provision.member.user
         else None
     )
+    provider = (
+        active_provision.providedByMember.user
+        if active_provision and active_provision.providedByMember and active_provision.providedByMember.user
+        else None
+    )
     if open_maintenance_count is None:
         open_maintenance_count = sum(
             1 for log in asset.maintenanceLogs if log.status in {"OPEN", "IN_PROGRESS"}
@@ -972,6 +977,8 @@ def _asset_summary(
         openMaintenanceCount=open_maintenance_count,
         unitSummary=_unit_summary(asset.units),
         customFields=custom_fields,
+        providedDate=active_provision.providedDate if active_provision else None,
+        providedByName=provider.name if provider else None,
     )
 
 
@@ -1394,6 +1401,16 @@ async def update_category(
         if existing.scalar_one_or_none() is not None:
             raise HTTPException(status_code=409, detail="A category with this name already exists")
         category.name = payload.name.strip()
+        new_label = category.name.upper().replace(" ", "_")
+        await db.execute(
+            update(Asset)
+            .where(
+                Asset.organizationId == ctx.organization.id,
+                Asset.categoryDefinitionId == category_id,
+                Asset.deletedAt.is_(None),
+            )
+            .values(category=new_label)
+        )
     if payload.description is not None:
         category.description = payload.description.strip() if payload.description else None
     if payload.assetCode is not None:

@@ -651,7 +651,8 @@ class AssetSummary(BaseModel):
     openMaintenanceCount: int
     unitSummary: AssetUnitSummary | None = None
     customFields: list[CustomFieldValueResponse] = []
-
+    providedDate: datetime | None = None
+    providedByName: str | None = None
 
 class AssetDetailResponse(AssetSummary):
     activeProvision: AssetProvideRecordSummary | None
