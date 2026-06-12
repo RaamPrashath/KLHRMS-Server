@@ -132,6 +132,7 @@ async def handle_upsert_manual_day(
         clock_in_time=body.clock_in,
         clock_out_time=body.clock_out,
         entry_type=body.entry_type,
+        is_remote=body.is_remote,
     )
     return _to_response(record)
 

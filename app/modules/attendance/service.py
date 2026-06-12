@@ -913,6 +913,7 @@ async def upsert_manual_day(
     clock_in_time: datetime | None,
     clock_out_time: datetime | None,
     entry_type: str | None = None,
+    is_remote: bool | None = None,
 ) -> AttendanceRecord:
     """
     Manually create or replace a single attendance day row.
@@ -921,9 +922,41 @@ async def upsert_manual_day(
     - Recomputes totals/status/overtime from provided clock times.
     - Sets enteredByManagerId to the actor.
     - Overwrites any existing row for that member/date.
-    - If entry_type is provided (LEAVE/COMP_OFF), bypasses leave check and marks the cell.
+    - If entry_type is provided (LEAVE/COMP_OFF/HOLIDAY/FLOATING_HOLIDAY), bypasses leave check and marks the cell.
+    - If only is_remote is provided (no clock times, no entry_type), performs a minimal update
+      of the isRemote flag on the existing record, or creates a new record with just isRemote set.
     """
     enforce_scope(actor_member_id, target_member_id, scope)
+
+    # ── Minimal is_remote update path (no clock times, no entry type) ──────
+    if is_remote is not None and clock_in_time is None and clock_out_time is None and entry_type is None:
+        result = await db.execute(
+            select(AttendanceRecord).where(
+                AttendanceRecord.organizationId == organization_id,
+                AttendanceRecord.employeeId == target_member_id,
+                AttendanceRecord.date == day,
+            )
+        )
+        existing: AttendanceRecord | None = result.scalar_one_or_none()
+        if existing is not None:
+            existing.isRemote = is_remote
+            await db.commit()
+            await db.refresh(existing)
+            return existing
+        return await _upsert_day_row(
+            db=db,
+            organization_id=organization_id,
+            employee_id=target_member_id,
+            day=day,
+            clock_in=None,
+            clock_out=None,
+            total_hours=None,
+            overtime_hours=None,
+            status="ABSENT",
+            entered_by_manager_id=actor_member_id,
+            is_remote=is_remote,
+            entry_type=None,
+        )
 
     if entry_type is None:
         if await _check_day_has_approved_leave(db, organization_id, target_member_id, day):
@@ -941,6 +974,12 @@ async def upsert_manual_day(
         total_hours = 0
     elif entry_type == "COMP_OFF":
         status = "PRESENT"
+        total_hours = 0
+    elif entry_type == "HOLIDAY":
+        status = "ABSENT"
+        total_hours = 0
+    elif entry_type == "FLOATING_HOLIDAY":
+        status = "ABSENT"
         total_hours = 0
     elif clock_in_time is not None and clock_out_time is not None:
         ci = _normalize_attendance_datetime(clock_in_time)
@@ -970,6 +1009,7 @@ async def upsert_manual_day(
         overtime_hours=overtime_hours,
         status=status,
         entered_by_manager_id=actor_member_id,
+        is_remote=is_remote or False,
         entry_type=entry_type,
     )
 

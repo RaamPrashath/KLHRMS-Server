@@ -43,6 +43,7 @@ class AttendanceReportRowData:
     total_hours: float | None
     department_name: str | None
     project_name: str | None
+    client_name: str | None
     task_name: str | None
     clock_out_description: str | None
     leave_type_name: str | None = None
@@ -213,6 +214,7 @@ async def list_attendance_report(
             AttendanceRecord.entryType,
             department_name.label("departmentName"),
             Project.name.label("projectName"),
+            Project.clientName.label("clientName"),
             ProjectTask.name.label("taskName"),
             clock_out_description.label("clockOutDescription"),
             LeaveType.name.label("leaveTypeName"),
@@ -278,6 +280,7 @@ async def list_attendance_report(
             total_hours=row.totalHours,
             department_name=row.departmentName,
             project_name=row.projectName,
+            client_name=row.clientName,
             task_name=row.taskName,
             clock_out_description=row.clockOutDescription,
             leave_type_name=row.leaveTypeName,
@@ -327,6 +330,7 @@ async def list_attendance_report(
                         total_hours=0,
                         department_name=None,
                         project_name=None,
+                        client_name=None,
                         task_name=None,
                         clock_out_description=None,
                         leave_type_name=leave_name,

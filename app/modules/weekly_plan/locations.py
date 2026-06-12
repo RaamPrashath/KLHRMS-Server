@@ -16,7 +16,7 @@ PLAN_LOCATION_OPTIONS = (
     {
         "value": PlanLocationValue.OFFICE,
         "label": "Office",
-        "short_label": "OFF",
+        "short_label": "OFC",
         "color": "#0f766e",
     },
     {
