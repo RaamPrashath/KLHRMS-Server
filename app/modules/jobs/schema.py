@@ -98,6 +98,8 @@ class JobRequisitionCreateRequest(BaseModel):
     isRemote: bool = False
     targetDate: date | None = None
 
+    formFields: list[FormFieldConfig] | None = None
+
     @field_validator("skills", "certifications")
     @classmethod
     def normalize_list_fields(cls, value: list[str]) -> list[str]:
@@ -185,6 +187,8 @@ class JobRequisitionUpdateRequest(BaseModel):
     isRemote: bool | None = None
     targetDate: date | None = None
 
+    formFields: list[FormFieldConfig] | None = None
+
     @field_validator("skills", "certifications")
     @classmethod
     def normalize_optional_list_fields(cls, value: list[str] | None) -> list[str] | None:
@@ -271,6 +275,7 @@ class JobRequisitionDecisionRequest(BaseModel):
     education: str | None = None
     certifications: list[str] | None = None
     knockoutRule: str | None = Field(default=None, max_length=2000)
+    formFields: list[FormFieldConfig] | None = None
 
     @field_validator("skills", "certifications")
     @classmethod
@@ -391,6 +396,7 @@ class JobRequisitionListItemRead(BaseModel):
     requisitionNumber: int | None
     requisitionLabel: str | None
     canEdit: bool
+    formFields: list[FormFieldConfig] = Field(default_factory=list)
     approvalSummary: JobRequisitionApprovalSummaryRead
     currentUserApprovalDecision: RequisitionApprovalDecision | None
     currentUserCanApprove: bool
@@ -539,6 +545,7 @@ class PublicJobPostingListItemRead(BaseModel):
     publishedAt: datetime | None
     createdAt: datetime
     updatedAt: datetime
+    formFields: list[FormFieldConfig] = Field(default_factory=list)
 
 
 class PublicJobPostingDetailRead(PublicJobPostingListItemRead):
@@ -553,6 +560,7 @@ class PublicJobApplicationRequest(BaseModel):
     linkedinUrl: str | None = Field(default=None, max_length=2048)
     resumeUrl: str = Field(min_length=1, max_length=4096)
     coverLetter: str | None = None
+    customFields: dict[str, Any] | None = None
 
     @field_validator("firstName", "lastName", "resumeUrl")
     @classmethod
@@ -577,6 +585,26 @@ class PublicJobApplicationRequest(BaseModel):
             return None
         stripped = value.strip()
         return stripped or None
+
+
+FormFieldType = Literal["short_text", "long_text", "dropdown", "checkbox", "date"]
+
+
+class FormFieldConfig(BaseModel):
+    id: str
+    type: FormFieldType
+    label: str
+    required: bool = False
+    options: list[str] | None = None
+
+
+class UpdateJobPostingFormFieldsRequest(BaseModel):
+    formFields: list[FormFieldConfig]
+
+
+class CandidateApplicationCustomFieldsRead(BaseModel):
+    applicationId: str
+    customFields: dict[str, Any] | None = None
 
 
 class PublicJobApplicationRead(BaseModel):

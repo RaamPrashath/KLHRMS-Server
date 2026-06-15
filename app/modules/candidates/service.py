@@ -258,6 +258,10 @@ def _serialize_history(history: ApplicationStageHistory) -> PipelineStageHistory
         movedByMemberId=history.movedByMemberId,
         movedByName=moved_by_name,
         note=history.note,
+        score=history.score,
+        recommendation=history.recommendation,
+        strengths=history.strengths,
+        areasOfImprovement=history.areasOfImprovement,
         createdAt=history.createdAt,
     )
 
@@ -449,6 +453,7 @@ def _serialize_detail(application: CandidateApplication, actor_member_id: str) -
         coverLetter=application.notes,
         internalNotes=application.internalNotes,
         status=_application_status(application, application.pipelineStage),
+        customFields=application.customFields,
         resumeUrl=application.candidate.resumeUrl,
         appliedAt=application.appliedAt,
         lastActivityAt=application.lastActivityAt,
@@ -792,6 +797,7 @@ async def move_application_stage(
     actor_user_id: str,
     application_id: str,
     body: MoveApplicationStageRequest,
+    access_scope: str | None = None,
 ) -> PipelineApplicationRead:
     repository = CandidatePipelineRepository(db)
     application = await repository.get_application(organization_id, application_id)
@@ -821,6 +827,13 @@ async def move_application_stage(
 
     from_stage_id = application.pipelineStageId
     application.pipelineStageId = target_stage.id
+
+    is_org_scoped = access_scope == "organization"
+    feedback_score = body.score if is_org_scoped and body.score is not None else None
+    feedback_recommendation = body.recommendation if is_org_scoped and body.recommendation is not None else None
+    feedback_strengths = body.strengths if is_org_scoped and body.strengths is not None else None
+    feedback_improvements = body.areasOfImprovement if is_org_scoped and body.areasOfImprovement is not None else None
+
     history = ApplicationStageHistory(
         organizationId=organization_id,
         applicationId=application.id,
@@ -828,6 +841,10 @@ async def move_application_stage(
         toStageId=target_stage.id,
         movedByMemberId=actor_member_id,
         note=body.note,
+        score=feedback_score,
+        recommendation=feedback_recommendation,
+        strengths=feedback_strengths,
+        areasOfImprovement=feedback_improvements,
     )
     db.add(application)
     await repository.add_history(history)

@@ -69,6 +69,7 @@ async def handle_move_application_stage(
     application_id: str,
     body: MoveApplicationStageRequest,
 ) -> PipelineApplicationRead:
+    access_scope = getattr(ctx, "scope", None)
     return await service.move_application_stage(
         db,
         ctx.organization.id,
@@ -77,6 +78,7 @@ async def handle_move_application_stage(
         ctx.member.userId,
         application_id,
         body,
+        access_scope=access_scope,
     )
 
 

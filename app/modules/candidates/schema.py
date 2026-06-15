@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from app.models.recruitment import ApplicationSource
 
 InterviewMeetingMode = Literal["SCHEDULE", "START_NOW"]
+
+Recommendation = Literal["STRONG_HIRE", "HIRE", "HOLD", "NO_HIRE"]
 
 
 class PipelineJobPostingRead(BaseModel):
@@ -278,6 +280,10 @@ class ReassignmentRequestCreate(BaseModel):
 class MoveApplicationStageRequest(BaseModel):
     toStageId: str = Field(min_length=1)
     note: str | None = None
+    score: float | None = Field(default=None, ge=0, le=100)
+    recommendation: Recommendation | None = None
+    strengths: str | None = None
+    areasOfImprovement: str | None = None
 
 
 class PipelineStageCreateRequest(BaseModel):
@@ -318,6 +324,10 @@ class PipelineStageHistoryRead(BaseModel):
     movedByMemberId: str | None
     movedByName: str | None
     note: str | None
+    score: float | None = None
+    recommendation: str | None = None
+    strengths: str | None = None
+    areasOfImprovement: str | None = None
     createdAt: datetime
 
 
@@ -427,6 +437,7 @@ class CandidateApplicationDetailRead(BaseModel):
     source: ApplicationSource
     coverLetter: str | None
     internalNotes: str | None
+    customFields: dict[str, Any] | None = None
     status: str
     resumeUrl: str | None
     appliedAt: datetime
