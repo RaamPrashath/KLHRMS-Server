@@ -295,6 +295,20 @@ async def handle_get_requisition_activity(
     )
 
 
+async def handle_update_job_posting_form_fields(
+    ctx: MemberContext,
+    db: AsyncSession,
+    posting_id: str,
+    form_fields: list[dict],
+) -> PublicJobPostingListItemRead:
+    return await service.update_job_posting_form_fields(
+        db=db,
+        organization_id=ctx.organization.id,
+        posting_id=posting_id,
+        form_fields=form_fields,
+    )
+
+
 async def handle_list_public_postings(
     db: AsyncSession,
 ) -> list[PublicJobPostingListItemRead]:

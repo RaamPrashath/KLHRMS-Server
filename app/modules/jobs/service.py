@@ -505,6 +505,7 @@ def _serialize_requisition(
         requirementsRich=requisition.requirementsRich,
         benefits=requisition.benefits,
         aboutTeam=requisition.aboutTeam,
+        formFields=list(requisition.formFields or []),
         requisitionNumber=requisition.requisitionNumber,
         requisitionLabel=requisition_label,
         canEdit=(
@@ -671,6 +672,7 @@ async def _serialize_public_posting(
         publishedAt=_to_utc_datetime(posting.publishedAt),
         createdAt=posting.createdAt,
         updatedAt=posting.updatedAt,
+        formFields=posting.formFields or [],
     )
 
 
@@ -694,6 +696,7 @@ async def _create_job_posting_for_requisition(
         slug=await _generate_job_slug(repository, requisition.organizationId, requisition.title),
         description=(description or requisition.description or requisition.title).strip(),
         requirements=requisition.requirementsRich or requisition.requirements,
+        formFields=requisition.formFields,
         status=JobPostingStatus.PUBLISHED,
         publishedAt=now,
     )
@@ -849,6 +852,7 @@ def _apply_requisition_updates(
         "requirementsRich",
         "benefits",
         "aboutTeam",
+        "formFields",
         "description",
         "requirements",
         "location",
@@ -861,6 +865,11 @@ def _apply_requisition_updates(
         value = getattr(body, field_name)
         if field_name == "knockoutRule":
             value = _normalize_optional_knockout_rule(value)
+            setattr(requisition, field_name, value)
+            changed_fields.append(field_name)
+            continue
+        if field_name == "formFields":
+            value = [f.model_dump() for f in value] if value else None
             setattr(requisition, field_name, value)
             changed_fields.append(field_name)
             continue
@@ -1474,6 +1483,7 @@ async def create_requisition(
         requirementsRich=body.requirementsRich,
         benefits=body.benefits,
         aboutTeam=body.aboutTeam,
+        formFields=([f.model_dump() for f in body.formFields] if body.formFields else None),
         requisitionNumber=await _generate_requisition_number(repository, organization_id),
     )
     requisition = await repository.create_requisition(requisition)
@@ -1643,6 +1653,15 @@ async def apply_to_public_posting(
         candidate.resumeUrl = body.resumeUrl
         await repository.add_candidate(candidate)
 
+    if body.customFields is not None and posting.formFields is not None:
+        valid_keys = {f["id"] for f in posting.formFields if isinstance(f, dict)}
+        for key in body.customFields:
+            if key not in valid_keys:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown custom field key: '{key}'. This posting does not have a field with that id.",
+                )
+
     application = CandidateApplication(
         organizationId=posting.organizationId,
         candidateId=candidate.id,
@@ -1650,6 +1669,7 @@ async def apply_to_public_posting(
         pipelineStageId=default_stage.id,
         source=ApplicationSource.COMPANY_WEBSITE,
         notes=body.coverLetter,
+        customFields=body.customFields,
     )
     await repository.add_application(application)
 
@@ -1868,3 +1888,22 @@ async def get_requisition_activity(
             }
         )
     return result
+
+
+async def update_job_posting_form_fields(
+    db: AsyncSession,
+    organization_id: str,
+    posting_id: str,
+    form_fields: list[dict],
+) -> PublicJobPostingListItemRead:
+    repository = JobRequisitionRepository(db)
+    posting = await repository.get_posting_by_id(posting_id, organization_id)
+    if posting is None:
+        raise HTTPException(status_code=404, detail="Job posting not found")
+
+    posting.formFields = form_fields
+    db.add(posting)
+    await db.commit()
+    await db.refresh(posting)
+
+    return await _serialize_public_posting(repository, posting)

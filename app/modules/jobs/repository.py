@@ -231,6 +231,16 @@ class JobRequisitionRepository:
         )
         return result.unique().scalar_one_or_none()
 
+    async def get_posting_by_id(self, posting_id: str, organization_id: str) -> JobPosting | None:
+        result = await self.db.execute(
+            select(JobPosting)
+            .where(
+                JobPosting.id == posting_id,
+                JobPosting.organizationId == organization_id,
+            )
+        )
+        return result.unique().scalar_one_or_none()
+
     async def get_matching_requisition_for_posting(
         self,
         organization_id: str,

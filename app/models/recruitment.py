@@ -281,6 +281,8 @@ class JobRequisition(Base):
     benefits: Mapped[str | None] = mapped_column(Text, nullable=True)
     aboutTeam: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    formFields: Mapped[dict | None] = mapped_column(JSONB, default=None)
+
     # REQUISITION NUMBER
     requisitionNumber: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
@@ -701,6 +703,8 @@ class JobPosting(Base):
 
     requirements: Mapped[str | None] = mapped_column(Text)
 
+    formFields: Mapped[dict | None] = mapped_column(JSONB, default=None)
+
     status: Mapped[JobPostingStatus] = mapped_column(
         Enum(
             JobPostingStatus,
@@ -1090,6 +1094,8 @@ class CandidateApplication(Base):
 
     internalNotes: Mapped[str | None] = mapped_column(Text)
 
+    customFields: Mapped[dict | None] = mapped_column(JSONB, default=None)
+
     appliedAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -1410,6 +1416,18 @@ class ApplicationStageHistory(Base):
     )
 
     note: Mapped[str | None] = mapped_column(Text)
+
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    recommendation: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
+
+    strengths: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    areasOfImprovement: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
 
     createdAt: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True),

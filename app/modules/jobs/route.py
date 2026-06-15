@@ -27,6 +27,7 @@ from app.modules.jobs.controller import (
     handle_reject_requisition,
     handle_reopen_requisition,
     handle_submit_requisition,
+    handle_update_job_posting_form_fields,
     handle_update_requisition,
 )
 from app.modules.jobs.schema import (
@@ -46,6 +47,7 @@ from app.modules.jobs.schema import (
     PublicJobApplicationRequest,
     PublicJobPostingDetailRead,
     PublicJobPostingListItemRead,
+    UpdateJobPostingFormFieldsRequest,
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext, get_member_context
@@ -286,6 +288,18 @@ async def get_pipeline_import_options(
     db: AsyncSession = Depends(get_db),
 ) -> list[ImportableJobPostingRead]:
     return await handle_get_import_options(ctx, db, requisition_id)
+
+
+@router.patch("/postings/{posting_id}/form-fields", response_model=PublicJobPostingListItemRead)
+async def update_job_posting_form_fields(
+    posting_id: str,
+    body: UpdateJobPostingFormFieldsRequest,
+    ctx: Annotated[MemberContext, Depends(require_permission("jobs", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> PublicJobPostingListItemRead:
+    return await handle_update_job_posting_form_fields(
+        ctx, db, posting_id, [f.model_dump() for f in body.formFields]
+    )
 
 
 @router.get("/public/postings", response_model=list[PublicJobPostingListItemRead])
