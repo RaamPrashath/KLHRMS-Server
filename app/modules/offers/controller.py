@@ -11,6 +11,7 @@ from app.modules.offers.schema import (
     OfferDispatchBatchDetailRead,
     OfferDispatchCreateRequest,
     OfferDispatchCreateResponse,
+    OfferDownloadCreateRequest,
     OfferStageWorkspaceRead,
     OfferTemplateCategoryCreateRequest,
     OfferTemplateCategoryRead,
@@ -120,6 +121,32 @@ async def handle_validate_candidates(
     body: OfferCandidateValidationRequest,
 ) -> OfferCandidateValidationResponse:
     return await service.validate_candidates(db, ctx.organization.id, job_slug, stage_slug, body)
+
+
+async def handle_validate_download_candidates(
+    ctx: MemberContext,
+    db: AsyncSession,
+    job_slug: str,
+    stage_slug: str,
+    body: OfferCandidateValidationRequest,
+) -> OfferCandidateValidationResponse:
+    return await service.validate_download_candidates(db, ctx.organization.id, job_slug, stage_slug, body)
+
+
+async def handle_download_offer_letters(
+    ctx: MemberContext,
+    db: AsyncSession,
+    job_slug: str,
+    stage_slug: str,
+    body: OfferDownloadCreateRequest,
+) -> tuple[str, bytes]:
+    return await service.generate_offer_download_archive(
+        db,
+        ctx.organization.id,
+        job_slug,
+        stage_slug,
+        body,
+    )
 
 
 async def handle_create_dispatch_batch(

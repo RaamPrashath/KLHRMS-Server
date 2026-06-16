@@ -3,13 +3,16 @@ from __future__ import annotations
 import re
 import secrets
 from datetime import UTC, datetime
+from io import BytesIO
 from typing import Any
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.email.resend_service import ResendEmailService
+from app.models.organization import Organization
 from app.models.recruitment import (
     ApplicationStageHistory,
     Candidate,
@@ -27,7 +30,12 @@ from app.models.recruitment import (
     PipelineStage,
     StageType,
 )
-from app.modules.offers.render import OfferRenderError, render_offer_html, render_offer_pdf
+from app.modules.offers.render import (
+    OfferRenderError,
+    render_offer_docx,
+    render_offer_html,
+    render_offer_pdf,
+)
 from app.modules.offers.repository import OfferRepository
 from app.modules.offers.schema import (
     COMPENSATION_VARIABLE_TOKENS,
@@ -41,6 +49,7 @@ from app.modules.offers.schema import (
     OfferDispatchBatchRead,
     OfferDispatchCreateRequest,
     OfferDispatchCreateResponse,
+    OfferDownloadCreateRequest,
     OfferEligibilityRead,
     OfferJobPostingSummaryRead,
     OfferLetterRead,
@@ -60,7 +69,12 @@ from app.modules.offers.schema import (
     sanitize_offer_html,
     validate_offer_variables,
 )
-from app.modules.offers.storage import offer_storage_path, safe_offer_file_name, upload_offer_pdf
+from app.modules.offers.storage import (
+    offer_storage_path,
+    safe_offer_file_name,
+    safe_offer_file_stem,
+    upload_offer_pdf,
+)
 from app.shared.config import get_settings
 from app.shared.database import AsyncSessionLocal
 from app.shared.utils.slugs import generate_unique_slug
@@ -216,11 +230,12 @@ def _candidate_eligibility(
     *,
     requires_compensation: bool,
     job_has_salary_data: bool,
+    require_email: bool = True,
 ) -> OfferEligibilityRead:
     candidate = application.candidate
     errors: list[str] = []
     warnings: list[str] = []
-    if candidate is None or not (candidate.email or "").strip():
+    if require_email and (candidate is None or not (candidate.email or "").strip()):
         errors.append("Candidate email is missing")
     if candidate is None or not (candidate.firstName or "").strip():
         errors.append("Candidate first name is missing")
@@ -516,10 +531,10 @@ async def copy_template(
     if source is None:
         raise HTTPException(status_code=404, detail="Offer template not found")
     existing_names = await repository.list_template_names(organization_id)
-    copied_name = body.name or next_template_copy_name(source.name, existing_names)
+    copied_name = unique_template_name(body.name, existing_names) if body.name else next_template_copy_name(source.name, existing_names)
     copy = OfferTemplate(
         organizationId=organization_id,
-        name=copied_name.strip(),
+        name=copied_name,
         description=source.description,
         status=source.status,
         logoUrl=source.logoUrl,
@@ -698,6 +713,178 @@ async def validate_candidates(
         blockedCandidates=blocked,
         warnings=sorted(set(warnings)),
     )
+
+
+async def validate_download_candidates(
+    db: AsyncSession,
+    organization_id: str,
+    job_slug: str,
+    stage_slug: str,
+    body: OfferCandidateValidationRequest,
+) -> OfferCandidateValidationResponse:
+    repository = OfferRepository(db)
+    job, stage, _stages = await _resolve_offer_stage(repository, organization_id, job_slug, stage_slug)
+    template, _category = await _get_template_and_category(
+        repository,
+        organization_id,
+        body.templateId,
+        body.categoryId,
+    )
+    applications = await repository.list_applications_by_ids(organization_id, body.applicationIds)
+    by_id = {application.id: application for application in applications}
+    latest_offers = await repository.list_latest_offers_for_applications(organization_id, body.applicationIds)
+    requires_compensation = _template_contains_compensation_tokens(template, body.categoryId)
+    job_has_salary_data = _job_has_salary_data(job.requisition)
+
+    valid: list[OfferCandidateValidationResultRead] = []
+    blocked: list[OfferCandidateValidationResultRead] = []
+    warnings: list[str] = []
+    for application_id in body.applicationIds:
+        application = by_id.get(application_id)
+        if application is None:
+            blocked.append(
+                OfferCandidateValidationResultRead(
+                    applicationId=application_id,
+                    candidate=None,
+                    eligibility=OfferEligibilityRead(
+                        canSend=False,
+                        errors=["Application not found"],
+                    ),
+                )
+            )
+            continue
+        if application.pipelineStageId != stage.id:
+            blocked.append(
+                OfferCandidateValidationResultRead(
+                    applicationId=application.id,
+                    candidate=_candidate_summary(application.candidate),
+                    eligibility=OfferEligibilityRead(
+                        canSend=False,
+                        errors=["Application is not in this offer stage"],
+                    ),
+                )
+            )
+            continue
+        eligibility = _candidate_eligibility(
+            application,
+            latest_offers.get(application.id),
+            requires_compensation=requires_compensation,
+            job_has_salary_data=job_has_salary_data,
+            require_email=False,
+        )
+        result = _candidate_validation_result(application, eligibility)
+        warnings.extend(eligibility.warnings)
+        if eligibility.canSend:
+            valid.append(result)
+        else:
+            blocked.append(result)
+    return OfferCandidateValidationResponse(
+        validCandidates=valid,
+        blockedCandidates=blocked,
+        warnings=sorted(set(warnings)),
+    )
+
+
+async def generate_offer_download_archive(
+    db: AsyncSession,
+    organization_id: str,
+    job_slug: str,
+    stage_slug: str,
+    body: OfferDownloadCreateRequest,
+) -> tuple[str, bytes]:
+    repository = OfferRepository(db)
+    job, stage, _stages = await _resolve_offer_stage(repository, organization_id, job_slug, stage_slug)
+    template, category = await _get_template_and_category(
+        repository,
+        organization_id,
+        body.templateId,
+        body.categoryId,
+    )
+    validation = await validate_download_candidates(db, organization_id, job_slug, stage_slug, body)
+    valid_ids = [item.applicationId for item in validation.validCandidates]
+    if not valid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "No selected candidates can be downloaded",
+                "blockedCandidates": [item.model_dump() for item in validation.blockedCandidates],
+            },
+        )
+
+    applications = await repository.list_applications_by_ids(organization_id, valid_ids)
+    by_id = {application.id: application for application in applications}
+    ordered_applications = [by_id[application_id] for application_id in valid_ids if application_id in by_id]
+    organization = job.organization or Organization(id=organization_id, name="Organization", slug="")
+    snapshot = _template_snapshot(template, category)
+    generated_at = datetime.now(UTC)
+    archive_buffer = BytesIO()
+
+    with ZipFile(archive_buffer, "w", compression=ZIP_DEFLATED) as archive:
+        for index, application in enumerate(ordered_applications, start=1):
+            candidate = application.candidate
+            if candidate is None:
+                continue
+            candidate_name = f"{candidate.firstName} {candidate.lastName}".strip()
+            offer_letter = _transient_offer_letter(
+                organization_id=organization_id,
+                application=application,
+                template=template,
+                category=category,
+                stage=stage,
+                job=job,
+                expires_at=body.expiresAt,
+                snapshot=snapshot,
+            )
+            html = render_offer_html(
+                template_snapshot=snapshot,
+                candidate=candidate,
+                job_posting=job,
+                offer_letter=offer_letter,
+                organization=organization,
+                generated_date=generated_at,
+            )
+            file_stem = safe_offer_file_stem(candidate_name, job.title)
+            folder = f"{index:02d} - {_safe_archive_segment(candidate_name)}"
+            if body.format == "pdf":
+                archive.writestr(f"{folder}/{file_stem}.pdf", await render_offer_pdf(html))
+            else:
+                archive.writestr(f"{folder}/{file_stem}.docx", render_offer_docx(html, title=template.name))
+
+    archive_name = f"{_safe_archive_segment(job.title)} offer letters {body.format}.zip"
+    return archive_name, archive_buffer.getvalue()
+
+
+def _transient_offer_letter(
+    *,
+    organization_id: str,
+    application: CandidateApplication,
+    template: OfferTemplate,
+    category: OfferTemplateCategory,
+    stage: PipelineStage,
+    job: JobPosting,
+    expires_at: datetime | None,
+    snapshot: dict[str, Any],
+) -> OfferLetter:
+    return OfferLetter(
+        id=f"download-{application.id}",
+        organizationId=organization_id,
+        applicationId=application.id,
+        templateId=template.id,
+        templateCategoryId=category.id,
+        templateSnapshotJson=snapshot,
+        stageId=stage.id,
+        status=OfferStatus.DRAFT,
+        title=template.name,
+        message=None,
+        expiresAt=expires_at,
+        currency=job.requisition.currency if job.requisition is not None else "INR",
+        salary=job.requisition.salaryMax if job.requisition is not None else None,
+    )
+
+
+def _safe_archive_segment(value: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", value)
+    return re.sub(r"\s+", " ", cleaned).strip()[:120] or "Offer Letter"
 
 
 async def create_dispatch_batch(

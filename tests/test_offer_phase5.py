@@ -13,7 +13,11 @@ from app.models.organization import Organization
 from app.models.recruitment import Candidate, JobPosting, JobRequisition, OfferLetter
 from app.modules.offers import render as offer_render
 from app.modules.offers import storage as offer_storage
-from app.modules.offers.render import OfferRenderError, render_offer_html
+from app.modules.offers.render import (
+    OfferRenderError,
+    render_offer_docx,
+    render_offer_html,
+)
 from app.modules.offers.schema import OfferTemplateUpdateRequest
 from app.modules.offers.service import _batch_status_for_counts
 from app.modules.offers.storage import (
@@ -77,6 +81,45 @@ def test_render_unknown_variable_fails_candidate() -> None:
             template_snapshot=_snapshot("<p>{{candidate.middleName}}</p>"),
             **_render_defaults(),
         )
+
+
+def test_render_footer_uses_compact_pdf_spacing() -> None:
+    html = render_offer_html(
+        template_snapshot={
+            "template": {
+                "footerHtml": (
+                    '<div class="offer-letter-footer">'
+                    '<div class="offer-signature-slot"><p class="offer-signature-name">(Mouniesh)</p><p>Intern</p></div>'
+                    '<div class="offer-footer-address"><p>Kovan Technology Labs India Private Limited</p><p>Peelamedu</p></div>'
+                    '<a class="offer-footer-website" href="https://www.kovanlabs.com">www.kovanlabs.com</a>'
+                    "</div>"
+                )
+            },
+            "category": {"id": "category-1", "name": "General", "slug": "general"},
+            "sections": [
+                {
+                    "sectionKey": "opening",
+                    "sectionName": "Opening",
+                    "order": 1,
+                    "html": "<p>Hello {{ candidate.firstName }}</p>",
+                }
+            ],
+        },
+        **_render_defaults(),
+    )
+
+    assert ".offer-content footer p { margin: 0; line-height: 19px; }" in html
+    assert ".offer-signature-slot { grid-column: 1; grid-row: 1; margin: 0 0 12px;" in html
+    assert ".offer-signature-slot img { display: block; max-width: 128px; max-height: 80px; object-fit: contain; margin: 0; }" in html
+    assert ".offer-signature-name { margin: 0; font-weight: 600; }" in html
+    assert ".offer-footer-address p { margin: 0; line-height: 19px; }" in html
+    assert ".offer-content .offer-footer-website" in html
+
+
+def test_render_offer_docx_from_html() -> None:
+    docx = render_offer_docx("<html><body><h1>Offer</h1><p>Hello Asha</p></body></html>")
+
+    assert docx.startswith(b"PK")
 
 
 @pytest.mark.asyncio

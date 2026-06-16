@@ -111,6 +111,24 @@ class Member(Base):
         back_populates="createdBy",
     )
 
+    createdDocumentCollectionTemplates = relationship(
+        "DocumentCollectionTemplate",
+        foreign_keys="DocumentCollectionTemplate.createdByMemberId",
+        back_populates="createdBy",
+    )
+
+    updatedDocumentCollectionTemplates = relationship(
+        "DocumentCollectionTemplate",
+        foreign_keys="DocumentCollectionTemplate.updatedByMemberId",
+        back_populates="updatedBy",
+    )
+
+    createdDocumentCollectionRequests = relationship(
+        "DocumentCollectionRequest",
+        foreign_keys="DocumentCollectionRequest.createdByMemberId",
+        back_populates="createdBy",
+    )
+
     createdEvaluationWorkspaces = relationship(
         "StageEvaluationWorkspace",
         foreign_keys="StageEvaluationWorkspace.createdByMemberId",

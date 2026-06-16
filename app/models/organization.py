@@ -111,6 +111,21 @@ class Organization(Base):
         back_populates="organization",
     )
 
+    documentCollectionTemplates = relationship(
+        "DocumentCollectionTemplate",
+        back_populates="organization",
+    )
+
+    documentCollectionFields = relationship(
+        "DocumentCollectionField",
+        back_populates="organization",
+    )
+
+    documentCollectionRequests = relationship(
+        "DocumentCollectionRequest",
+        back_populates="organization",
+    )
+
     __table_args__ = (
         UniqueConstraint("slug", name="organization_slug_key"),
     )

@@ -2,6 +2,7 @@ import enum
 
 from sqlalchemy import (
     ARRAY,
+    BigInteger,
     JSON,
     Boolean,
     DateTime,
@@ -162,6 +163,32 @@ class OnboardingStatus(str, enum.Enum):
     PENDING = "PENDING"
     DOCUMENTS_SUBMITTED = "DOCUMENTS_SUBMITTED"
     CREDENTIALS_SENT = "CREDENTIALS_SENT"
+
+
+class DocumentCollectionTemplateStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+
+
+class DocumentCollectionFieldType(str, enum.Enum):
+    FILE_UPLOAD = "FILE_UPLOAD"
+    SHORT_TEXT = "SHORT_TEXT"
+    LONG_TEXT = "LONG_TEXT"
+    DATE = "DATE"
+
+
+class DocumentCollectionAllowedFormatGroup(str, enum.Enum):
+    IMAGE = "IMAGE"
+    FILE = "FILE"
+    VIDEO = "VIDEO"
+    ALL = "ALL"
+
+
+class DocumentCollectionRequestStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    SUBMITTED = "SUBMITTED"
+    FAILED = "FAILED"
 
 # =========================================================
 # JOB REQUISITION
@@ -1152,6 +1179,13 @@ class CandidateApplication(Base):
         "OnboardingRecord",
         back_populates="application",
         cascade="all, delete-orphan",
+    )
+
+    documentCollectionRequests = relationship(
+        "DocumentCollectionRequest",
+        back_populates="application",
+        cascade="all, delete-orphan",
+        order_by="DocumentCollectionRequest.createdAt.desc()",
     )
 
     resumeAnalysis = relationship(
@@ -2528,6 +2562,269 @@ class OfferLetter(Base):
         Index("ix_offer_letter_org_template", "organizationId", "templateId"),
         Index("ix_offer_letter_org_stage", "organizationId", "stageId"),
         Index("ix_offer_letter_org_status", "organizationId", "status"),
+    )
+
+
+# =========================================================
+# DOCUMENT COLLECTION
+# =========================================================
+
+
+class DocumentCollectionTemplate(Base):
+    __tablename__ = "document_collection_template"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+
+    status: Mapped[DocumentCollectionTemplateStatus] = mapped_column(
+        Enum(DocumentCollectionTemplateStatus),
+        nullable=False,
+        default=DocumentCollectionTemplateStatus.DRAFT,
+        index=True,
+    )
+
+    lastUsedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
+    createdByMemberId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    updatedByMemberId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization = relationship(
+        "Organization",
+        back_populates="documentCollectionTemplates",
+    )
+
+    createdBy = relationship(
+        "Member",
+        foreign_keys=[createdByMemberId],
+        back_populates="createdDocumentCollectionTemplates",
+    )
+
+    updatedBy = relationship(
+        "Member",
+        foreign_keys=[updatedByMemberId],
+        back_populates="updatedDocumentCollectionTemplates",
+    )
+
+    fields = relationship(
+        "DocumentCollectionField",
+        back_populates="template",
+        cascade="all, delete-orphan",
+        order_by="DocumentCollectionField.order",
+    )
+
+    requests = relationship(
+        "DocumentCollectionRequest",
+        back_populates="template",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organizationId",
+            "name",
+            name="uq_document_collection_template_org_name",
+        ),
+        Index("ix_document_collection_template_org_status", "organizationId", "status"),
+        Index("ix_document_collection_template_org_last_used", "organizationId", "lastUsedAt"),
+    )
+
+
+class DocumentCollectionField(Base):
+    __tablename__ = "document_collection_field"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    templateId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("document_collection_template.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    fieldType: Mapped[DocumentCollectionFieldType] = mapped_column(
+        Enum(DocumentCollectionFieldType),
+        nullable=False,
+        default=DocumentCollectionFieldType.FILE_UPLOAD,
+    )
+
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    allowedFormatGroup: Mapped[DocumentCollectionAllowedFormatGroup] = mapped_column(
+        Enum(DocumentCollectionAllowedFormatGroup),
+        nullable=False,
+        default=DocumentCollectionAllowedFormatGroup.ALL,
+    )
+    maxSizeBytes: Mapped[int | None] = mapped_column(BigInteger)
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization = relationship(
+        "Organization",
+        back_populates="documentCollectionFields",
+    )
+
+    template = relationship(
+        "DocumentCollectionTemplate",
+        back_populates="fields",
+    )
+
+    __table_args__ = (
+        Index("ix_document_collection_field_org_template", "organizationId", "templateId"),
+    )
+
+
+class DocumentCollectionRequest(Base):
+    __tablename__ = "document_collection_request"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+
+    organizationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    applicationId: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("candidate_application.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    templateId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("document_collection_template.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    candidateToken: Mapped[str] = mapped_column(
+        String,
+        unique=True,
+        nullable=False,
+    )
+
+    status: Mapped[DocumentCollectionRequestStatus] = mapped_column(
+        Enum(DocumentCollectionRequestStatus),
+        nullable=False,
+        default=DocumentCollectionRequestStatus.PENDING,
+        index=True,
+    )
+
+    templateSnapshotJson: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    answersJson: Mapped[dict | None] = mapped_column(JSONB)
+
+    tokenSentAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    emailSentAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    submittedAt: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    emailError: Mapped[str | None] = mapped_column(Text)
+
+    createdByMemberId: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("member.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    createdAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updatedAt: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization = relationship(
+        "Organization",
+        back_populates="documentCollectionRequests",
+    )
+
+    application = relationship(
+        "CandidateApplication",
+        back_populates="documentCollectionRequests",
+    )
+
+    template = relationship(
+        "DocumentCollectionTemplate",
+        back_populates="requests",
+    )
+
+    createdBy = relationship(
+        "Member",
+        foreign_keys=[createdByMemberId],
+        back_populates="createdDocumentCollectionRequests",
+    )
+
+    __table_args__ = (
+        Index("ix_document_collection_request_org_application", "organizationId", "applicationId"),
+        Index("ix_document_collection_request_org_template", "organizationId", "templateId"),
+        Index("ix_document_collection_request_org_status", "organizationId", "status"),
+        Index("ix_document_collection_request_token", "candidateToken"),
     )
 
 
