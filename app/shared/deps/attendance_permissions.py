@@ -6,10 +6,8 @@ an AttendanceAccessContext that includes the resolved permission scope.
 
 Supported scopes for attendance in this codebase:
   - "self"         → actor may only access their own attendance records
+  - "department"   → actor may access records of members in their department
   - "organization" → actor may access any member's records within the org
-
-Unsupported scopes (team, department) are explicitly rejected with 403
-because the current schema has no team/department structure.
 
 Usage:
 
@@ -35,11 +33,11 @@ from app.shared.deps.organization_member import MemberContext, get_member_contex
 from app.shared.utils.permissions import get_member_permission_scope
 
 # Scopes that can be safely enforced given the current schema.
-_SUPPORTED_SCOPES: frozenset[str] = frozenset({"self", "organization"})
+_SUPPORTED_SCOPES: frozenset[str] = frozenset({"self", "department", "organization"})
 
 # Scopes that exist in the permission contract but cannot be enforced
 # because the schema has no team/department tables.
-_UNSUPPORTED_SCOPES: frozenset[str] = frozenset({"team", "department"})
+_UNSUPPORTED_SCOPES: frozenset[str] = frozenset({"team"})
 
 
 @dataclass
@@ -52,7 +50,7 @@ class AttendanceAccessContext:
         member            – resolved Member ORM instance (the actor)
         role              – resolved Role ORM instance
         permission_action – the attendance action being performed (view/create/edit/delete)
-        permission_scope  – the resolved scope ("self" or "organization")
+        permission_scope  – the resolved scope ("self", "department", or "organization")
     """
 
     organization: Organization
@@ -96,7 +94,7 @@ def require_attendance_permission(
                 status_code=403,
                 detail=(
                     f"{module}.{action} scope '{scope}' is not supported in this deployment. "
-                    "Only 'self' and 'organization' scopes are available."
+                    "Only 'self', 'department', and 'organization' scopes are available."
                 ),
             )
 

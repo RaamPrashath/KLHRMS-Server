@@ -407,6 +407,17 @@ async def list_leave_requests(
     if permission_scope == "self":
         query = query.where(LeaveRequest.memberId == actor_member_id)
         organization_scope = False
+    elif permission_scope == "department":
+        from app.models.department_member import DepartmentMember
+        department_subq = (
+            select(DepartmentMember.memberId)
+            .where(DepartmentMember.departmentId.in_(
+                select(DepartmentMember.departmentId)
+                .where(DepartmentMember.memberId == actor_member_id)
+            ))
+        )
+        query = query.where(LeaveRequest.memberId.in_(department_subq))
+        organization_scope = True
     else:
         organization_scope = True
 
