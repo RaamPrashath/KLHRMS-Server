@@ -6,7 +6,7 @@ import uuid
 from datetime import date, timedelta
 from typing import TypeVar
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,6 +60,7 @@ class BasePlanRepository:
         start_date: date,
         end_date: date,
         days: list[dict],
+        commit: bool = True,
     ) -> list[PlanModel]:
         submitted_dates = [item["date"] for item in days]
         rows_to_upsert = [
@@ -100,7 +101,10 @@ class BasePlanRepository:
             )
             await self.db.execute(statement)
 
-        await self.db.commit()
+        if commit:
+            await self.db.commit()
+
+        # Always fetch results (within the same transaction if not committed)
         return await self.list_by_range(user_id=user_id, start_date=start_date, end_date=end_date)
 
 
@@ -170,6 +174,7 @@ class WeeklyPlanRepository(BasePlanRepository):
         target_date: date,
         work_location: str,
         project: str | None,
+        commit: bool = True,
     ) -> WeeklyPlan:
         entries = await self.replace_range(
             user_id=user_id,
@@ -182,6 +187,7 @@ class WeeklyPlanRepository(BasePlanRepository):
                     "project": project,
                 }
             ],
+            commit=commit,
         )
         return entries[0]
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import contains_eager, joinedload
 
 from app.models.member import Member
 from app.models.organization import Organization
@@ -42,31 +42,33 @@ async def get_member_context(
     """
     Resolve and validate organization + member context from headers.
 
+    Single JOINed query replaces 2 separate queries (org lookup + member+role lookup).
+
     Raises:
         HTTPException(404): organization or member not found.
         HTTPException(403): member does not belong to the organization,
                             or member has no role assigned.
     """
-    # 1. Load organization by slug
-    organization_result = await db.execute(
-        select(Organization).where(Organization.slug == x_organization_slug)
-    )
-    organization: Organization | None = organization_result.scalar_one_or_none()
-    if organization is None:
-        raise HTTPException(status_code=404, detail="Organization not found")
-
-    # 2. Load member by id, scoped to the resolved organization
-    member_result = await db.execute(
+    result = await db.execute(
         select(Member)
-        .options(joinedload(Member.role))
+        .join(Member.organization)              # INNER JOIN for WHERE
+        .options(
+            contains_eager(Member.organization),  # populate from join
+            joinedload(Member.role),              # LEFT JOIN eager load
+        )
         .where(
             Member.id == x_membership_id,
-            Member.organizationId == organization.id,
+            Organization.slug == x_organization_slug,
         )
     )
-    member: Member | None = member_result.unique().scalar_one_or_none()
+    member: Member | None = result.unique().scalar_one_or_none()
+
     if member is None:
         raise HTTPException(status_code=404, detail="Member not found")
+
+    organization = member.organization
+    if organization is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
 
     # 3. Ensure the member has a role (required for permission checks)
     if member.roleId is None or member.role is None:

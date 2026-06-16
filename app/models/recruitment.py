@@ -1435,10 +1435,10 @@ class ApplicationStageHistory(Base):
         index=True,
     )
 
-    toStageId: Mapped[str] = mapped_column(
+    toStageId: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("pipeline_stage.id", ondelete="RESTRICT"),
-        nullable=False,
+        ForeignKey("pipeline_stage.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
 

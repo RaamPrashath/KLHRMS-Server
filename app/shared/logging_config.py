@@ -184,8 +184,8 @@ def setup_logging(settings: Any) -> None:
     """
     Configure the root logger based on environment mode.
 
-    - DEBUG mode: colorized console + ./logs/app_errors.log (ERROR+)
-    - Production mode: JSON stdout (INFO-) + JSON stderr (WARN+)
+    - DEBUG mode: colorized console + ./logs/app.log (all levels)
+    - Production mode: JSON stdout (INFO-) + JSON stderr (WARN+) + ./logs/app.log (all levels)
     """
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
@@ -207,19 +207,19 @@ def setup_logging(settings: Any) -> None:
         console_handler.setFormatter(console_fmt)
         root_logger.addHandler(console_handler)
 
-        # Error file handler
+        # File handler — captures all levels
         log_dir = Path(getattr(settings, "log_dir", "./logs"))
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        error_handler = logging.FileHandler(str(log_dir / "app_errors.log"))
-        error_handler.addFilter(pii_filter)
-        error_handler.setLevel(logging.ERROR)
-        error_fmt = logging.Formatter(
+        file_handler = logging.FileHandler(str(log_dir / "app.log"))
+        file_handler.addFilter(pii_filter)
+        file_handler.setLevel(root_logger.level)
+        file_fmt = logging.Formatter(
             "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
-        error_handler.setFormatter(error_fmt)
-        root_logger.addHandler(error_handler)
+        file_handler.setFormatter(file_fmt)
+        root_logger.addHandler(file_handler)
 
     else:
         # ── Production ───────────────────────────────────────────────────
@@ -238,6 +238,16 @@ def setup_logging(settings: Any) -> None:
         stderr_handler.setLevel(logging.WARNING)
         stderr_handler.setFormatter(json_formatter)
         root_logger.addHandler(stderr_handler)
+
+        # File handler — captures all levels
+        log_dir = Path(getattr(settings, "log_dir", "./logs"))
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        file_handler = logging.FileHandler(str(log_dir / "app.log"))
+        file_handler.addFilter(pii_filter)
+        file_handler.setLevel(root_logger.level)
+        file_handler.setFormatter(json_formatter)
+        root_logger.addHandler(file_handler)
 
     # Quiet down noisy third-party loggers
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
