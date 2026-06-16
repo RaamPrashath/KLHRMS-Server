@@ -133,12 +133,26 @@ def _apply_filters(
 async def list_report_options(
     db: AsyncSession,
     organization_id: str,
+    scope: str = "organization",
+    actor_member_id: str | None = None,
 ) -> AttendanceReportOptionsResponse:
-    employee_result = await db.execute(
+    employee_query = (
         select(Member.id, User.name, User.email)
         .join(User, User.id == Member.userId)
         .where(Member.organizationId == organization_id)
-        .order_by(User.name.asc().nullslast(), User.email.asc())
+    )
+    if scope == "department" and actor_member_id:
+        from app.models.department_member import DepartmentMember
+        department_subq = (
+            select(DepartmentMember.memberId)
+            .where(DepartmentMember.departmentId.in_(
+                select(DepartmentMember.departmentId)
+                .where(DepartmentMember.memberId == actor_member_id)
+            ))
+        )
+        employee_query = employee_query.where(Member.id.in_(department_subq))
+    employee_result = await db.execute(
+        employee_query.order_by(User.name.asc().nullslast(), User.email.asc())
     )
     employees = [
         AttendanceReportEmployeeOption(
@@ -197,6 +211,8 @@ async def list_attendance_report(
     employee_ids: list[str],
     page: int,
     page_size: int,
+    scope: str = "organization",
+    actor_member_id: str | None = None,
 ) -> tuple[list[AttendanceReportRowData], int, AttendanceReportSummaryData]:
     department_name = _department_name_subquery(organization_id)
     clock_out_description = _clock_out_description_subquery(organization_id)
@@ -243,6 +259,17 @@ async def list_attendance_report(
         employee_ids=employee_ids,
     )
 
+    if scope == "department" and actor_member_id:
+        from app.models.department_member import DepartmentMember
+        department_subq = (
+            select(DepartmentMember.memberId)
+            .where(DepartmentMember.departmentId.in_(
+                select(DepartmentMember.departmentId)
+                .where(DepartmentMember.memberId == actor_member_id)
+            ))
+        )
+        base_query = base_query.where(AttendanceRecord.employeeId.in_(department_subq))
+
     count_query = (
         select(
             func.count(distinct(AttendanceRecord.id)),
@@ -261,6 +288,16 @@ async def list_attendance_report(
         project_id=project_id,
         employee_ids=employee_ids,
     )
+    if scope == "department" and actor_member_id:
+        from app.models.department_member import DepartmentMember
+        department_subq = (
+            select(DepartmentMember.memberId)
+            .where(DepartmentMember.departmentId.in_(
+                select(DepartmentMember.departmentId)
+                .where(DepartmentMember.memberId == actor_member_id)
+            ))
+        )
+        count_query = count_query.where(AttendanceRecord.employeeId.in_(department_subq))
     total, total_hours, employee_count = (await db.execute(count_query)).one()
 
     result = await db.execute(
@@ -291,7 +328,7 @@ async def list_attendance_report(
 
     # Query approved leaves that do NOT have a matching attendance record
     existing_keys = {(r.employee_id, r.day) for r in rows}
-    leaves_result = await db.execute(
+    leaves_query = (
         select(
             LeaveRequest.memberId,
             LeaveRequest.startDate,
@@ -307,6 +344,17 @@ async def list_attendance_report(
             LeaveRequest.endDate >= date_from,
         )
     )
+    if scope == "department" and actor_member_id:
+        from app.models.department_member import DepartmentMember
+        leaves_department_subq = (
+            select(DepartmentMember.memberId)
+            .where(DepartmentMember.departmentId.in_(
+                select(DepartmentMember.departmentId)
+                .where(DepartmentMember.memberId == actor_member_id)
+            ))
+        )
+        leaves_query = leaves_query.where(LeaveRequest.memberId.in_(leaves_department_subq))
+    leaves_result = await db.execute(leaves_query)
     from datetime import timedelta as _td
 
     for lr in leaves_result:

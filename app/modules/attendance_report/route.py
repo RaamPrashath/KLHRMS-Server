@@ -42,10 +42,11 @@ AttendanceReportCtx = Annotated[
 
 
 def _ensure_organization_scope(ctx: MemberContext) -> None:
-    if getattr(ctx, "scope", None) != "organization":
+    scope = getattr(ctx, "scope", None)
+    if scope not in ("organization", "department"):
         raise HTTPException(
             status_code=403,
-            detail="Organization scope is required for attendance reports",
+            detail="Organization or department scope is required for attendance reports",
         )
 
 
@@ -59,8 +60,14 @@ async def get_attendance_report_options(
     ctx: AttendanceReportCtx,
     db: AsyncSession = Depends(get_db),
 ) -> AttendanceReportOptionsResponse:
+    scope = getattr(ctx, "scope", None) or "self"
     _ensure_organization_scope(ctx)
-    return await list_report_options(db, ctx.organization.id)
+    return await list_report_options(
+        db,
+        ctx.organization.id,
+        scope=scope,
+        actor_member_id=ctx.member.id,
+    )
 
 
 @router.get(
@@ -79,6 +86,7 @@ async def get_attendance_report(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=5000, ge=1, le=5000),
 ) -> AttendanceReportListResponse:
+    scope = getattr(ctx, "scope", None) or "self"
     _ensure_organization_scope(ctx)
     filters = AttendanceReportFilters(
         date_from=date_from,
@@ -97,6 +105,8 @@ async def get_attendance_report(
         employee_ids=filters.employee_ids,
         page=filters.page,
         page_size=filters.page_size,
+        scope=scope,
+        actor_member_id=ctx.member.id,
     )
     return AttendanceReportListResponse(
         items=[
@@ -140,6 +150,7 @@ async def export_attendance_report(
     ctx: AttendanceReportCtx,
     db: AsyncSession = Depends(get_db),  # noqa: B008
 ) -> StreamingResponse:
+    scope = getattr(ctx, "scope", None) or "self"
     _ensure_organization_scope(ctx)
 
     db_rows = None
@@ -167,6 +178,8 @@ async def export_attendance_report(
             employee_ids=employee_ids,
             page=1,
             page_size=100000,
+            scope=scope,
+            actor_member_id=ctx.member.id,
         )
         
         db_rows = [

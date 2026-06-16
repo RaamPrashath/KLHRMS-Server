@@ -482,9 +482,11 @@ def enforce_scope(
     scope: str,
 ) -> None:
     """
-    Enforce self vs organization scope.
+    Enforce self vs department vs organization scope.
 
     - "self": target must equal actor.
+    - "department": allows access to any member (department filtering happens
+      at the query level in list_attendance).
     - "organization": any member in the same org is allowed (org membership
       is already validated by resolve_target_member).
     - Anything else is rejected (should have been caught upstream, but
@@ -495,7 +497,7 @@ def enforce_scope(
             status_code=403,
             detail="You can only access your own attendance records",
         )
-    if scope not in ("self", "organization"):
+    if scope not in ("self", "department", "organization"):
         raise HTTPException(
             status_code=403,
             detail=f"Attendance scope '{scope}' is not supported",
@@ -1126,10 +1128,12 @@ async def list_attendance(
     Return paginated attendance rows respecting scope.
 
     - "self": always filters to actor's own records, ignores target_member_id / employee_name.
+    - "department": filters to members in the same department as the actor.
     - "organization": allows filtering by target_member_id or partial employee_name search.
 
     Returns tuples of (AttendanceRecord, employee_name).
     """
+    from app.models.department_member import DepartmentMember
     from app.models.member import Member
     from app.models.user import User
 
@@ -1144,12 +1148,24 @@ async def list_attendance(
 
     if scope == "self":
         query = query.where(AttendanceRecord.employeeId == actor_member_id)
+    elif scope == "department":
+        department_subq = (
+            select(DepartmentMember.memberId)
+            .where(DepartmentMember.departmentId.in_(
+                select(DepartmentMember.departmentId)
+                .where(DepartmentMember.memberId == actor_member_id)
+            ))
+        )
+        query = query.where(AttendanceRecord.employeeId.in_(department_subq))
+        if target_member_id is not None:
+            query = query.where(AttendanceRecord.employeeId == target_member_id)
+        elif employee_name is not None and employee_name.strip():
+            query = query.where(User.name.ilike(f"%{employee_name.strip()}%"))
     elif scope == "organization":
         if target_member_id is not None:
             query = query.where(AttendanceRecord.employeeId == target_member_id)
         elif employee_name is not None and employee_name.strip():
             query = query.where(User.name.ilike(f"%{employee_name.strip()}%"))
-    # No team/department filtering — not supported in current schema.
 
     if date_from is not None:
         query = query.where(AttendanceRecord.date >= date_from)

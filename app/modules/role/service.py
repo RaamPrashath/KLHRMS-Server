@@ -4,6 +4,8 @@ Role service — pure database operations, all scoped by organizationId.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -62,11 +64,14 @@ async def create_role(
             detail="A role with this name already exists in the organization",
         )
 
+    now = datetime.now(timezone.utc)
     role = Role(
         id=generate_uuid(),
         organizationId=organization_id,
         name=data.name,
         permissions=data.permissions,
+        createdAt=now,
+        updatedAt=now,
     )
     db.add(role)
     try:

@@ -14,7 +14,7 @@ from app.models.organization import Organization
 from app.models.role import Role
 from app.shared.deps.organization_member import MemberContext, get_member_context
 
-_SUPPORTED_SCOPES: frozenset[str] = frozenset({"self", "organization"})
+_SUPPORTED_SCOPES: frozenset[str] = frozenset({"self", "department", "organization"})
 
 
 def get_permission_scope(
@@ -77,7 +77,7 @@ def require_leave_permission(action: str) -> Callable[..., LeaveAccessContext]:
                 status_code=403,
                 detail=(
                     f"Leave scope '{scope}' is not supported in this deployment. "
-                    "Only 'self' and 'organization' scopes are available."
+                    "Only 'self', 'department', and 'organization' scopes are available."
                 ),
             )
 
