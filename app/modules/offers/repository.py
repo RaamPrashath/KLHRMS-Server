@@ -6,10 +6,8 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.models.recruitment import (
     ApplicationStageHistory,
-    Candidate,
     CandidateApplication,
     JobPosting,
-    JobRequisition,
     OfferDispatchBatch,
     OfferDispatchBatchStatus,
     OfferLetter,
@@ -33,7 +31,7 @@ class OfferRepository:
     ) -> JobPosting | None:
         result = await self.db.execute(
             select(JobPosting)
-            .options(joinedload(JobPosting.requisition))
+            .options(joinedload(JobPosting.organization), joinedload(JobPosting.requisition))
             .where(
                 JobPosting.organizationId == organization_id,
                 JobPosting.slug == job_slug,

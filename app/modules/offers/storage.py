@@ -18,10 +18,13 @@ class OfferPdfUpload:
 
 
 def safe_offer_file_name(candidate_name: str, job_title: str) -> str:
+    return f"{safe_offer_file_stem(candidate_name, job_title)[:240]}.pdf"
+
+
+def safe_offer_file_stem(candidate_name: str, job_title: str) -> str:
     base_name = f"{candidate_name.strip()} - {job_title.strip()} Offer Letter".strip(" -")
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", base_name)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip() or "Offer Letter"
-    return f"{cleaned[:240]}.pdf"
+    return re.sub(r"\s+", " ", cleaned).strip() or "Offer Letter"
 
 
 def offer_storage_path(

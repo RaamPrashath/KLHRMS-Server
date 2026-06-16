@@ -119,6 +119,8 @@ def test_public_offer_routes_are_registered() -> None:
     assert "/public/offers/{token}/accept" in route_paths
     assert "/public/offers/{token}/reject" in route_paths
     assert "/public/offers/{token}/download" in route_paths
+    assert "/offers/pipeline/jobs/{job_slug}/stages/{stage_slug}/download/validate" in route_paths
+    assert "/offers/pipeline/jobs/{job_slug}/stages/{stage_slug}/download" in route_paths
 
 
 @pytest.mark.asyncio

@@ -51,6 +51,17 @@ class OnboardingRecordRead(BaseModel):
     updatedAt: datetime
 
 
+class DocumentCollectionRequestSummaryRead(BaseModel):
+    id: str
+    templateId: str | None = None
+    templateName: str
+    status: str
+    tokenSentAt: datetime | None = None
+    submittedAt: datetime | None = None
+    emailError: str | None = None
+    createdAt: datetime
+
+
 class AcceptedOnboardingCandidateRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -60,6 +71,7 @@ class AcceptedOnboardingCandidateRead(BaseModel):
     source: str
     onboardingStatus: str
     latestOnboarding: OnboardingRecordRead | None = None
+    latestDocumentCollection: DocumentCollectionRequestSummaryRead | None = None
 
 
 class AcceptedOnboardingWorkspaceRead(BaseModel):

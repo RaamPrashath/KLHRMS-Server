@@ -5,12 +5,16 @@ import base64
 import mimetypes
 import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from html import escape, unescape
+from html.parser import HTMLParser
+from io import BytesIO
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+
 from app.models.organization import Organization
 from app.models.recruitment import Candidate, JobPosting, OfferLetter
 from app.modules.offers.schema import (
@@ -190,19 +194,22 @@ def render_offer_html(
     .offer-content table {{ width: 100%; border-collapse: collapse; margin: 16px 0; page-break-inside: avoid; }}
     .offer-content th, .offer-content td {{ border: 1px solid #e5e5ea; padding: 8px; vertical-align: top; }}
     .offer-content th {{ background: #f2f2f7; font-weight: 600; }}
-    .offer-content footer {{ margin-top: 24px; padding-top: 0; color: #1d1d1f; font-size: 13px; }}
+    .offer-content footer {{ margin-top: 22px; padding-top: 0; color: #1d1d1f; font-size: 13px; line-height: 19px; page-break-inside: avoid; break-inside: avoid; }}
+    .offer-content footer p {{ margin: 0; line-height: 19px; }}
+    .offer-letter-footer {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 56px; align-items: end; page-break-inside: avoid; break-inside: avoid; }}
     .offer-letter-header {{ position: relative; min-height: 116px; margin-bottom: 24px; }}
     .offer-letter-header-brand {{ position: absolute; left: {HEADER_BRAND_LEFT_PX}px; top: {HEADER_BRAND_TOP_PX}px; }}
     .offer-letter-logo {{ max-width: 176px; max-height: 56px; object-fit: contain; }}
     .offer-letter-header-meta {{ position: absolute; right: 0; top: 48px; text-align: right; font-size: 13px; line-height: 24px; }}
     .offer-letter-header-meta p {{ margin: 0 0 4px; }}
     .offer-letter-header h1 {{ position: absolute; left: 0; right: 0; bottom: 0; margin: 0; text-align: center; white-space: nowrap; font-size: 16px; line-height: 22px; font-weight: 600; }}
-    .offer-signature-slot {{ margin: 0 0 20px; page-break-inside: avoid; }}
-    .offer-signature-slot img {{ display: block; max-width: 128px; max-height: 80px; object-fit: contain; margin: 0 0 8px; }}
+    .offer-signature-slot {{ grid-column: 1; grid-row: 1; margin: 0 0 12px; page-break-inside: avoid; break-inside: avoid; }}
+    .offer-signature-slot img {{ display: block; max-width: 128px; max-height: 80px; object-fit: contain; margin: 0; }}
+    .offer-signature-slot p {{ margin: 0; line-height: 18px; }}
     .offer-signature-name {{ margin: 0; font-weight: 600; }}
-    .offer-footer-address {{ margin-top: 24px; }}
-    .offer-footer-address p {{ margin: 0; line-height: 20px; }}
-    .offer-footer-website {{ float: right; margin-top: -32px; color: #1d1d1f; font-size: 16px; font-weight: 700; text-decoration: none; }}
+    .offer-footer-address {{ grid-column: 1; grid-row: 2; margin: 0; }}
+    .offer-footer-address p {{ margin: 0; line-height: 19px; }}
+    .offer-content .offer-footer-website {{ grid-column: 2; grid-row: 2; align-self: center; float: none; margin: 0 0 4px; color: #1d1d1f; font-size: 16px; line-height: 20px; font-weight: 700; text-decoration: none; white-space: nowrap; }}
     [data-page-break="true"], .offer-page-break {{ break-after: page; page-break-after: always; height: 0; overflow: hidden; }}
   </style>
 </head>
@@ -283,6 +290,150 @@ async def render_offer_pdf(html: str) -> bytes:
     if sys.platform == "win32":
         return await asyncio.to_thread(_render_offer_pdf_in_windows_thread, html)
     return await _render_offer_pdf_with_playwright(html)
+
+
+def render_offer_docx(html: str, *, title: str = "Offer Letter") -> bytes:
+    try:
+        from docx import Document
+        from docx.shared import Inches, Pt
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("python-docx is required to export offer letters as Word files") from exc
+
+    document = Document()
+    section = document.sections[0]
+    section.page_width = Inches(8.27)
+    section.page_height = Inches(11.69)
+    section.top_margin = Inches(0.9)
+    section.bottom_margin = Inches(0.9)
+    section.left_margin = Inches(0.75)
+    section.right_margin = Inches(0.75)
+
+    styles = document.styles
+    styles["Normal"].font.name = "Arial"
+    styles["Normal"].font.size = Pt(10.5)
+    styles["Normal"].paragraph_format.space_before = Pt(0)
+    styles["Normal"].paragraph_format.space_after = Pt(0)
+    styles["Normal"].paragraph_format.line_spacing = 1.0
+
+    blocks = _extract_offer_text_blocks(html)
+    if not blocks:
+        document.add_paragraph(title)
+    has_seen_footer_address = False
+    for block in blocks:
+        if block.kind == "heading":
+            paragraph = document.add_heading(block.text, level=2)
+        elif block.kind == "list":
+            paragraph = document.add_paragraph(block.text, style="List Bullet")
+        else:
+            paragraph = document.add_paragraph(block.text)
+        paragraph.paragraph_format.space_before = Pt(0)
+        paragraph.paragraph_format.space_after = Pt(0)
+        paragraph.paragraph_format.line_spacing = 1.0
+        if "offer-footer-address" in block.classes and not has_seen_footer_address:
+            paragraph.paragraph_format.space_before = Pt(8)
+            has_seen_footer_address = True
+
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+@dataclass(frozen=True)
+class _OfferTextBlock:
+    kind: str
+    text: str
+    classes: tuple[str, ...] = ()
+
+
+class _OfferTextExtractor(HTMLParser):
+    block_tags = {"p", "div", "section", "footer", "tr"}
+    heading_tags = {"h1", "h2", "h3", "h4", "h5", "h6"}
+    list_tags = {"li"}
+    skip_tags = {"script", "style"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.blocks: list[_OfferTextBlock] = []
+        self._parts: list[str] = []
+        self._kind_stack: list[str] = []
+        self._tag_class_stack: list[tuple[str, tuple[str, ...]]] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self.skip_tags:
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        if tag != "br":
+            classes = _html_classes(attrs)
+            self._tag_class_stack.append((tag, classes))
+        if tag in self.heading_tags:
+            self._flush()
+            self._kind_stack.append("heading")
+        elif tag in self.list_tags:
+            self._flush()
+            self._kind_stack.append("list")
+        elif tag in self.block_tags:
+            self._flush()
+            self._kind_stack.append("paragraph")
+        elif tag == "br":
+            self._parts.append("\n")
+        elif tag in {"td", "th"}:
+            self._parts.append("  ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self.skip_tags and self._skip_depth:
+            self._skip_depth -= 1
+            return
+        if self._skip_depth:
+            return
+        if tag in self.heading_tags | self.list_tags | self.block_tags:
+            self._flush()
+            if self._kind_stack:
+                self._kind_stack.pop()
+        self._pop_tag_classes(tag)
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self._parts.append(data)
+
+    def close(self) -> None:
+        super().close()
+        self._flush()
+
+    def _flush(self) -> None:
+        text = " ".join("".join(self._parts).replace("\xa0", " ").split())
+        self._parts = []
+        if text:
+            kind = self._kind_stack[-1] if self._kind_stack else "paragraph"
+            self.blocks.append(_OfferTextBlock(kind=kind, text=text, classes=self._active_classes()))
+
+    def _active_classes(self) -> tuple[str, ...]:
+        classes: list[str] = []
+        for _tag, tag_classes in self._tag_class_stack:
+            classes.extend(tag_classes)
+        return tuple(classes)
+
+    def _pop_tag_classes(self, tag: str) -> None:
+        for index in range(len(self._tag_class_stack) - 1, -1, -1):
+            if self._tag_class_stack[index][0] == tag:
+                del self._tag_class_stack[index]
+                return
+
+
+def _html_classes(attrs: list[tuple[str, str | None]]) -> tuple[str, ...]:
+    for name, value in attrs:
+        if name == "class" and value:
+            return tuple(value.split())
+    return ()
+
+
+def _extract_offer_text_blocks(html: str) -> list[_OfferTextBlock]:
+    extractor = _OfferTextExtractor()
+    extractor.feed(html)
+    extractor.close()
+    return extractor.blocks
 
 
 async def _inline_offer_pdf_images(html: str) -> str:

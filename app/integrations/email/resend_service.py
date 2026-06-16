@@ -152,6 +152,46 @@ class ResendEmailService:
         )
         await self._send_email(to_email, subject, html, text)
 
+    async def send_document_collection_request(
+        self,
+        *,
+        to_email: str,
+        candidate_name: str,
+        job_title: str,
+        organization_name: str,
+        template_name: str,
+        submission_url: str,
+    ) -> None:
+        subject = f"Document collection request for {job_title} at {organization_name}"
+        safe_name = escape(candidate_name)
+        safe_job = escape(job_title)
+        safe_org = escape(organization_name)
+        safe_template = escape(template_name)
+        safe_url = escape(submission_url, quote=True)
+        body = f"""
+          <p style="margin:0 0 16px;">Hello {safe_name},</p>
+          <p style="margin:0 0 16px;">Please complete the <strong>{safe_template}</strong> form for <strong>{safe_job}</strong> at <strong>{safe_org}</strong>.</p>
+          <p style="margin:0 0 20px;">Use the secure link below to submit the requested details and files.</p>
+          <table role="presentation" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="border-radius:8px;" bgcolor="#00874a">
+                <a href="{safe_url}" style="display:inline-block;background:#00874a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;">Submit requested documents</a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:13px;color:#86868b;">If the button does not work, open this link:<br /><a href="{safe_url}" style="color:#00874a;">{safe_url}</a></p>
+        """
+        html = _email_wrapper(body)
+        text = (
+            f"Kovan Labs\n\n"
+            f"Hello {candidate_name},\n\n"
+            f"Please complete the {template_name} form for {job_title} at {organization_name}.\n\n"
+            f"Submit requested documents: {submission_url}\n\n"
+            f"---\n"
+            f"Kovan Labs\n"
+        )
+        await self._send_email(to_email, subject, html, text)
+
     async def send_onboarding_credentials(
         self,
         *,

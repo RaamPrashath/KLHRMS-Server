@@ -2,8 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Annotated
+from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.offers.controller import (
@@ -12,6 +22,7 @@ from app.modules.offers.controller import (
     handle_create_dispatch_batch,
     handle_create_template,
     handle_delete_template,
+    handle_download_offer_letters,
     handle_get_application_offer_letters,
     handle_get_dispatch_batch,
     handle_get_template,
@@ -21,6 +32,7 @@ from app.modules.offers.controller import (
     handle_update_template,
     handle_upsert_section,
     handle_validate_candidates,
+    handle_validate_download_candidates,
 )
 from app.modules.offers.schema import (
     OfferApplicationLettersRead,
@@ -29,6 +41,7 @@ from app.modules.offers.schema import (
     OfferDispatchBatchDetailRead,
     OfferDispatchCreateRequest,
     OfferDispatchCreateResponse,
+    OfferDownloadCreateRequest,
     OfferStageWorkspaceRead,
     OfferTemplateCategoryCreateRequest,
     OfferTemplateCategoryRead,
@@ -107,6 +120,41 @@ async def validate_offer_candidates(
     db: AsyncSession = Depends(get_db),
 ) -> OfferCandidateValidationResponse:
     return await handle_validate_candidates(ctx, db, job_slug, stage_slug, body)
+
+
+@router.post(
+    "/pipeline/jobs/{job_slug}/stages/{stage_slug}/download/validate",
+    response_model=OfferCandidateValidationResponse,
+)
+async def validate_offer_download_candidates(
+    job_slug: str,
+    stage_slug: str,
+    body: OfferCandidateValidationRequest,
+    ctx: SendOfferCtx,
+    db: AsyncSession = Depends(get_db),
+) -> OfferCandidateValidationResponse:
+    return await handle_validate_download_candidates(ctx, db, job_slug, stage_slug, body)
+
+
+@router.post("/pipeline/jobs/{job_slug}/stages/{stage_slug}/download")
+async def download_offer_letters(
+    job_slug: str,
+    stage_slug: str,
+    body: OfferDownloadCreateRequest,
+    ctx: SendOfferCtx,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    file_name, content = await handle_download_offer_letters(ctx, db, job_slug, stage_slug, body)
+    encoded_file_name = quote(file_name)
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{file_name}\"; filename*=UTF-8''{encoded_file_name}"
+            ),
+        },
+    )
 
 
 @router.post(

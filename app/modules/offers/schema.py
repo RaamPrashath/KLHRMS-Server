@@ -18,6 +18,7 @@ AllowedOfferLetterStatus = Literal[
     "EXPIRED",
     "WITHDRAWN",
 ]
+AllowedOfferDownloadFormat = Literal["pdf", "docx"]
 
 ALLOWED_VARIABLE_TOKENS = {
     "candidate.firstName",
@@ -405,6 +406,10 @@ class OfferCandidateValidationRequest(BaseModel):
 
 class OfferDispatchCreateRequest(OfferCandidateValidationRequest):
     pass
+
+
+class OfferDownloadCreateRequest(OfferCandidateValidationRequest):
+    format: AllowedOfferDownloadFormat
 
 
 class OfferCandidateValidationResultRead(BaseModel):

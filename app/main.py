@@ -21,6 +21,8 @@ from app.modules.candidates.public_route import router as candidates_public_rout
 from app.modules.candidates.route import router as candidates_router
 from app.modules.dashboard.route import router as dashboard_router
 from app.modules.departments.route import router as departments_router
+from app.modules.document_collection.public_route import router as public_document_collection_router
+from app.modules.document_collection.route import router as document_collection_router
 from app.modules.employee.route import router as employee_router
 from app.modules.hiring_teams.route import router as hiring_teams_router
 from app.modules.holiday_sync.route import router as holiday_sync_router
@@ -108,6 +110,8 @@ app.include_router(ai_scoring_router)
 app.include_router(jobs_router)
 app.include_router(offers_router)
 app.include_router(public_offers_router)
+app.include_router(document_collection_router)
+app.include_router(public_document_collection_router)
 app.include_router(leave_router)
 app.include_router(projects_router)
 app.include_router(access_control_router)

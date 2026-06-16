@@ -19,12 +19,14 @@ from app.models.recruitment import (
     StageType,
 )
 from app.modules.onboarding.repository import OnboardingRepository
+from app.modules.document_collection.repository import DocumentCollectionRepository
 from app.modules.onboarding.schema import (
     AcceptedOnboardingCandidateRead,
     AcceptedOnboardingWorkspaceRead,
     OnboardingAssignCredentialsRequest,
     OnboardingAssignCredentialsResponse,
     OnboardingCandidateSummaryRead,
+    DocumentCollectionRequestSummaryRead,
     OnboardingPublicRead,
     OnboardingRecordRead,
     OnboardingSendRequest,
@@ -81,6 +83,22 @@ def _onboarding_read(record: OnboardingRecord | None) -> OnboardingRecordRead | 
     if record is None:
         return None
     return OnboardingRecordRead.model_validate(record)
+
+
+def _document_collection_request_summary(record: object | None) -> DocumentCollectionRequestSummaryRead | None:
+    if record is None:
+        return None
+    snapshot = getattr(record, "templateSnapshotJson", None) or {}
+    return DocumentCollectionRequestSummaryRead(
+        id=getattr(record, "id"),
+        templateId=getattr(record, "templateId", None),
+        templateName=str(snapshot.get("name") or "Document collection"),
+        status=getattr(getattr(record, "status"), "value", getattr(record, "status", "")),
+        tokenSentAt=getattr(record, "tokenSentAt", None),
+        submittedAt=getattr(record, "submittedAt", None),
+        emailError=getattr(record, "emailError", None),
+        createdAt=getattr(record, "createdAt"),
+    )
 
 
 def _is_browser_document_url(value: str | None) -> bool:
@@ -165,11 +183,16 @@ async def get_accepted_workspace(
     applications = await repository.list_applications_for_stage(organization_id, stage.id)
     application_ids = [app.id for app in applications]
     onboarding_records = await repository.list_onboarding_for_applications(organization_id, application_ids)
+    document_collection_records = await DocumentCollectionRepository(db).list_latest_requests_for_applications(
+        organization_id,
+        application_ids,
+    )
     onboard_stage = await repository.get_first_stage_by_type(organization_id, job.id, StageType.ONBOARDING)
 
     rows = []
     for application in applications:
         record = onboarding_records.get(application.id)
+        document_collection_request = document_collection_records.get(application.id)
         rows.append(
             AcceptedOnboardingCandidateRead(
                 applicationId=application.id,
@@ -178,6 +201,7 @@ async def get_accepted_workspace(
                 source=application.source.value,
                 onboardingStatus=_onboarding_status(record),
                 latestOnboarding=_onboarding_read(record),
+                latestDocumentCollection=_document_collection_request_summary(document_collection_request),
             )
         )
 
