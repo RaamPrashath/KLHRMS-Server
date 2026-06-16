@@ -79,6 +79,13 @@ class WeeklyPlanRead(BaseModel):
     project: str | None
 
 
+class PaginatedWeeklyPlanRead(BaseModel):
+    items: list[WeeklyPlanRead]
+    total: int
+    page: int
+    pageSize: int
+
+
 class PlanExportEmployee(BaseModel):
     id: str
     name: str

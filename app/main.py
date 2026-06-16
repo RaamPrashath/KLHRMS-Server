@@ -41,6 +41,7 @@ from app.modules.role.route import router as role_router
 from app.modules.user.route import router as user_router
 from app.modules.weekly_plan.router import router as weekly_plan_router
 from app.shared.config import get_settings
+from app.shared.database import async_engine
 from app.shared.exception_handlers import unhandled_exception_handler
 from app.shared.logging_config import setup_logging
 from app.shared.middleware import RequestContextMiddleware
@@ -59,6 +60,10 @@ setup_logging(settings)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Start the APScheduler on startup and shut it down on exit."""
+    # Warm up the database connection pool to avoid cold-start latency
+    from sqlalchemy import text
+    async with async_engine.connect() as conn:
+        await conn.execute(text("SELECT 1"))
     register_jobs()
     scheduler.start()
     yield
@@ -131,3 +136,15 @@ app.include_router(user_router)
 @app.get("/", tags=["root"], include_in_schema=False)
 async def root() -> dict[str, str]:
     return {"service": "KL HRMS API", "docs": "/docs"}
+
+
+@app.get("/health", tags=["root"], include_in_schema=False)
+async def health_check() -> dict[str, str]:
+    """Health check endpoint for keep-alive pings."""
+    from sqlalchemy import text
+    try:
+        async with async_engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return {"status": "healthy"}
+    except Exception:
+        return {"status": "unhealthy"}

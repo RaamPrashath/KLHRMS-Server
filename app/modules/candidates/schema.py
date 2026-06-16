@@ -363,7 +363,7 @@ class PipelineStageHistoryRead(BaseModel):
     id: str
     fromStageId: str | None
     fromStageName: str | None
-    toStageId: str
+    toStageId: str | None
     toStageName: str | None
     movedByMemberId: str | None
     movedByName: str | None

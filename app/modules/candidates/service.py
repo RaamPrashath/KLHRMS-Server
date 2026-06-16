@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import html
 import io
+import logging
 import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -101,6 +102,8 @@ from app.modules.candidates.schema import (
     TeamDistributionResponse,
 )
 from app.shared.utils.slugs import generate_unique_slug
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PIPELINE_STAGES: list[dict[str, object]] = [
     {"name": "Applied", "order": 1.0, "color": None, "isDefault": True, "isFinal": False, "stageType": StageType.DEFAULT},
@@ -1774,10 +1777,6 @@ async def delete_stage(
     application_count = await repository.count_stage_applications(organization_id, stage_id)
     if application_count > 0:
         raise HTTPException(status_code=400, detail="Move candidates out of this stage before deleting it")
-    history_count = await repository.count_stage_history(organization_id, stage_id)
-    if history_count > 0:
-        raise HTTPException(status_code=400, detail="Stages with movement history cannot be deleted")
-
     job_posting_id = stage.jobPostingId
     await db.delete(stage)
     await db.flush()
@@ -2949,7 +2948,7 @@ async def create_interview_meeting(
             job_title=application.jobPosting.title,
             stage_name=stage.name,
             starts_at_text=_meeting_time_text(meeting.starts_at),
-            meeting_url=meeting.meeting_url,
+            meeting_url=meeting.meeting_url if meeting else None,
         )
 
         created_new_event = latest_event is not None and latest_event.status == EventStatus.COMPLETED
@@ -3424,14 +3423,21 @@ async def _book_stage_event_slot(
     if slot.note:
         description_parts.append(f"Candidate note: {slot.note.strip()}")
 
-    meeting = await _create_google_meet_event(
-        db,
-        participant.member.user.id,
-        title,
-        "\n".join(description_parts),
-        slot.startTime,
-        slot.endTime,
-    )
+    meeting = None
+    try:
+        meeting = await _create_google_meet_event(
+            db,
+            participant.member.user.id,
+            title,
+            "\n".join(description_parts),
+            slot.startTime,
+            slot.endTime,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 502:
+            logger.warning("Google Meet creation failed, booking slot without meeting: %s", exc.detail)
+        else:
+            raise
 
     slot.isSelectedByCandidate = True
     db.add(slot)
@@ -3439,13 +3445,14 @@ async def _book_stage_event_slot(
     event.title = title
     event.description = "\n".join(description_parts)
     event.status = EventStatus.SCHEDULED
-    event.scheduledStartAt = meeting.starts_at
-    event.scheduledEndAt = meeting.ends_at
-    _apply_google_meet_event(event, meeting)
+    event.scheduledStartAt = slot.startTime
+    event.scheduledEndAt = slot.endTime
+    if meeting is not None:
+        _apply_google_meet_event(event, meeting)
     db.add(event)
 
     participant.approvalStatus = "SCHEDULED"
-    participant.scheduledTime = meeting.starts_at
+    participant.scheduledTime = slot.startTime
     db.add(participant)
 
     await db.commit()
@@ -3456,7 +3463,7 @@ async def _book_stage_event_slot(
     interviewer_name = participant.member.user.name or participant.member.user.email
     interviewer_email = participant.member.user.email
 
-    starts_at_text = _meeting_time_text(meeting.starts_at)
+    starts_at_text = _meeting_time_text(slot.startTime)
 
     email_service = ResendEmailService()
 
@@ -3467,7 +3474,7 @@ async def _book_stage_event_slot(
             interviewer_name=interviewer_name,
             job_title=job_title,
             starts_at_text=starts_at_text,
-            meeting_url=meeting.meeting_url,
+            meeting_url=meeting.meeting_url if meeting else None,
         )
 
     if interviewer_email:
@@ -3477,7 +3484,7 @@ async def _book_stage_event_slot(
             candidate_name=candidate_name,
             job_title=job_title,
             starts_at_text=starts_at_text,
-            meeting_url=meeting.meeting_url,
+            meeting_url=meeting.meeting_url if meeting else None,
         )
 
     return _serialize_interview_meeting(event)

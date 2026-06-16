@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from sqlalchemy import Date, String, UniqueConstraint
+from sqlalchemy import Date, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import HRMSBase
@@ -23,4 +23,5 @@ class MonthlyPlan(HRMSBase):
             "date",
             name="uq_monthly_plan_org_user_date",
         ),
+        Index("idx_monthly_plans_org_date", "organization_id", "date"),
     )

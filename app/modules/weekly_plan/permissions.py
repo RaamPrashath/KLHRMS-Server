@@ -9,7 +9,7 @@ from typing import Callable
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import contains_eager, joinedload
 
 from app.models.member import Member
 from app.models.organization import Organization
@@ -62,50 +62,39 @@ def require_weekly_plan_permission(action: str) -> Callable[..., WeeklyPlanAcces
             )
 
         token = authorization.split(" ", 1)[1].strip()
-        session_row = (
-            await db.execute(
-                select(UserSession).where(UserSession.token == token)
-            )
-        ).scalar_one_or_none()
-        if session_row is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Session not found.",
-            )
 
-        expires_at = session_row.expiresAt
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at < datetime.now(timezone.utc):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Session has expired.",
+        # Single JOINed query: Session → User → Member → Organization
+        # Replaces 3 separate queries (session lookup, org lookup, member+role+user lookup).
+        # expiresAt is TIMESTAMP WITHOUT TIME ZONE in the DB, so use naive UTC.
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        result = await db.execute(
+            select(Member)
+            .join(Member.organization)                     # INNER JOIN for WHERE
+            .join(Member.user)                             # INNER JOIN for WHERE
+            .join(UserSession, UserSession.userId == User.id)  # INNER JOIN for WHERE
+            .options(
+                contains_eager(Member.organization),       # populate from join
+                contains_eager(Member.user),               # populate from join
+                joinedload(Member.role),                   # LEFT JOIN eager load
             )
+            .where(
+                UserSession.token == token,
+                Member.id == x_membership_id,
+                Organization.slug == x_organization_slug,
+                UserSession.expiresAt > now,
+            )
+        )
+        member = result.unique().scalar_one_or_none()
 
-        organization = (
-            await db.execute(
-                select(Organization).where(Organization.slug == x_organization_slug)
-            )
-        ).scalar_one_or_none()
-        if organization is None:
-            raise HTTPException(status_code=404, detail="Organization not found")
-
-        member = (
-            await db.execute(
-                select(Member)
-                .options(joinedload(Member.role), joinedload(Member.user))
-                .where(
-                    Member.id == x_membership_id,
-                    Member.organizationId == organization.id,
-                    Member.userId == session_row.userId,
-                )
-            )
-        ).unique().scalar_one_or_none()
         if member is None or member.user is None:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Member not found for the authenticated session.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session not found or expired.",
             )
+
+        organization = member.organization
+        if organization is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
 
         if member.role is None:
             raise HTTPException(

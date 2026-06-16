@@ -241,7 +241,14 @@ class GoogleCalendarService:
             payload = response.json()
         except ValueError:
             return fallback
-        message = payload.get("error", {}).get("message")
-        if isinstance(message, str) and message:
-            return message
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message:
+                return message
+        elif isinstance(error, str) and error:
+            desc = payload.get("error_description")
+            if isinstance(desc, str) and desc:
+                return f"{error}: {desc}"
+            return error
         return fallback

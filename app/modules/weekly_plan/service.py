@@ -56,7 +56,7 @@ class WeeklyPlanService:
 
         return [merged_by_date[key] for key in sorted(merged_by_date)]
 
-    async def _sync_weekly_days_to_monthly(self, days: list[dict]) -> None:
+    async def _sync_weekly_days_to_monthly(self, days: list[dict], commit: bool = True) -> None:
         days_by_month: dict[tuple[int, int], list[dict]] = defaultdict(list)
         for day in days:
             month_key = (day["date"].year, day["date"].month)
@@ -68,9 +68,13 @@ class WeeklyPlanService:
                 start_date=_month_start(year, month),
                 end_date=_month_end(year, month),
                 days=month_days,
+                commit=False,
             )
 
-    async def _sync_monthly_days_to_weekly(self, days: list[dict]) -> None:
+        if commit:
+            await self.monthly_repo.db.commit()
+
+    async def _sync_monthly_days_to_weekly(self, days: list[dict], commit: bool = True) -> None:
         days_by_week: dict[tuple[int, int], list[dict]] = defaultdict(list)
         for day in days:
             iso = day["date"].isocalendar()
@@ -85,7 +89,11 @@ class WeeklyPlanService:
                 start_date=monday,
                 end_date=friday,
                 days=week_days,
+                commit=False,
             )
+
+        if commit:
+            await self.weekly_repo.db.commit()
 
     async def get_my_week(self, year: int, week: int) -> list[WeeklyPlanRead]:
         monthly_monday = date.fromisocalendar(year, week, 1)
@@ -169,11 +177,13 @@ class WeeklyPlanService:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+        # Don't commit yet - sync will commit everything at once
         entry = await self.weekly_repo.set_day(
             user_id=self.auth.user.id,
             target_date=target_date,
             work_location=work_location.value,
             project=project,
+            commit=False,
         )
         await self._sync_weekly_days_to_monthly(
             [
@@ -182,7 +192,8 @@ class WeeklyPlanService:
                     "work_location": work_location.value,
                     "project": project,
                 }
-            ]
+            ],
+            commit=True,
         )
         return WeeklyPlanRead.model_validate(entry)
 
@@ -203,13 +214,16 @@ class WeeklyPlanService:
             for day in body.days
         ]
 
+        # Don't commit yet - sync will commit everything at once
         saved = await self.weekly_repo.replace_range(
             user_id=self.auth.user.id,
             start_date=monday,
             end_date=friday,
             days=weekly_days,
+            commit=False,
         )
-        await self._sync_weekly_days_to_monthly(weekly_days)
+        # Sync to monthly table and commit everything
+        await self._sync_weekly_days_to_monthly(weekly_days, commit=True)
         return [WeeklyPlanRead.model_validate(entry) for entry in saved]
 
     async def save_month(self, year: int, month: int, body: WeeklyPlanBulkSaveRequest) -> list[WeeklyPlanRead]:
@@ -226,11 +240,14 @@ class WeeklyPlanService:
             for day in body.days
         ]
 
+        # Don't commit yet - sync will commit everything at once
         await self.monthly_repo.replace_range(
             user_id=self.auth.user.id,
             start_date=date(year, month, 1),
             end_date=_month_end(year, month),
             days=month_days,
+            commit=False,
         )
-        await self._sync_monthly_days_to_weekly(month_days)
+        # Sync to weekly table and commit everything
+        await self._sync_monthly_days_to_weekly(month_days, commit=True)
         return await self.get_my_month(year=year, month=month)
