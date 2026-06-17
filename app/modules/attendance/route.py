@@ -255,6 +255,9 @@ async def list_attendance(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=5000),
 ) -> AttendanceListResponse:
+    import time as _time
+    _t_route_start = _time.perf_counter()
+
     filters = AttendanceListFilters(
         target_member_id=target_member_id,
         employee_name=employee_name,
@@ -264,7 +267,19 @@ async def list_attendance(
         page=page,
         page_size=page_size,
     )
-    return await handle_list_attendance(access, db, filters)
+    result = await handle_list_attendance(access, db, filters)
+
+    _t_route_end = _time.perf_counter()
+    import logging
+    logging.warning(
+        "[timing] route:list_attendance | scope=%s date_from=%s date_to=%s page=%s page_size=%s | "
+        "total_route_time=%.1fms | total=%d items=%d",
+        access.permission_scope, date_from, date_to, page, page_size,
+        (_t_route_end - _t_route_start) * 1000,
+        result.total, len(result.items),
+    )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
