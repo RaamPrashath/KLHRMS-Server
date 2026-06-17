@@ -48,6 +48,7 @@ class AssetMaintenanceLog(Base):
         String(36), ForeignKey("asset_unit.id", ondelete="SET NULL"), nullable=True
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    archivedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     createdAt: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -70,4 +71,5 @@ class AssetMaintenanceLog(Base):
         Index("asset_maintenance_log_assetId_idx", "assetId"),
         Index("asset_maintenance_log_status_idx", "status"),
         Index("asset_maintenance_log_serviceDate_idx", "serviceDate"),
+        Index("ix_asset_maintenance_log_archivedAt", "archivedAt"),
     )

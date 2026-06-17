@@ -44,6 +44,7 @@ from app.modules.assets.schema import (
     SetReturnDateRequest,
 )
 from app.modules.assets.service import (
+    archive_ticket,
     bulk_create_assets,
     create_asset_id,
     create_category,
@@ -80,6 +81,7 @@ from app.modules.assets.service import (
     request_asset_return,
     return_asset,
     set_replacement_return_date,
+    unarchive_ticket,
     withdraw_helpdesk_ticket,
     update_asset_id,
     update_category,
@@ -234,9 +236,21 @@ async def handle_list_my_tickets(ctx: MemberContext, db: AsyncSession) -> list[M
 
 
 async def handle_list_tickets(
-    ctx: MemberContext, db: AsyncSession
+    ctx: MemberContext, db: AsyncSession, archived: bool = False
 ) -> list[MaintenanceTicketResponse]:
-    return await list_tickets(db, ctx)
+    return await list_tickets(db, ctx, archived=archived)
+
+
+async def handle_archive_ticket(
+    ctx: MemberContext, db: AsyncSession, ticket_id: str
+) -> MaintenanceTicketResponse:
+    return await archive_ticket(db, ctx, ticket_id)
+
+
+async def handle_unarchive_ticket(
+    ctx: MemberContext, db: AsyncSession, ticket_id: str
+) -> MaintenanceTicketResponse:
+    return await unarchive_ticket(db, ctx, ticket_id)
 
 
 async def handle_export_report(
