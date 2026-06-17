@@ -18,7 +18,7 @@ from app.models.session import Session as UserSession
 from app.models.user import User
 from app.shared.database import get_async_db
 
-SUPPORTED_SCOPES: frozenset[str] = frozenset({"self", "organization"})
+SUPPORTED_SCOPES: frozenset[str] = frozenset({"self", "department", "organization"})
 
 
 def get_permission_scope(role_permissions: dict, module: str, action: str) -> str | None:

@@ -13,6 +13,7 @@ from app.modules.departments.controller import (
     handle_delete_department,
     handle_get_department,
     handle_get_meta,
+    handle_get_my_department,
     handle_list_departments,
     handle_remove_head,
     handle_remove_member,
@@ -25,6 +26,7 @@ from app.modules.departments.schema import (
     DepartmentSummary,
     DepartmentUpsertRequest,
     HeadAssignRequest,
+    MyDepartmentResponse,
 )
 from app.shared.database import get_db
 from app.shared.deps.organization_member import MemberContext
@@ -49,6 +51,14 @@ async def get_department_meta(
     db: DbSession,
 ) -> DepartmentMetaResponse:
     return await handle_get_meta(access, db)
+
+
+@router.get("/my-head", response_model=list[MyDepartmentResponse])
+async def get_my_department(
+    access: Annotated[MemberContext, Depends(require_permission("departments", "view", allow_self=True))],
+    db: DbSession,
+) -> list[MyDepartmentResponse]:
+    return await handle_get_my_department(access, db)
 
 
 @router.get("/{department_id}", response_model=DepartmentSummary)

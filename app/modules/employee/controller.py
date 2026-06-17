@@ -31,9 +31,12 @@ async def handle_list_employees(
     ctx: MemberContext,
     db: AsyncSession,
 ) -> EmployeeListResponse:
+    scope = getattr(ctx, "scope", "organization")
     return await service.list_employees(
         organization_id=ctx.organization.id,
         db=db,
+        scope=scope,
+        actor_member_id=ctx.member.id,
     )
 
 

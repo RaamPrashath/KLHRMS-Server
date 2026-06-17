@@ -24,6 +24,8 @@ from app.integrations.microsoft_graph.graph_client import MicrosoftGraphClient
 from app.integrations.microsoft_graph.token_manager import TokenManager
 from app.models.account import Account
 from app.models.attendance_record import AttendanceRecord
+from app.models.department_head import DepartmentHead
+from app.models.department_member import DepartmentMember
 from app.models.employee import Employee
 from app.models.employee_group import EmployeeGroup
 from app.models.employee_group_membership import EmployeeGroupMembership
@@ -64,6 +66,8 @@ logger = logging.getLogger("klhrms.employee.service")
 async def list_employees(
     organization_id: str,
     db: AsyncSession,
+    scope: str = "organization",
+    actor_member_id: str | None = None,
 ) -> EmployeeListResponse:
     # ── Base query: active members joined with User + Role ────────────────
     query = (
@@ -79,16 +83,41 @@ async def list_employees(
             Member.organizationId == organization_id,
             Member.status == "ACTIVE",
         )
-        .order_by(
-            sa_func.lower(
-                sa_func.coalesce(
-                    Employee.display_name,
-                    User.name,
-                    Employee.email,
-                    User.email,
-                    Employee.user_principal_name,
-                    Member.id,
-                )
+    )
+
+    # ── Department scope: filter to members + heads in actor's departments ─
+    if scope == "department" and actor_member_id:
+        dept_result = await db.execute(
+            select(DepartmentHead.departmentId).where(
+                DepartmentHead.memberId == actor_member_id,
+            )
+        )
+        dept_ids = [row[0] for row in dept_result.all()]
+        if dept_ids:
+            member_in_dept = (
+                select(DepartmentMember.memberId)
+                .where(DepartmentMember.departmentId.in_(dept_ids))
+            )
+            head_in_dept = (
+                select(DepartmentHead.memberId)
+                .where(DepartmentHead.departmentId.in_(dept_ids))
+            )
+            query = query.where(
+                Member.id.in_(member_in_dept) |
+                Member.id.in_(head_in_dept)
+            )
+        else:
+            query = query.where(sa_func.false())
+
+    query = query.order_by(
+        sa_func.lower(
+            sa_func.coalesce(
+                Employee.display_name,
+                User.name,
+                Employee.email,
+                User.email,
+                Employee.user_principal_name,
+                Member.id,
             )
         )
     )

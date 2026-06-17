@@ -28,6 +28,7 @@ from app.models.attendance_record import AttendanceRecord
 from app.models.attendance_work_log import AttendanceWorkLog
 from app.models.base import generate_uuid
 from app.models.department import Department
+from app.models.department_head import DepartmentHead
 from app.models.department_member import DepartmentMember
 from app.models.member import Member
 from app.models.project import Project
@@ -1149,14 +1150,22 @@ async def list_attendance(
     if scope == "self":
         query = query.where(AttendanceRecord.employeeId == actor_member_id)
     elif scope == "department":
-        department_subq = (
-            select(DepartmentMember.memberId)
-            .where(DepartmentMember.departmentId.in_(
-                select(DepartmentMember.departmentId)
-                .where(DepartmentMember.memberId == actor_member_id)
-            ))
+        dept_ids_subq = (
+            select(DepartmentHead.departmentId)
+            .where(DepartmentHead.memberId == actor_member_id)
         )
-        query = query.where(AttendanceRecord.employeeId.in_(department_subq))
+        member_subq = (
+            select(DepartmentMember.memberId)
+            .where(DepartmentMember.departmentId.in_(dept_ids_subq))
+        )
+        head_subq = (
+            select(DepartmentHead.memberId)
+            .where(DepartmentHead.departmentId.in_(dept_ids_subq))
+        )
+        query = query.where(
+            AttendanceRecord.employeeId.in_(member_subq) |
+            AttendanceRecord.employeeId.in_(head_subq)
+        )
         if target_member_id is not None:
             query = query.where(AttendanceRecord.employeeId == target_member_id)
         elif employee_name is not None and employee_name.strip():

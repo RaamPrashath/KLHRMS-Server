@@ -56,3 +56,7 @@ async def handle_assign_head(ctx: MemberContext, db: AsyncSession, department_id
 
 async def handle_remove_head(ctx: MemberContext, db: AsyncSession, department_id: str, head_member_id: str) -> DepartmentSummary:
     return await service.remove_department_head(db, ctx, department_id, head_member_id)
+
+
+async def handle_get_my_department(ctx: MemberContext, db: AsyncSession) -> list | None:
+    return await service.get_my_department(db, ctx)
