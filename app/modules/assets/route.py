@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.assets.controller import (
+    handle_archive_ticket,
     handle_available_groups,
     handle_bulk_create_assets,
     handle_create_asset,
@@ -42,6 +43,7 @@ from app.modules.assets.controller import (
     handle_list_my_tickets,
     handle_list_tickets,
     handle_return_asset,
+    handle_unarchive_ticket,
     handle_update_asset,
     handle_update_asset_id,
     handle_update_category,
@@ -328,8 +330,9 @@ async def list_tickets_route(
         MemberContext, Depends(require_permission("maintenance", "view", allow_self=True))
     ],
     db: DbSession,
+    archived: bool = Query(False, description="Filter archived tickets"),
 ) -> list[MaintenanceTicketResponse]:
-    return await handle_list_tickets(access, db)
+    return await handle_list_tickets(access, db, archived=archived)
 
 
 @router.get("/tickets/mine", response_model=list[MyTicketResponse])
@@ -362,6 +365,28 @@ async def withdraw_helpdesk_ticket_route(
     db: DbSession,
 ) -> MyTicketResponse:
     return await handle_withdraw_helpdesk_ticket(access, db, ticket_id)
+
+
+@router.post("/tickets/{ticket_id}/archive", response_model=MaintenanceTicketResponse)
+async def archive_ticket_route(
+    ticket_id: str,
+    access: Annotated[
+        MemberContext, Depends(require_permission("maintenance", "edit", allow_self=True))
+    ],
+    db: DbSession,
+) -> MaintenanceTicketResponse:
+    return await handle_archive_ticket(access, db, ticket_id)
+
+
+@router.post("/tickets/{ticket_id}/unarchive", response_model=MaintenanceTicketResponse)
+async def unarchive_ticket_route(
+    ticket_id: str,
+    access: Annotated[
+        MemberContext, Depends(require_permission("maintenance", "edit", allow_self=True))
+    ],
+    db: DbSession,
+) -> MaintenanceTicketResponse:
+    return await handle_unarchive_ticket(access, db, ticket_id)
 
 
 @router.get("/meta", response_model=AssetMetaResponse)

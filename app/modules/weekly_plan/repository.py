@@ -115,9 +115,9 @@ class WeeklyPlanRepository(BasePlanRepository):
         start_date, end_date = _iso_week_bounds(year, week)
         return await self.list_by_range(user_id=user_id, start_date=start_date, end_date=end_date)
 
-    async def list_team_by_week(self, year: int, week: int) -> list[dict]:
+    async def list_team_by_week(self, year: int, week: int, member_ids: list[str] | None = None) -> list[dict]:
         start_date, end_date = _iso_week_bounds(year, week)
-        result = await self.db.execute(
+        query = (
             select(WeeklyPlan, User.name.label("user_name"))
             .outerjoin(User, User.id == WeeklyPlan.user_id)
             .where(
@@ -126,8 +126,11 @@ class WeeklyPlanRepository(BasePlanRepository):
                 WeeklyPlan.date <= end_date,
                 WeeklyPlan.deleted_at.is_(None),
             )
-            .order_by(WeeklyPlan.user_id.asc(), WeeklyPlan.date.asc())
         )
+        if member_ids:
+            query = query.where(WeeklyPlan.user_id.in_(member_ids))
+        query = query.order_by(WeeklyPlan.user_id.asc(), WeeklyPlan.date.asc())
+        result = await self.db.execute(query)
         rows = result.all()
         return [
             {
@@ -142,8 +145,8 @@ class WeeklyPlanRepository(BasePlanRepository):
             for plan, user_name in rows
         ]
 
-    async def list_team_by_range(self, start_date: date, end_date: date) -> list[dict]:
-        result = await self.db.execute(
+    async def list_team_by_range(self, start_date: date, end_date: date, member_ids: list[str] | None = None) -> list[dict]:
+        query = (
             select(WeeklyPlan, User.name.label("user_name"))
             .outerjoin(User, User.id == WeeklyPlan.user_id)
             .where(
@@ -152,8 +155,11 @@ class WeeklyPlanRepository(BasePlanRepository):
                 WeeklyPlan.date <= end_date,
                 WeeklyPlan.deleted_at.is_(None),
             )
-            .order_by(WeeklyPlan.user_id.asc(), WeeklyPlan.date.asc())
         )
+        if member_ids:
+            query = query.where(WeeklyPlan.user_id.in_(member_ids))
+        query = query.order_by(WeeklyPlan.user_id.asc(), WeeklyPlan.date.asc())
+        result = await self.db.execute(query)
         rows = result.all()
         return [
             {

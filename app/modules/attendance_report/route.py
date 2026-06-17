@@ -83,6 +83,7 @@ async def get_attendance_report(
     date_to: date = Query(...),
     project_id: str | None = Query(default=None),
     employee_ids: Annotated[list[str] | None, Query(alias="employee_id")] = None,
+    department_id: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=5000, ge=1, le=5000),
 ) -> AttendanceReportListResponse:
@@ -93,6 +94,7 @@ async def get_attendance_report(
         date_to=date_to,
         project_id=project_id,
         employee_ids=employee_ids or [],
+        department_id=department_id,
         page=page,
         page_size=page_size,
     )
@@ -103,6 +105,7 @@ async def get_attendance_report(
         date_to=filters.date_to,
         project_id=filters.project_id,
         employee_ids=filters.employee_ids,
+        department_id=filters.department_id,
         page=filters.page,
         page_size=filters.page_size,
         scope=scope,

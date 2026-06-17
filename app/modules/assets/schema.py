@@ -928,6 +928,7 @@ class MyTicketResponse(BaseModel):
     serviceDate: str
     createdAt: str
     updatedAt: str
+    archivedAt: str | None = None
 
 
 class MaintenanceTicketResponse(BaseModel):
@@ -959,3 +960,4 @@ class MaintenanceTicketResponse(BaseModel):
     assetLifecycleStatus: str | None = None
     assetLifecycleStatusLabel: str | None = None
     swapPreview: AssetSwapPreviewResponse | None = None
+    archivedAt: str | None = None

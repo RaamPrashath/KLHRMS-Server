@@ -1212,6 +1212,7 @@ def _maintenance_ticket_response(log: AssetMaintenanceLog) -> MaintenanceTicketR
         else None,
         assetLifecycleStatus=asset_lifecycle_status,
         assetLifecycleStatusLabel=asset_lifecycle_status_label,
+        archivedAt=log.archivedAt.isoformat() if log.archivedAt else None,
     )
 
 
@@ -3994,11 +3995,56 @@ async def list_my_tickets(db: AsyncSession, ctx: MemberContext) -> list[MyTicket
     return [_my_ticket_response(log) for log in logs]
 
 
-async def list_tickets(db: AsyncSession, ctx: MemberContext) -> list[MaintenanceTicketResponse]:
+async def list_tickets(
+    db: AsyncSession, ctx: MemberContext, archived: bool = False
+) -> list[MaintenanceTicketResponse]:
+    stmt = (
+        select(AssetMaintenanceLog)
+        .outerjoin(Asset, Asset.id == AssetMaintenanceLog.assetId)
+        .where(
+            AssetMaintenanceLog.organizationId == ctx.organization.id,
+            or_(Asset.id.is_(None), Asset.deletedAt.is_(None)),
+        )
+    )
+
+    if archived:
+        stmt = stmt.where(AssetMaintenanceLog.archivedAt.is_not(None))
+    else:
+        stmt = stmt.where(AssetMaintenanceLog.archivedAt.is_(None))
+
+    stmt = stmt.options(
+        joinedload(AssetMaintenanceLog.asset).joinedload(Asset.provisions).joinedload(
+            AssetAssignment.member
+        ).joinedload(Member.user),
+        joinedload(AssetMaintenanceLog.asset).joinedload(Asset.units),
+        joinedload(AssetMaintenanceLog.asset).joinedload(Asset.customFieldValues).joinedload(
+            AssetCustomFieldValue.fieldDefinition
+        ),
+        joinedload(AssetMaintenanceLog.loggedByMember).joinedload(Member.user),
+        joinedload(AssetMaintenanceLog.cancelledByMember).joinedload(Member.user),
+    ).order_by(AssetMaintenanceLog.createdAt.desc())
+
+    result = await db.execute(stmt)
+    logs = result.unique().scalars().all()
+    responses: list[MaintenanceTicketResponse] = []
+    for log in logs:
+        response = _maintenance_ticket_response(log)
+        if log.asset is not None:
+            response.swapPreview = await _build_swap_preview(
+                db, ctx.organization.id, log, log.asset
+            )
+        responses.append(response)
+    return responses
+
+
+async def archive_ticket(
+    db: AsyncSession, ctx: MemberContext, ticket_id: str
+) -> MaintenanceTicketResponse:
     result = await db.execute(
         select(AssetMaintenanceLog)
         .outerjoin(Asset, Asset.id == AssetMaintenanceLog.assetId)
         .where(
+            AssetMaintenanceLog.id == ticket_id,
             AssetMaintenanceLog.organizationId == ctx.organization.id,
             or_(Asset.id.is_(None), Asset.deletedAt.is_(None)),
         )
@@ -4013,18 +4059,80 @@ async def list_tickets(db: AsyncSession, ctx: MemberContext) -> list[Maintenance
             joinedload(AssetMaintenanceLog.loggedByMember).joinedload(Member.user),
             joinedload(AssetMaintenanceLog.cancelledByMember).joinedload(Member.user),
         )
-        .order_by(AssetMaintenanceLog.createdAt.desc())
     )
-    logs = result.unique().scalars().all()
-    responses: list[MaintenanceTicketResponse] = []
-    for log in logs:
-        response = _maintenance_ticket_response(log)
-        if log.asset is not None:
-            response.swapPreview = await _build_swap_preview(
-                db, ctx.organization.id, log, log.asset
-            )
-        responses.append(response)
-    return responses
+    log = result.unique().scalar_one_or_none()
+    if log is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    if log.status not in ("COMPLETED", "CANCELLED"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only completed or cancelled tickets can be archived",
+        )
+
+    from datetime import timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+    reference_date = (
+        datetime.combine(log.completedDate, datetime.min.time(), tzinfo=timezone.utc)
+        if log.completedDate
+        else log.createdAt
+    )
+    if reference_date > cutoff:
+        raise HTTPException(
+            status_code=400,
+            detail="Ticket must be completed or cancelled for at least 1 day before archiving",
+        )
+
+    log.archivedAt = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(log)
+
+    response = _maintenance_ticket_response(log)
+    if log.asset is not None:
+        response.swapPreview = await _build_swap_preview(
+            db, ctx.organization.id, log, log.asset
+        )
+    return response
 
 
+async def unarchive_ticket(
+    db: AsyncSession, ctx: MemberContext, ticket_id: str
+) -> MaintenanceTicketResponse:
+    result = await db.execute(
+        select(AssetMaintenanceLog)
+        .outerjoin(Asset, Asset.id == AssetMaintenanceLog.assetId)
+        .where(
+            AssetMaintenanceLog.id == ticket_id,
+            AssetMaintenanceLog.organizationId == ctx.organization.id,
+            or_(Asset.id.is_(None), Asset.deletedAt.is_(None)),
+        )
+        .options(
+            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.provisions).joinedload(
+                AssetAssignment.member
+            ).joinedload(Member.user),
+            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.units),
+            joinedload(AssetMaintenanceLog.asset).joinedload(Asset.customFieldValues).joinedload(
+                AssetCustomFieldValue.fieldDefinition
+            ),
+            joinedload(AssetMaintenanceLog.loggedByMember).joinedload(Member.user),
+            joinedload(AssetMaintenanceLog.cancelledByMember).joinedload(Member.user),
+        )
+    )
+    log = result.unique().scalar_one_or_none()
+    if log is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
 
+    if log.archivedAt is None:
+        raise HTTPException(status_code=400, detail="Ticket is not archived")
+
+    log.archivedAt = None
+    await db.commit()
+    await db.refresh(log)
+
+    response = _maintenance_ticket_response(log)
+    if log.asset is not None:
+        response.swapPreview = await _build_swap_preview(
+            db, ctx.organization.id, log, log.asset
+        )
+    return response

@@ -8,6 +8,11 @@ from typing import Iterable
 
 from fastapi import HTTPException
 
+from sqlalchemy import select
+
+from app.models.department_head import DepartmentHead
+from app.models.department_member import DepartmentMember
+from app.models.member import Member
 from app.models.monthly_plan import MonthlyPlan
 from app.models.weekly_plan import WeeklyPlan
 from app.modules.weekly_plan.locations import PlanLocationValue
@@ -127,13 +132,56 @@ class WeeklyPlanService:
         entries = self._merge_entries_by_date(weekly_entries, monthly_entries)
         return [WeeklyPlanRead.model_validate(entry) for entry in entries]
 
+    async def _resolve_team_member_ids(self) -> list[str] | None:
+        if self.auth.permission_scope == "organization":
+            return None
+
+        if self.auth.permission_scope == "department":
+            dept_result = await self.weekly_repo.db.execute(
+                select(DepartmentHead.departmentId).where(
+                    DepartmentHead.memberId == self.auth.member.id,
+                )
+            )
+            dept_ids = [str(row[0]) for row in dept_result.all()]
+            if not dept_ids:
+                return []
+
+            # Get member IDs from both DepartmentMember and DepartmentHead
+            member_result = await self.weekly_repo.db.execute(
+                select(DepartmentMember.memberId).where(
+                    DepartmentMember.departmentId.in_(dept_ids),
+                )
+            )
+            head_result = await self.weekly_repo.db.execute(
+                select(DepartmentHead.memberId).where(
+                    DepartmentHead.departmentId.in_(dept_ids),
+                )
+            )
+            all_member_ids = list({
+                str(row[0]) for row in member_result.all() + head_result.all()
+            })
+            if not all_member_ids:
+                return []
+
+            user_result = await self.weekly_repo.db.execute(
+                select(Member.userId).where(
+                    Member.id.in_(all_member_ids),
+                    Member.organizationId == self.auth.organization.id,
+                )
+            )
+            return [str(row[0]) for row in user_result.all()]
+
+        return None
+
     async def get_team_month(self, year: int, month: int) -> list[WeeklyPlanRead]:
-        if self.auth.permission_scope != "organization":
-            raise HTTPException(status_code=403, detail="Organization scope is required for team plans")
+        member_ids = await self._resolve_team_member_ids()
+        if member_ids is not None and not member_ids:
+            return []
 
         entries = await self.weekly_repo.list_team_by_range(
             start_date=_month_start(year, month),
             end_date=_month_end(year, month),
+            member_ids=member_ids,
         )
         return [
             WeeklyPlanRead(
@@ -149,10 +197,15 @@ class WeeklyPlanService:
         ]
 
     async def get_team_week(self, year: int, week: int) -> list[WeeklyPlanRead]:
-        if self.auth.permission_scope != "organization":
-            raise HTTPException(status_code=403, detail="Organization scope is required for team plans")
+        member_ids = await self._resolve_team_member_ids()
+        if member_ids is not None and not member_ids:
+            return []
 
-        entries = await self.weekly_repo.list_team_by_week(year=year, week=week)
+        entries = await self.weekly_repo.list_team_by_week(
+            year=year,
+            week=week,
+            member_ids=member_ids,
+        )
         return [
             WeeklyPlanRead(
                 id=entry["id"],

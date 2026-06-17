@@ -18,9 +18,15 @@ class AttendanceReportProjectOption(BaseModel):
     members: list[AttendanceReportEmployeeOption]
 
 
+class AttendanceReportDepartmentOption(BaseModel):
+    id: str
+    name: str
+
+
 class AttendanceReportOptionsResponse(BaseModel):
     employees: list[AttendanceReportEmployeeOption]
     projects: list[AttendanceReportProjectOption]
+    departments: list[AttendanceReportDepartmentOption]
 
 
 class AttendanceReportFilters(BaseModel):
@@ -28,6 +34,7 @@ class AttendanceReportFilters(BaseModel):
     date_to: date
     project_id: str | None = Field(default=None, max_length=36)
     employee_ids: list[str] = Field(default_factory=list)
+    department_id: str | None = Field(default=None, max_length=36)
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=5000, ge=1, le=5000)
 

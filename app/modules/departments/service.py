@@ -158,6 +158,15 @@ async def list_departments(
             .where(DepartmentMember.memberId == ctx.member.id)
             .distinct()
         )
+    elif scope == "department":
+        dept_ids_subq = (
+            select(DepartmentMember.departmentId)
+            .where(DepartmentMember.memberId == ctx.member.id)
+        ).union(
+            select(DepartmentHead.departmentId)
+            .where(DepartmentHead.memberId == ctx.member.id)
+        )
+        query = query.where(Department.id.in_(dept_ids_subq))
 
     total_result = await db.execute(select(func.count()).select_from(query.order_by(None).subquery()))
     result = await db.execute(
@@ -183,18 +192,41 @@ async def get_department_by_id(
     return _department_to_summary(department)
 
 
+async def _enforce_department_scope(
+    db: AsyncSession,
+    ctx: MemberContext,
+    department_id: str,
+) -> None:
+    """When scope is "department", verify the member is a head of this department."""
+    scope = getattr(ctx, "scope", "organization")
+    if scope == "department":
+        result = await db.execute(
+            select(DepartmentHead.id).where(
+                DepartmentHead.departmentId == department_id,
+                DepartmentHead.memberId == ctx.member.id,
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=403, detail="You can only manage your own department")
+
+
 async def upsert_department(
     db: AsyncSession,
     ctx: MemberContext,
     payload: DepartmentUpsertRequest,
     department_id: str | None = None,
 ) -> DepartmentSummary:
+    scope = getattr(ctx, "scope", "organization")
     department: Department | None = None
     if department_id:
         department = await _validate_department(db, ctx, department_id)
+        if scope == "department":
+            await _enforce_department_scope(db, ctx, department_id)
     else:
         department = Department(organizationId=ctx.organization.id)
         db.add(department)
+        if scope == "department":
+            payload.headMemberId = ctx.member.id
 
     await _validate_member(db, ctx, payload.headMemberId)
     if payload.parentDepartmentId:
@@ -209,7 +241,24 @@ async def upsert_department(
     return _department_to_summary(department)
 
 
+async def get_my_department(db: AsyncSession, ctx: MemberContext) -> list | None:
+    result = await db.execute(
+        select(DepartmentHead.departmentId)
+        .where(DepartmentHead.memberId == ctx.member.id)
+    )
+    dept_ids = [row[0] for row in result.all()]
+    if not dept_ids:
+        return []
+
+    departments = []
+    for dept_id in dept_ids:
+        department = await _fetch_department_detail(db, ctx, dept_id)
+        departments.append(_department_to_summary(department))
+    return departments
+
+
 async def deactivate_department(db: AsyncSession, ctx: MemberContext, department_id: str) -> None:
+    await _enforce_department_scope(db, ctx, department_id)
     department = await _validate_department(db, ctx, department_id)
     department.status = "INACTIVE"
     await db.commit()
@@ -246,6 +295,7 @@ async def add_department_member(
     department_id: str,
     member_id: str,
 ) -> DepartmentSummary:
+    await _enforce_department_scope(db, ctx, department_id)
     await _validate_member(db, ctx, member_id)
     exists = await db.execute(
         select(DepartmentMember.id).where(
@@ -269,6 +319,7 @@ async def bulk_assign_department_members(
     department_id: str,
     member_ids: list[str],
 ) -> DepartmentSummary:
+    await _enforce_department_scope(db, ctx, department_id)
     existing_result = await db.execute(
         select(DepartmentMember.memberId).where(DepartmentMember.departmentId == department_id)
     )
@@ -292,6 +343,7 @@ async def remove_department_member(
     department_id: str,
     target_member_id: str,
 ) -> DepartmentSummary:
+    await _enforce_department_scope(db, ctx, department_id)
     result = await db.execute(
         select(DepartmentMember).where(
             DepartmentMember.departmentId == department_id,
@@ -314,6 +366,7 @@ async def assign_department_head(
     department_id: str,
     head_member_id: str,
 ) -> DepartmentSummary:
+    await _enforce_department_scope(db, ctx, department_id)
     await _validate_member(db, ctx, head_member_id)
 
     exists = await db.execute(
@@ -341,6 +394,7 @@ async def remove_department_head(
     department_id: str,
     head_member_id: str,
 ) -> DepartmentSummary:
+    await _enforce_department_scope(db, ctx, department_id)
     result = await db.execute(
         select(DepartmentHead).where(
             DepartmentHead.departmentId == department_id,

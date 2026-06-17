@@ -85,3 +85,19 @@ class BulkMembersRequest(BaseModel):
 
 class HeadAssignRequest(BaseModel):
     headMemberId: str
+
+
+class MyDepartmentResponse(BaseModel):
+    id: str
+    name: str
+    parentDepartmentId: str | None
+    headMemberId: str | None
+    headMemberName: str | None
+    status: str
+    memberCount: int
+    projectCount: int
+    members: list[DepartmentMemberSummary]
+    heads: list[DepartmentHeadSummary]
+    projects: list[DepartmentProjectSummary]
+    createdAt: datetime
+    updatedAt: datetime

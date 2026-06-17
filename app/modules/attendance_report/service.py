@@ -18,6 +18,7 @@ from app.models.project_member import ProjectMember
 from app.models.project_task import ProjectTask
 from app.models.user import User
 from app.modules.attendance_report.schema import (
+    AttendanceReportDepartmentOption,
     AttendanceReportEmployeeOption,
     AttendanceReportOptionsResponse,
     AttendanceReportProjectOption,
@@ -112,6 +113,7 @@ def _apply_filters(
     date_to: date,
     project_id: str | None,
     employee_ids: list[str],
+    department_id: str | None = None,
 ):
     query = query.where(
         AttendanceRecord.organizationId == organization_id,
@@ -127,6 +129,12 @@ def _apply_filters(
         )
     if employee_ids:
         query = query.where(AttendanceRecord.employeeId.in_(employee_ids))
+    if department_id:
+        dept_member_subq = (
+            select(DepartmentMember.memberId)
+            .where(DepartmentMember.departmentId == department_id)
+        )
+        query = query.where(AttendanceRecord.employeeId.in_(dept_member_subq))
     return query
 
 
@@ -198,7 +206,20 @@ async def list_report_options(
             )
         )
 
-    return AttendanceReportOptionsResponse(employees=employees, projects=projects)
+    department_result = await db.execute(
+        select(Department.id, Department.name)
+        .where(
+            Department.organizationId == organization_id,
+            Department.status == "ACTIVE",
+        )
+        .order_by(Department.name.asc())
+    )
+    departments = [
+        AttendanceReportDepartmentOption(id=dept_id, name=dept_name)
+        for dept_id, dept_name in department_result.all()
+    ]
+
+    return AttendanceReportOptionsResponse(employees=employees, projects=projects, departments=departments)
 
 
 async def list_attendance_report(
@@ -209,6 +230,7 @@ async def list_attendance_report(
     date_to: date,
     project_id: str | None,
     employee_ids: list[str],
+    department_id: str | None = None,
     page: int,
     page_size: int,
     scope: str = "organization",
@@ -257,6 +279,7 @@ async def list_attendance_report(
         date_to=date_to,
         project_id=project_id,
         employee_ids=employee_ids,
+        department_id=department_id,
     )
 
     if scope == "department" and actor_member_id:
@@ -287,6 +310,7 @@ async def list_attendance_report(
         date_to=date_to,
         project_id=project_id,
         employee_ids=employee_ids,
+        department_id=department_id,
     )
     if scope == "department" and actor_member_id:
         from app.models.department_member import DepartmentMember
