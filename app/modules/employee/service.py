@@ -39,6 +39,7 @@ from app.modules.employee.schema import (
     EmployeeContactInfo,
     EmployeeDeletePreview,
     EmployeeDeleteResponse,
+    EmployeeDeactivateImpactResponse,
     EmployeeDeactivateResponse,
     EmployeeDetailResponse,
     EmployeeDirectReportsResponse,
@@ -57,8 +58,12 @@ from app.modules.employee.schema import (
     UpdateEmployeeDetailsResponse,
     UpdateEmployeeRoleResponse,
 )
+from app.models.asset_assignment import AssetAssignment
+from app.models.leave import LeaveRequest
+from app.models.project_member import ProjectMember
 from app.models.recruitment import StageEventParticipant, HiringTeamMember, StageEvent, EventStatus
 from app.shared.config import get_settings
+from app.shared.utils.enums import LeaveRequestStatus
 
 logger = logging.getLogger("klhrms.employee.service")
 
@@ -189,6 +194,73 @@ async def list_employees(
                     clock_out=att.clockOut.isoformat() if att and att.clockOut else None,
                 ),
                 microsoft_synced=user.id in synced_user_ids,
+            )
+        )
+
+    total = len(items)
+    return EmployeeListResponse(
+        items=items,
+        total=total,
+        page=1,
+        page_size=total,
+        total_pages=1,
+    )
+
+
+async def list_deactivated_employees(
+    organization_id: str,
+    db: AsyncSession,
+) -> EmployeeListResponse:
+    query = (
+        select(Member, User, Role, Employee)
+        .join(User, Member.userId == User.id)
+        .outerjoin(Role, Member.roleId == Role.id)
+        .outerjoin(
+            Employee,
+            (Employee.member_id == Member.id)
+            & (Employee.organization_id == UUID(organization_id)),
+        )
+        .where(
+            Member.organizationId == organization_id,
+            Member.status == "INACTIVE",
+        )
+    )
+
+    query = query.order_by(Member.createdAt.desc())
+    result = await db.execute(query)
+    rows = result.all()
+
+    items: list[EmployeeListItem] = []
+    for member, user, role, employee in rows:
+        image = user.image or (employee.profile_photo_url if employee else None)
+        display_name = (
+            (employee.display_name if employee else None)
+            or user.name
+            or (employee.email if employee else None)
+            or user.email
+            or "Unknown"
+        )
+        primary_email = (
+            (employee.email if employee else None)
+            or user.email
+            or (employee.user_principal_name if employee else None)
+            or ""
+        )
+        items.append(
+            EmployeeListItem(
+                member_id=member.id,
+                user_id=user.id,
+                name=display_name,
+                email=primary_email,
+                image=image,
+                user_principal_name=employee.user_principal_name if employee else None,
+                role=RoleBriefResponse(id=role.id, name=role.name) if role else None,
+                employee_id=employee.employee_id if employee else None,
+                department=employee.department_name if employee else None,
+                job_title=employee.job_title if employee else None,
+                joined_at=member.createdAt.isoformat() if member.createdAt else "",
+                attendance_today=AttendanceTodayResponse(status="NO_RECORD"),
+                microsoft_synced=False,
             )
         )
 
@@ -342,6 +414,7 @@ async def deactivate_employee(
         raise HTTPException(status_code=404, detail="Employee not found")
 
     member.status = "INACTIVE"
+    member.deactivatedAt = datetime.now(timezone.utc)
     db.add(member)
     await db.commit()
     await db.refresh(member)
@@ -353,6 +426,85 @@ async def deactivate_employee(
         name=user_name,
         email=member.user.email if member.user else "",
         status=member.status,
+    )
+
+
+async def reactivate_employee(
+    organization_id: str,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDeactivateResponse:
+    """Set a member's status back to ACTIVE (reversal of deactivation)."""
+
+    result = await db.execute(
+        select(Member)
+        .options(joinedload(Member.user))
+        .where(Member.id == member_id)
+    )
+    member = result.unique().scalar_one_or_none()
+    if member is None or member.organizationId != organization_id:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    member.status = "ACTIVE"
+    member.deactivatedAt = None
+    db.add(member)
+    await db.commit()
+    await db.refresh(member)
+
+    user_name = member.user.name or member.user.email if member.user else "Unknown"
+
+    return EmployeeDeactivateResponse(
+        member_id=member.id,
+        name=user_name,
+        email=member.user.email if member.user else "",
+        status=member.status,
+    )
+
+
+async def get_deactivation_impact(
+    organization_id: str,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDeactivateImpactResponse:
+    """Fetch counts of downstream dependencies for a member."""
+    from sqlalchemy import func, select
+
+    dept_count_result = await db.execute(
+        select(func.count(DepartmentHead.id)).where(
+            DepartmentHead.memberId == member_id,
+        )
+    )
+    department_head_count = dept_count_result.scalar_one()
+
+    leave_count_result = await db.execute(
+        select(func.count(LeaveRequest.id)).where(
+            LeaveRequest.memberId == member_id,
+            LeaveRequest.status == LeaveRequestStatus.PENDING.value,
+        )
+    )
+    pending_leave_count = leave_count_result.scalar_one()
+
+    project_count_result = await db.execute(
+        select(func.count(ProjectMember.id)).where(
+            ProjectMember.memberId == member_id,
+        )
+    )
+    project_count = project_count_result.scalar_one()
+
+    asset_count_result = await db.execute(
+        select(func.count(AssetAssignment.id)).where(
+            AssetAssignment.memberId == member_id,
+            AssetAssignment.returnDate.is_(None),
+        )
+    )
+    active_asset_count = asset_count_result.scalar_one()
+
+    return EmployeeDeactivateImpactResponse(
+        member_id=member_id,
+        department_head_count=department_head_count,
+        pending_leave_count=pending_leave_count,
+        project_count=project_count,
+        active_asset_count=active_asset_count,
     )
 
 

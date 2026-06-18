@@ -379,6 +379,8 @@ async def get_project_meta(db: AsyncSession, ctx: MemberContext) -> ProjectMetaR
     )
     if scope == "self":
         members_query = members_query.where(Member.id == ctx.member.id)
+    else:
+        members_query = members_query.where(Member.status == "ACTIVE")  # status: ACTIVE only
     members_result = await db.execute(members_query)
     departments_result = await db.execute(
         select(Department.id, Department.name)

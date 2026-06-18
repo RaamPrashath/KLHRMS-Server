@@ -18,6 +18,16 @@ class DashboardCapabilities(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class DashboardDepartmentSummary(BaseModel):
+    id: str
+    name: str
+    role: str
+    head_member_name: str | None = Field(default=None, alias="headMemberName")
+    member_count: int = Field(alias="memberCount")
+
+    model_config = {"populate_by_name": True}
+
+
 class DashboardResponse(BaseModel):
     today: dt.date
     capabilities: DashboardCapabilities
@@ -27,5 +37,6 @@ class DashboardResponse(BaseModel):
     pending_leave_requests: LeaveRequestListResponse | None = Field(default=None, alias="pendingLeaveRequests")
     job_requisitions: list[JobRequisitionListItemRead] = Field(default_factory=list, alias="jobRequisitions")
     team_weekly_plan_today: list[WeeklyPlanRead] = Field(default_factory=list, alias="teamWeeklyPlanToday")
+    my_departments: list[DashboardDepartmentSummary] = Field(default_factory=list, alias="myDepartments")
 
     model_config = {"populate_by_name": True}

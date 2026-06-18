@@ -27,6 +27,7 @@ class Member(Base):
     )
     roleId: Mapped[str | None] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(20), server_default="ACTIVE")
+    deactivatedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

@@ -437,7 +437,7 @@ async def _members_with_asset_admin_scope(
 ) -> list[Member]:
     result = await db.execute(
         select(Member)
-        .where(Member.organizationId == organization_id)
+        .where(Member.organizationId == organization_id, Member.status == "ACTIVE")  # status: ACTIVE only
         .options(
             joinedload(Member.user),
             joinedload(Member.role),
@@ -3183,6 +3183,8 @@ async def get_asset_meta(db: AsyncSession, ctx: MemberContext) -> AssetMetaRespo
     )
     if scope == "self":
         members_query = members_query.where(Member.id == ctx.member.id)
+    else:
+        members_query = members_query.where(Member.status == "ACTIVE")  # status: ACTIVE only
     result = await db.execute(members_query)
     members = [
         AssetLookupOption(id=member_id, label=name or email or member_id, email=email)

@@ -715,6 +715,8 @@ async def list_leave_balances(
         member_query = member_query.where(Member.id == actor_member_id)
     elif filters.member_id is not None:
         member_query = member_query.where(Member.id == filters.member_id)
+    else:
+        member_query = member_query.where(Member.status == "ACTIVE")  # status: ACTIVE only
 
     members_result = await db.execute(member_query)
     members = members_result.unique().scalars().all()
@@ -996,6 +998,8 @@ async def get_leave_summary(
     )
     if permission_scope == "self":
         member_query = member_query.where(Member.id == actor_member_id)
+    else:
+        member_query = member_query.where(Member.status == "ACTIVE")  # status: ACTIVE only
 
     members_result = await db.execute(member_query)
     all_members = members_result.unique().scalars().all()

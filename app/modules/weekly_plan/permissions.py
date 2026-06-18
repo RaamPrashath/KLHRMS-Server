@@ -106,6 +106,11 @@ def require_weekly_plan_permission(action: str) -> Callable[..., WeeklyPlanAcces
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Member not found for the authenticated session.",
             )
+        if member.status != "ACTIVE":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account has been deactivated.",
+            )
 
         if member.role is None:
             raise HTTPException(

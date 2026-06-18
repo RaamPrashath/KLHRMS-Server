@@ -189,7 +189,26 @@ async def get_department_by_id(
     department_id: str,
 ) -> DepartmentSummary:
     department = await _fetch_department_detail(db, ctx, department_id)
+    await _enforce_view_scope(db, ctx, department_id)
     return _department_to_summary(department)
+
+
+async def _enforce_view_scope(
+    db: AsyncSession,
+    ctx: MemberContext,
+    department_id: str,
+) -> None:
+    """When scope is "self", verify the member belongs to this department."""
+    scope = getattr(ctx, "scope", "organization")
+    if scope == "self":
+        result = await db.execute(
+            select(DepartmentMember.id).where(
+                DepartmentMember.departmentId == department_id,
+                DepartmentMember.memberId == ctx.member.id,
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=403, detail="You can only view your own department")
 
 
 async def _enforce_department_scope(
@@ -268,7 +287,7 @@ async def get_department_meta(db: AsyncSession, ctx: MemberContext) -> Departmen
     members_result = await db.execute(
         select(Member.id, User.name, User.email)
         .join(User, User.id == Member.userId)
-        .where(Member.organizationId == ctx.organization.id)
+        .where(Member.organizationId == ctx.organization.id, Member.status == "ACTIVE")  # status: ACTIVE only
         .order_by(User.name.asc().nullslast(), User.email.asc())
     )
     departments_result = await db.execute(
