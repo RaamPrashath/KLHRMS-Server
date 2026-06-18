@@ -358,6 +358,12 @@ class MicrosoftGraphRepository:
             await self._db.flush()
             created = True
         else:
+            if member.status == "INACTIVE":
+                logger.warning(
+                    "Skipping deactivated member %s — manual deactivation takes precedence over sync",
+                    graph_user.email or graph_user.user_principal_name or member.id,
+                )
+                return user, member, created
             member_changed = False
             if member.roleId is None:
                 member.roleId = default_role_id

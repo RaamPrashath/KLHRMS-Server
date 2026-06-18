@@ -121,6 +121,14 @@ class EmployeeDeactivateResponse(BaseModel):
     status: str
 
 
+class EmployeeDeactivateImpactResponse(BaseModel):
+    member_id: str
+    department_head_count: int = 0
+    pending_leave_count: int = 0
+    project_count: int = 0
+    active_asset_count: int = 0
+
+
 # ─── Employee Detail ────────────────────────────────────────────────────────────
 
 

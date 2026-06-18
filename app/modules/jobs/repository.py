@@ -169,7 +169,7 @@ class JobRequisitionRepository:
         result = await self.db.execute(
             select(Member)
             .options(joinedload(Member.role), joinedload(Member.user))
-            .where(Member.organizationId == organization_id)
+            .where(Member.organizationId == organization_id, Member.status == "ACTIVE")  # status: ACTIVE only
         )
         members = list(result.unique().scalars().all())
         return [

@@ -160,7 +160,7 @@ async def _get_org_finance_approvers(db: AsyncSession, organization_id: str) -> 
     result = await db.execute(
         select(Member)
         .options(joinedload(Member.role), joinedload(Member.user))
-        .where(Member.organizationId == organization_id)
+        .where(Member.organizationId == organization_id, Member.status == "ACTIVE")  # status: ACTIVE only
     )
     members = result.unique().scalars().all()
     return [

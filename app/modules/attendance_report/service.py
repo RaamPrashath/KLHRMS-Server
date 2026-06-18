@@ -147,7 +147,7 @@ async def list_report_options(
     employee_query = (
         select(Member.id, User.name, User.email)
         .join(User, User.id == Member.userId)
-        .where(Member.organizationId == organization_id)
+        .where(Member.organizationId == organization_id, Member.status == "ACTIVE")  # status: ACTIVE only
     )
     if scope == "department" and actor_member_id:
         from app.models.department_member import DepartmentMember

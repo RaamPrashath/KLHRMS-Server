@@ -8,6 +8,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.employee.schema import (
+    EmployeeDeactivateImpactResponse,
     EmployeeDeletePreview,
     EmployeeDeleteResponse,
     EmployeeDeactivateResponse,
@@ -79,6 +80,29 @@ async def handle_deactivate_employee(
     db: AsyncSession,
 ) -> EmployeeDeactivateResponse:
     return await service.deactivate_employee(ctx.organization.id, member_id, db)
+
+
+async def handle_reactivate_employee(
+    ctx: MemberContext,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDeactivateResponse:
+    return await service.reactivate_employee(ctx.organization.id, member_id, db)
+
+
+async def handle_list_deactivated_employees(
+    ctx: MemberContext,
+    db: AsyncSession,
+) -> EmployeeListResponse:
+    return await service.list_deactivated_employees(ctx.organization.id, db)
+
+
+async def handle_get_deactivation_impact(
+    ctx: MemberContext,
+    member_id: str,
+    db: AsyncSession,
+) -> EmployeeDeactivateImpactResponse:
+    return await service.get_deactivation_impact(ctx.organization.id, member_id, db)
 
 
 async def handle_get_employee_detail(

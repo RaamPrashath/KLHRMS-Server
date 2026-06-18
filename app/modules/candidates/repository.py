@@ -292,7 +292,7 @@ class CandidatePipelineRepository:
             .options(contains_eager(Member.user))
             .outerjoin(DepartmentMember, DepartmentMember.memberId == Member.id)
             .outerjoin(Department, Department.id == DepartmentMember.departmentId)
-            .where(Member.organizationId == organization_id)
+            .where(Member.organizationId == organization_id, Member.status == "ACTIVE")  # status: ACTIVE only
             .group_by(Member.id, User.id)
             .order_by(User.name.asc().nullslast(), User.email.asc())
             .limit(limit)

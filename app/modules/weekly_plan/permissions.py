@@ -91,6 +91,11 @@ def require_weekly_plan_permission(action: str) -> Callable[..., WeeklyPlanAcces
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session not found or expired.",
             )
+        if member.status != "ACTIVE":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account has been deactivated.",
+            )
 
         organization = member.organization
         if organization is None:

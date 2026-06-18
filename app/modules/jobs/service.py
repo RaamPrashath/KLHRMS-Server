@@ -143,7 +143,7 @@ async def get_job_form_meta(
     members_result = await db.execute(
         select(Member.id, User.name, User.email)
         .join(User, User.id == Member.userId)
-        .where(Member.organizationId == organization_id)
+        .where(Member.organizationId == organization_id, Member.status == "ACTIVE")  # status: ACTIVE only
         .order_by(User.name.asc().nullslast(), User.email.asc())
     )
     departments_result = await db.execute(

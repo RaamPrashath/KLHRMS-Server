@@ -27,20 +27,24 @@ from fastapi import status
 from app.modules.employee.controller import (
     handle_deactivate_employee,
     handle_delete_employee,
+    handle_get_deactivation_impact,
     handle_get_employee_detail,
     handle_get_employee_direct_reports,
     handle_get_employee_group_memberships,
     handle_get_employee_manager_chain,
     handle_get_my_employee_profile,
     handle_list_departments,
+    handle_list_deactivated_employees,
     handle_list_employees,
     handle_list_roles,
     handle_preview_employee_delete,
+    handle_reactivate_employee,
     handle_refresh_employee_from_graph,
     handle_update_employee_details,
     handle_update_employee_role,
 )
 from app.modules.employee.schema import (
+    EmployeeDeactivateImpactResponse,
     EmployeeDeactivateResponse,
     EmployeeDeletePreview,
     EmployeeDeleteResponse,
@@ -71,6 +75,23 @@ async def list_employees(
     return await handle_list_employees(ctx, db)
 
 
+@router.get("/deactivated", response_model=EmployeeListResponse)
+async def list_deactivated_employees(
+    ctx: Annotated[MemberContext, Depends(require_permission("employees", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> EmployeeListResponse:
+    return await handle_list_deactivated_employees(ctx, db)
+
+
+@router.patch("/{member_id}/reactivate", response_model=EmployeeDeactivateResponse)
+async def reactivate_employee(
+    member_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("employees", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> EmployeeDeactivateResponse:
+    return await handle_reactivate_employee(ctx, member_id, db)
+
+
 @router.get("/departments", response_model=list[dict])
 async def list_departments(
     ctx: Annotated[MemberContext, Depends(require_permission("employees", "view"))],
@@ -94,6 +115,15 @@ async def preview_employee_delete(
     db: AsyncSession = Depends(get_db),
 ) -> EmployeeDeletePreview:
     return await handle_preview_employee_delete(ctx, member_id, db)
+
+
+@router.get("/{member_id}/deactivate-impact", response_model=EmployeeDeactivateImpactResponse)
+async def get_deactivation_impact(
+    member_id: str,
+    ctx: Annotated[MemberContext, Depends(require_permission("employees", "edit"))],
+    db: AsyncSession = Depends(get_db),
+) -> EmployeeDeactivateImpactResponse:
+    return await handle_get_deactivation_impact(ctx, member_id, db)
 
 
 @router.patch("/{member_id}/deactivate", response_model=EmployeeDeactivateResponse)
