@@ -77,13 +77,7 @@ class Settings(BaseSettings):
     )
 
     # ── Database ──────────────────────────────────────────
-    database_url: str = Field(
-        default=os.getenv(
-            "DATABASE_URL",
-            "postgresql+asyncpg://postgres:postgres@localhost:5432/hrms",
-        ),
-        alias="DATABASE_URL",
-    )
+    database_url: str = Field(alias="DATABASE_URL")
 
     # ── Better Auth ───────────────────────────────────────
     better_auth_url: str = Field(

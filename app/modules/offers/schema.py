@@ -356,6 +356,12 @@ class OfferJobPostingSummaryRead(BaseModel):
     requisitionId: str | None = None
 
 
+class OfferJobCompensationPreviewRead(BaseModel):
+    salaryMin: str = ""
+    salaryMax: str = ""
+    currency: str = ""
+
+
 class OfferCandidateSummaryRead(BaseModel):
     id: str
     firstName: str
@@ -395,6 +401,7 @@ class OfferStageWorkspaceRead(BaseModel):
     acceptedStage: OfferStageSummaryRead | None = None
     rejectedStage: OfferStageSummaryRead | None = None
     jobHasSalaryData: bool = False
+    jobCompensationPreview: OfferJobCompensationPreviewRead | None = None
 
 
 class OfferCandidateValidationRequest(BaseModel):
@@ -404,8 +411,21 @@ class OfferCandidateValidationRequest(BaseModel):
     expiresAt: datetime | None = None
 
 
+class OfferCandidateNameOverride(BaseModel):
+    applicationId: str = Field(min_length=1)
+    displayName: str = Field(min_length=1, max_length=160)
+
+    @field_validator("displayName")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Candidate name is required")
+        return normalized
+
+
 class OfferDispatchCreateRequest(OfferCandidateValidationRequest):
-    pass
+    candidateNameOverrides: list[OfferCandidateNameOverride] = Field(default_factory=list)
 
 
 class OfferDownloadCreateRequest(OfferCandidateValidationRequest):

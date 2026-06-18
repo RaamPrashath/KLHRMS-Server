@@ -93,6 +93,8 @@ async def list_holidays(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=500, alias="pageSize"),
 ) -> HolidayListResponse:
+    import time as _time
+    _t0 = _time.perf_counter()
     filters = HolidayListFilters(
         year=year,
         month=month,
@@ -100,7 +102,14 @@ async def list_holidays(
         page=page,
         page_size=page_size,
     )
-    return await handle_list_holidays(ctx, db, filters=filters)
+    result = await handle_list_holidays(ctx, db, filters=filters)
+    _t1 = _time.perf_counter()
+    import logging
+    logging.warning(
+        "[timing] route:list_holidays | year=%s month=%s | duration=%.1fms | items=%d",
+        year, month, (_t1 - _t0) * 1000, len(result.items),
+    )
+    return result
 
 
 @router.post("/holidays", response_model=HolidayResponse, status_code=status.HTTP_201_CREATED)
@@ -145,6 +154,8 @@ async def list_leave_requests(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=500),
 ) -> LeaveRequestListResponse:
+    import time as _time
+    _t0 = _time.perf_counter()
     filters = LeaveRequestFilters(
         status=status_filter,
         member_id=member_id,
@@ -155,7 +166,14 @@ async def list_leave_requests(
         page=page,
         page_size=page_size,
     )
-    return await handle_list_leave_requests(access, db, filters)
+    result = await handle_list_leave_requests(access, db, filters)
+    _t1 = _time.perf_counter()
+    import logging
+    logging.warning(
+        "[timing] route:list_leave_requests | status=%s from=%s to=%s | duration=%.1fms | items=%d",
+        status_filter, from_date, to_date, (_t1 - _t0) * 1000, len(result.items),
+    )
+    return result
 
 
 @router.get("/requests/{leave_request_id}", response_model=LeaveRequestResponse, status_code=status.HTTP_200_OK)

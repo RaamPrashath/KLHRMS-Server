@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import secrets
+from copy import deepcopy
 from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any
@@ -51,6 +52,7 @@ from app.modules.offers.schema import (
     OfferDispatchCreateResponse,
     OfferDownloadCreateRequest,
     OfferEligibilityRead,
+    OfferJobCompensationPreviewRead,
     OfferJobPostingSummaryRead,
     OfferLetterRead,
     OfferStageSummaryRead,
@@ -224,6 +226,24 @@ def _job_has_salary_data(requisition: JobRequisition | None) -> bool:
     )
 
 
+def _format_compensation_preview_amount(value: float | int | None) -> str:
+    if value is None:
+        return ""
+    if float(value).is_integer():
+        return f"{int(value):,}"
+    return f"{float(value):,.2f}"
+
+
+def _job_compensation_preview(requisition: JobRequisition | None) -> OfferJobCompensationPreviewRead | None:
+    if not _job_has_salary_data(requisition) or requisition is None:
+        return None
+    return OfferJobCompensationPreviewRead(
+        salaryMin=_format_compensation_preview_amount(requisition.salaryMin),
+        salaryMax=_format_compensation_preview_amount(requisition.salaryMax),
+        currency=(requisition.currency or "").strip(),
+    )
+
+
 def _candidate_eligibility(
     application: CandidateApplication,
     latest_offer: OfferLetter | None,
@@ -308,6 +328,29 @@ def _template_snapshot(
     }
 
 
+def _split_candidate_display_name(display_name: str) -> tuple[str, str]:
+    parts = " ".join(display_name.split()).split(" ", 1)
+    first_name = parts[0] if parts else ""
+    last_name = parts[1] if len(parts) > 1 else ""
+    return first_name, last_name
+
+
+def _snapshot_with_candidate_name_override(
+    snapshot: dict[str, Any],
+    display_name: str | None,
+) -> dict[str, Any]:
+    if not display_name:
+        return snapshot
+    first_name, last_name = _split_candidate_display_name(display_name)
+    next_snapshot = deepcopy(snapshot)
+    next_snapshot["candidateNameOverride"] = {
+        "displayName": display_name,
+        "firstName": first_name,
+        "lastName": last_name,
+    }
+    return next_snapshot
+
+
 async def _get_template_and_category(
     repository: OfferRepository,
     organization_id: str,
@@ -375,6 +418,7 @@ async def get_workspace(
         acceptedStage=_stage_summary(accepted_stage),
         rejectedStage=_stage_summary(rejected_stage),
         jobHasSalaryData=job_has_salary_data,
+        jobCompensationPreview=_job_compensation_preview(job.requisition),
     )
 
 
@@ -930,6 +974,11 @@ async def create_dispatch_batch(
     await repository.add(batch)
     await repository.withdraw_sent_offers_for_applications(organization_id, valid_ids)
     snapshot = _template_snapshot(template, category)
+    name_overrides = {
+        item.applicationId: item.displayName
+        for item in body.candidateNameOverrides
+        if item.applicationId in valid_ids
+    }
     offer_letters = [
         OfferLetter(
             organizationId=organization_id,
@@ -937,7 +986,10 @@ async def create_dispatch_batch(
             batchId=batch.id,
             templateId=template.id,
             templateCategoryId=category.id,
-            templateSnapshotJson=snapshot,
+            templateSnapshotJson=_snapshot_with_candidate_name_override(
+                snapshot,
+                name_overrides.get(application.id),
+            ),
             stageId=stage.id,
             createdByMemberId=actor_member_id,
             status=OfferStatus.DRAFT,

@@ -73,8 +73,7 @@ def render_offer_html(
     organization: Organization,
     generated_date: datetime,
 ) -> str:
-    first_name = (candidate.firstName or "").strip()
-    last_name = (candidate.lastName or "").strip()
+    first_name, last_name = _candidate_render_name(candidate, template_snapshot)
     if not first_name:
         raise OfferRenderError("Candidate first name is missing")
     if not last_name:
@@ -278,6 +277,16 @@ def _repair_footer_asset_html(html: str, template: dict[str, Any]) -> str:
 def _logo_html(logo_url: str) -> str:
     src = logo_url.strip() or DEFAULT_KOVAN_LOGO_SVG
     return f'<img class="offer-letter-logo" src="{escape(src, quote=True)}" alt="Kovan Labs" />'
+
+
+def _candidate_render_name(candidate: Candidate, template_snapshot: dict[str, Any]) -> tuple[str, str]:
+    override = template_snapshot.get("candidateNameOverride")
+    if isinstance(override, dict):
+        first_name = str(override.get("firstName") or "").strip()
+        last_name = str(override.get("lastName") or "").strip()
+        if first_name or last_name:
+            return first_name, last_name
+    return (candidate.firstName or "").strip(), (candidate.lastName or "").strip()
 
 
 def _html_text(value: str) -> str:
@@ -591,9 +600,11 @@ def _build_replacements(
     salary_max = requisition.salaryMax if requisition is not None else offer_letter.salary
     currency = (requisition.currency if requisition is not None else offer_letter.currency) or offer_letter.currency
 
+    first_name, last_name = _candidate_render_name(candidate, offer_letter.templateSnapshotJson or {})
+
     return {
-        "candidate.firstName": escape((candidate.firstName or "").strip()),
-        "candidate.lastName": escape((candidate.lastName or "").strip()),
+        "candidate.firstName": escape(first_name),
+        "candidate.lastName": escape(last_name),
         "offer.generatedDate": escape(generated_date.strftime("%d %b %Y")),
         "job.salaryMin": escape(_format_amount(salary_min)),
         "job.salaryMax": escape(_format_amount(salary_max)),

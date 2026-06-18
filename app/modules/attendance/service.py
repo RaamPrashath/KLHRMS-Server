@@ -1134,9 +1134,13 @@ async def list_attendance(
 
     Returns tuples of (AttendanceRecord, employee_name).
     """
+    import time as _time
+
     from app.models.department_member import DepartmentMember
     from app.models.member import Member
     from app.models.user import User
+
+    _t0 = _time.perf_counter()
 
     query = (
         select(AttendanceRecord, User.name, User.email)
@@ -1183,20 +1187,46 @@ async def list_attendance(
     if status_filter is not None:
         query = query.where(AttendanceRecord.status == status_filter)
 
+    _t_query_built = _time.perf_counter()
+
     total_result = await db.execute(
         select(func.count()).select_from(query.order_by(None).subquery())
     )
     total = total_result.scalar_one()
+
+    _t_count_done = _time.perf_counter()
+
     rows_result = await db.execute(
         query.order_by(AttendanceRecord.date.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
     rows = rows_result.all()
-    return [
+
+    _t_rows_done = _time.perf_counter()
+
+    result = [
         (record, _display_employee_name(name, email, record.employeeId))
         for record, name, email in rows
-    ], total
+    ]
+
+    _t_end = _time.perf_counter()
+
+    import logging
+    logging.warning(
+        "[timing] list_attendance | scope=%s date_from=%s date_to=%s page=%s page_size=%s | "
+        "query_build=%.1fms count_query=%.1fms rows_query=%.1fms name_map=%.1fms total=%.1fms | "
+        "total_rows=%d returned=%d",
+        scope, date_from, date_to, page, page_size,
+        (_t_query_built - _t0) * 1000,
+        (_t_count_done - _t_query_built) * 1000,
+        (_t_rows_done - _t_count_done) * 1000,
+        (_t_end - _t_rows_done) * 1000,
+        (_t_end - _t0) * 1000,
+        total, len(result),
+    )
+
+    return result, total
 
 
 async def get_attendance_day(

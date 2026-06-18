@@ -1,13 +1,8 @@
-import os
-
-from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.shared.config import normalize_database_url
+from app.shared.config import get_settings
 
-load_dotenv()
-
-DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", ""))
+DATABASE_URL = get_settings().database_url
 if DATABASE_URL.startswith("postgresql+psycopg2://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
 elif DATABASE_URL.startswith("postgresql://"):
