@@ -25,7 +25,7 @@ from app.modules.microsoft_graph.schema import (
 from app.shared.config import get_settings
 
 logger = logging.getLogger("klhrms.microsoft.graph.service")
-MASKED_CREDENTIAL = "xxxx"
+MASKED_CREDENTIAL = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
 MANAGER_CHAIN_MAX_DEPTH = 12
 

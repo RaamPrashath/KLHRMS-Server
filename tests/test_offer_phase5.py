@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import types
 from datetime import UTC, datetime
+from io import BytesIO
 from types import SimpleNamespace
 
 import httpx
@@ -109,11 +110,101 @@ def test_render_footer_uses_compact_pdf_spacing() -> None:
     )
 
     assert ".offer-content footer p { margin: 0; line-height: 19px; }" in html
-    assert ".offer-signature-slot { grid-column: 1; grid-row: 1; margin: 0 0 12px;" in html
+    assert ".offer-content footer.offer-footer-pinned { position: absolute;" in html
+    assert ".offer-signature-slot { grid-column: 1; grid-row: 1; margin: 0 0 16px;" in html
     assert ".offer-signature-slot img { display: block; max-width: 128px; max-height: 80px; object-fit: contain; margin: 0; }" in html
+    assert '<p class="offer-signature-closing">Sincerely,</p>' in html
+    assert ".offer-signature-closing { margin: 0; font-weight: 400; }" in html
     assert ".offer-signature-name { margin: 0; font-weight: 600; }" in html
     assert ".offer-footer-address p { margin: 0; line-height: 19px; }" in html
     assert ".offer-content .offer-footer-website" in html
+
+
+def test_render_footer_repairs_legacy_stacked_footer_layout() -> None:
+    html = render_offer_html(
+        template_snapshot={
+            "template": {
+                "footerHtml": (
+                    '<div class="offer-signature-slot"><img src="https://cdn.example.com/sign.png" alt=""><p class="offer-signature-name">(Mouniesh)</p><p>Intern</p></div>'
+                    "<p>Kovan Technology Labs India Private Limited</p>"
+                    "<p>64 - Sri Lakshmi Nagar</p>"
+                    "<p>Coimbatore</p>"
+                    '<a href="http://www.kovanlabs.com">www.kovanlabs.com</a>'
+                ),
+                "websiteUrl": "http://www.kovanlabs.com",
+            },
+            "category": {"id": "category-1", "name": "General", "slug": "general"},
+            "sections": [
+                {
+                    "sectionKey": "opening",
+                    "sectionName": "Opening",
+                    "order": 1,
+                    "html": "<p>Hello {{ candidate.firstName }}</p>",
+                }
+            ],
+        },
+        **_render_defaults(),
+    )
+
+    assert '<div class="offer-letter-footer">' in html
+    assert '<p class="offer-signature-closing">Sincerely,</p><img src="https://cdn.example.com/sign.png"' in html
+    assert '<div class="offer-footer-address"><p>Kovan Technology Labs India Private Limited</p><p>64 - Sri Lakshmi Nagar</p><p>Coimbatore</p></div>' in html
+    assert '<a class="offer-footer-website" href="http://www.kovanlabs.com">www.kovanlabs.com</a>' in html
+
+
+def test_render_footer_repairs_malformed_footer_wrapper() -> None:
+    html = render_offer_html(
+        template_snapshot={
+            "template": {
+                "footerHtml": (
+                    '<div class="offer-letter-footer">'
+                    '<div class="offer-signature-slot"><img src="https://cdn.example.com/sign.png" alt=""><p class="offer-signature-name">(Mouniesh)</p><p>Intern</p></div>'
+                    "<p>Kovan Technology Labs India Private Limited</p>"
+                    "<p>64 - Sri Lakshmi Nagar</p>"
+                    '<a href="http://www.kovanlabs.com">www.kovanlabs.com</a>'
+                    "</div>"
+                ),
+                "websiteUrl": "http://www.kovanlabs.com",
+            },
+            "category": {"id": "category-1", "name": "General", "slug": "general"},
+            "sections": [
+                {
+                    "sectionKey": "opening",
+                    "sectionName": "Opening",
+                    "order": 1,
+                    "html": "<p>Hello {{ candidate.firstName }}</p>",
+                }
+            ],
+        },
+        **_render_defaults(),
+    )
+
+    assert '<div class="offer-footer-address"><p>Kovan Technology Labs India Private Limited</p><p>64 - Sri Lakshmi Nagar</p></div>' in html
+    assert '<a class="offer-footer-website" href="http://www.kovanlabs.com">www.kovanlabs.com</a>' in html
+
+
+def test_render_offer_docx_keeps_footer_address_lines_compact() -> None:
+    docx = render_offer_docx(
+        "<html><body>"
+        "<p>Hello Asha</p>"
+        "<footer><div class=\"offer-letter-footer\">"
+        "<div class=\"offer-signature-slot\"><p class=\"offer-signature-closing\">Sincerely,</p><p class=\"offer-signature-name\">(Asha Rao)</p><p>HR</p></div>"
+        "<div class=\"offer-footer-address\"><p>Kovan Technology Labs India Private Limited</p><p>64 - Sri Lakshmi Nagar</p><p>Coimbatore</p></div>"
+        "</div></footer>"
+        "</body></html>"
+    )
+
+    from docx import Document
+
+    document = Document(BytesIO(docx))
+    texts = [paragraph.text for paragraph in document.paragraphs]
+    assert "" not in texts
+    address_start = texts.index("Kovan Technology Labs India Private Limited")
+    assert texts[address_start : address_start + 3] == [
+        "Kovan Technology Labs India Private Limited",
+        "64 - Sri Lakshmi Nagar",
+        "Coimbatore",
+    ]
 
 
 def test_render_offer_docx_from_html() -> None:
@@ -162,6 +253,7 @@ async def test_pdf_renderer_uses_pixel_matched_playwright_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
+    evaluate_calls: list[str] = []
 
     class FakePage:
         async def emulate_media(self, **kwargs: object) -> None:
@@ -172,7 +264,7 @@ async def test_pdf_renderer_uses_pixel_matched_playwright_settings(
             calls["wait_until"] = wait_until
 
         async def evaluate(self, script: str) -> None:
-            calls["evaluate"] = script
+            evaluate_calls.append(script)
 
         async def pdf(self, **kwargs: object) -> bytes:
             calls["pdf"] = kwargs
@@ -215,7 +307,8 @@ async def test_pdf_renderer_uses_pixel_matched_playwright_settings(
     }
     assert calls["media"] == {"media": "screen"}
     assert calls["wait_until"] == "networkidle"
-    assert "document.fonts.ready" in str(calls["evaluate"])
+    assert any("document.fonts.ready" in script for script in evaluate_calls)
+    assert any("offer-footer-pinned" in script for script in evaluate_calls)
     assert calls["pdf"] == {
         "width": "794px",
         "height": "1123px",
