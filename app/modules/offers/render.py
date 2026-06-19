@@ -38,6 +38,7 @@ BRAND_GAP_FROM_CORNER_MARK_PX = 20
 LOGO_MAX_HEIGHT_PX = 56
 CONTENT_WIDTH_PX = A4_WIDTH_PX - PAGE_PADDING_X_PX * 2
 CONTENT_HEIGHT_PX = A4_HEIGHT_PX - PAGE_PADDING_TOP_PX - PAGE_PADDING_BOTTOM_PX
+FOOTER_PIN_THRESHOLD_PX = CONTENT_HEIGHT_PX * 0.6
 HEADER_BRAND_LEFT_PX = (
     CORNER_MARK_LEFT_PX
     + CORNER_MARK_WIDTH_PX
@@ -162,7 +163,7 @@ def render_offer_html(
       z-index: 2;
     }}
     article:last-child {{ page-break-after: auto; }}
-    .offer-content {{ width: {CONTENT_WIDTH_PX}px; min-height: {CONTENT_HEIGHT_PX}px; }}
+    .offer-content {{ position: relative; width: {CONTENT_WIDTH_PX}px; min-height: {CONTENT_HEIGHT_PX}px; }}
     .offer-page-corner-mark {{
       position: fixed;
       top: {CORNER_MARK_TOP_PX}px;
@@ -194,6 +195,7 @@ def render_offer_html(
     .offer-content th, .offer-content td {{ border: 1px solid #e5e5ea; padding: 8px; vertical-align: top; }}
     .offer-content th {{ background: #f2f2f7; font-weight: 600; }}
     .offer-content footer {{ margin-top: 22px; padding-top: 0; color: #1d1d1f; font-size: 13px; line-height: 19px; page-break-inside: avoid; break-inside: avoid; }}
+    .offer-content footer.offer-footer-pinned {{ position: absolute; left: 0; right: 0; bottom: 0; margin-top: 0; }}
     .offer-content footer p {{ margin: 0; line-height: 19px; }}
     .offer-letter-footer {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 56px; align-items: end; page-break-inside: avoid; break-inside: avoid; }}
     .offer-letter-header {{ position: relative; min-height: 116px; margin-bottom: 24px; }}
@@ -202,9 +204,10 @@ def render_offer_html(
     .offer-letter-header-meta {{ position: absolute; right: 0; top: 48px; text-align: right; font-size: 13px; line-height: 24px; }}
     .offer-letter-header-meta p {{ margin: 0 0 4px; }}
     .offer-letter-header h1 {{ position: absolute; left: 0; right: 0; bottom: 0; margin: 0; text-align: center; white-space: nowrap; font-size: 16px; line-height: 22px; font-weight: 600; }}
-    .offer-signature-slot {{ grid-column: 1; grid-row: 1; margin: 0 0 12px; page-break-inside: avoid; break-inside: avoid; }}
+    .offer-signature-slot {{ grid-column: 1; grid-row: 1; margin: 0 0 16px; page-break-inside: avoid; break-inside: avoid; }}
     .offer-signature-slot img {{ display: block; max-width: 128px; max-height: 80px; object-fit: contain; margin: 0; }}
     .offer-signature-slot p {{ margin: 0; line-height: 18px; }}
+    .offer-signature-closing {{ margin: 0; font-weight: 400; }}
     .offer-signature-name {{ margin: 0; font-weight: 600; }}
     .offer-footer-address {{ grid-column: 1; grid-row: 2; margin: 0; }}
     .offer-footer-address p {{ margin: 0; line-height: 19px; }}
@@ -258,20 +261,110 @@ def _repair_header_asset_html(html: str, template: dict[str, Any]) -> str:
 
 
 def _repair_footer_asset_html(html: str, template: dict[str, Any]) -> str:
+    html = _ensure_footer_closing_html(html)
     signature_url = str(template.get("signatureUrl") or "").strip()
-    if not signature_url or "<img" in html.lower():
+    if signature_url and "<img" not in html.lower():
+        image = f'<img src="{escape(signature_url, quote=True)}" alt="" />'
+        repaired = re.sub(
+            r'(<p\b[^>]*class=["\'][^"\']*\boffer-signature-closing\b[^"\']*["\'][^>]*>\s*Sincerely,\s*</p>)',
+            rf"\1{image}",
+            html,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        html = (
+            repaired
+            if repaired != html
+            else (
+                '<div class="offer-signature-slot">'
+                '<p class="offer-signature-closing">Sincerely,</p>'
+                f"{image}</div>{html}"
+            )
+        )
+    return _normalize_footer_layout_html(html, template)
+
+
+def _ensure_footer_closing_html(html: str) -> str:
+    if re.search(r'class=["\'][^"\']*\boffer-signature-closing\b', html, flags=re.IGNORECASE):
         return html
-    image = f'<img src="{escape(signature_url, quote=True)}" alt="" />'
-    repaired = re.sub(
+    return re.sub(
         r'(<div\b[^>]*class=["\'][^"\']*\boffer-signature-slot\b[^"\']*["\'][^>]*>)',
-        rf"\1{image}",
+        r'\1<p class="offer-signature-closing">Sincerely,</p>',
         html,
         count=1,
         flags=re.IGNORECASE,
     )
-    if repaired != html:
-        return repaired
-    return f'<div class="offer-signature-slot">{image}</div>{html}'
+
+
+def _normalize_footer_layout_html(html: str, template: dict[str, Any]) -> str:
+    website_url = str(template.get("websiteUrl") or "").strip()
+    complete_layout = (
+        re.search(r'class=["\'][^"\']*\boffer-letter-footer\b', html, flags=re.IGNORECASE)
+        and re.search(r'class=["\'][^"\']*\boffer-footer-address\b', html, flags=re.IGNORECASE)
+        and (
+            re.search(r'class=["\'][^"\']*\boffer-footer-website\b', html, flags=re.IGNORECASE)
+            or not website_url
+        )
+    )
+    if complete_layout:
+        return html
+
+    layout_match = re.search(
+        r'^\s*<div\b[^>]*class=["\'][^"\']*\boffer-letter-footer\b[^"\']*["\'][^>]*>([\s\S]*)</div>\s*$',
+        html,
+        flags=re.IGNORECASE,
+    )
+    source_html = layout_match.group(1) if layout_match else html
+
+    signature_match = re.search(
+        r'<div\b[^>]*class=["\'][^"\']*\boffer-signature-slot\b[^"\']*["\'][^>]*>[\s\S]*?</div>',
+        source_html,
+        flags=re.IGNORECASE,
+    )
+    if not signature_match:
+        return html
+
+    signature_html = signature_match.group(0)
+    remainder = source_html[: signature_match.start()] + source_html[signature_match.end() :]
+
+    address_match = re.search(
+        r'<div\b[^>]*class=["\'][^"\']*\boffer-footer-address\b[^"\']*["\'][^>]*>([\s\S]*?)</div>',
+        remainder,
+        flags=re.IGNORECASE,
+    )
+    if address_match:
+        address_html = address_match.group(1).strip()
+        remainder = remainder[: address_match.start()] + remainder[address_match.end() :]
+    else:
+        address_html = ""
+
+    website_matches = list(re.finditer(r'<a\b[^>]*>[\s\S]*?</a>', remainder, flags=re.IGNORECASE))
+    website_html = ""
+    if website_matches:
+        website_match = website_matches[-1]
+        website_html = website_match.group(0)
+        remainder = remainder[: website_match.start()] + remainder[website_match.end() :]
+        if not re.search(r'class=["\'][^"\']*\boffer-footer-website\b', website_html, flags=re.IGNORECASE):
+            website_html = re.sub(r'<a\b', '<a class="offer-footer-website"', website_html, count=1, flags=re.IGNORECASE)
+    else:
+        if website_url:
+            website_html = (
+                f'<a class="offer-footer-website" href="{escape(website_url, quote=True)}">'
+                f"{escape(re.sub(r'^https?://', '', website_url))}</a>"
+            )
+
+    if not address_html:
+        address_html = remainder.strip()
+
+    return "".join(
+        [
+            '<div class="offer-letter-footer">',
+            signature_html,
+            f'<div class="offer-footer-address">{address_html}</div>' if address_html else "",
+            website_html,
+            "</div>",
+        ]
+    )
 
 
 def _logo_html(logo_url: str) -> str:
@@ -503,6 +596,7 @@ async def _render_offer_pdf_with_playwright(html: str) -> bytes:
         await page.emulate_media(media="screen")
         await page.set_content(html, wait_until="networkidle")
         await _wait_for_stable_offer_pdf_assets(page)
+        await _apply_offer_pdf_footer_layout(page)
         return await page.pdf(
             width=f"{A4_WIDTH_PX}px",
             height=f"{A4_HEIGHT_PX}px",
@@ -548,6 +642,41 @@ async def _wait_for_stable_offer_pdf_assets(page: Any) -> None:
     if failed_images:
         failed = ", ".join(str(source) for source in failed_images[:3])
         raise RuntimeError(f"Offer PDF image(s) failed to load: {failed}")
+
+
+async def _apply_offer_pdf_footer_layout(page: Any) -> None:
+    await page.evaluate(
+        f"""() => {{
+          const contentHeight = {CONTENT_HEIGHT_PX};
+          const threshold = {FOOTER_PIN_THRESHOLD_PX};
+          for (const article of Array.from(document.querySelectorAll('article'))) {{
+            const content = article.querySelector('.offer-content');
+            const footer = content?.querySelector('footer');
+            if (!content || !footer) continue;
+
+            footer.classList.remove('offer-footer-pinned');
+            const footerHeight = footer.getBoundingClientRect().height;
+            const bodyBottom = Array.from(content.children)
+              .filter((child) => child !== footer)
+              .reduce((bottom, child) => Math.max(bottom, child.offsetTop + child.offsetHeight), 0);
+
+            if (bodyBottom > 0 && bodyBottom <= threshold) continue;
+
+            if (bodyBottom <= contentHeight - footerHeight) {{
+              footer.classList.add('offer-footer-pinned');
+              continue;
+            }}
+
+            const nextArticle = article.cloneNode(false);
+            const nextContent = content.cloneNode(false);
+            footer.remove();
+            footer.classList.add('offer-footer-pinned');
+            nextContent.appendChild(footer);
+            nextArticle.appendChild(nextContent);
+            article.after(nextArticle);
+          }}
+        }}"""
+    )
 
 
 def _render_offer_pdf_in_windows_thread(html: str) -> bytes:

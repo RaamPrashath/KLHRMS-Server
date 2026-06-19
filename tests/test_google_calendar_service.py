@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -43,6 +44,14 @@ class FakeAsyncClient:
     async def post(self, url: str, **kwargs: Any) -> FakeResponse:
         FakeAsyncClient.captured_post = {"url": url, **kwargs}
         return FakeAsyncClient.response
+
+
+class FakeDb:
+    def add(self, item: Any) -> None:
+        pass
+
+    async def flush(self) -> None:
+        pass
 
 
 def _service() -> GoogleCalendarService:
@@ -124,3 +133,29 @@ def test_calendar_scope_accepts_full_calendar_or_events_scope() -> None:
     assert service._has_calendar_scope(Account(scope=calendar_service.CALENDAR_SCOPE))
     assert service._has_calendar_scope(Account(scope=calendar_service.CALENDAR_EVENTS_SCOPE))
     assert not service._has_calendar_scope(Account(scope="openid,email,profile"))
+
+
+@pytest.mark.asyncio
+async def test_refresh_access_token_invalid_grant_asks_user_to_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = GoogleCalendarService.__new__(GoogleCalendarService)
+    service.db = FakeDb()
+    service.settings = SimpleNamespace(
+        google_client_id="client-id",
+        google_client_secret="client-secret",
+    )
+    monkeypatch.setattr(calendar_service.httpx, "AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.response = FakeResponse(
+        400,
+        {
+            "error": "invalid_grant",
+            "error_description": "Token has been expired or revoked.",
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._refresh_access_token(Account(refreshToken="refresh-token"))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == calendar_service.GOOGLE_RECONNECT_REQUIRED_MESSAGE

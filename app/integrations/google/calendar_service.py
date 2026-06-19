@@ -16,6 +16,9 @@ CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 CALENDAR_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+GOOGLE_RECONNECT_REQUIRED_MESSAGE = (
+    "Reconnect Google Calendar and try again. Your Google session has expired or was revoked."
+)
 
 
 @dataclass(frozen=True)
@@ -197,6 +200,8 @@ class GoogleCalendarService:
                 },
             )
         if response.status_code >= 400:
+            if self._is_invalid_grant(response):
+                raise HTTPException(status_code=400, detail=GOOGLE_RECONNECT_REQUIRED_MESSAGE)
             raise HTTPException(
                 status_code=502,
                 detail=self._google_error_message(response, "Google token refresh failed"),
@@ -252,3 +257,10 @@ class GoogleCalendarService:
                 return f"{error}: {desc}"
             return error
         return fallback
+
+    def _is_invalid_grant(self, response: httpx.Response) -> bool:
+        try:
+            payload = response.json()
+        except ValueError:
+            return False
+        return payload.get("error") == "invalid_grant"

@@ -202,9 +202,9 @@ async def test_save_settings_persists_credentials_and_commits() -> None:
         "secret-1",
     )
     assert fake_db.committed is True
-    assert response.tenant_id == "xxxx"
-    assert response.client_id == "xxxx"
-    assert response.client_secret == "xxxx"
+    assert response.tenant_id == "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    assert response.client_id == "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    assert response.client_secret == "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
     assert response.is_enabled is True
 
 
@@ -224,9 +224,9 @@ async def test_get_settings_masks_persisted_credentials() -> None:
 
     response = await service.get_settings("org-1")
 
-    assert response.tenant_id == "xxxx"
-    assert response.client_id == "xxxx"
-    assert response.client_secret == "xxxx"
+    assert response.tenant_id == "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    assert response.client_id == "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    assert response.client_secret == "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
 
 @pytest.mark.asyncio
@@ -243,7 +243,7 @@ async def test_save_settings_treats_masked_values_as_unchanged() -> None:
         )
     )
 
-    response = await service.save_settings("org-1", "xxxx", "xxxx", "xxxx")
+    response = await service.save_settings("org-1", "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
 
     assert fake_repo.upsert_settings_args == (
         "org-1",
@@ -252,9 +252,9 @@ async def test_save_settings_treats_masked_values_as_unchanged() -> None:
         "secret-1",
     )
     assert fake_db.committed is True
-    assert response.tenant_id == "xxxx"
-    assert response.client_id == "xxxx"
-    assert response.client_secret == "xxxx"
+    assert response.tenant_id == "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    assert response.client_id == "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    assert response.client_secret == "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
 
 @pytest.mark.asyncio

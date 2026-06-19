@@ -2413,25 +2413,42 @@ async def move_interview_assignment(
     if new_interviewer.user is None or not new_interviewer.user.email:
         raise HTTPException(status_code=400, detail="New interviewer email is missing")
 
-    # Find current primary interviewer and remove them
+    # Locate any existing participant row for the incoming interviewer (e.g. a
+    # backup or previously-rejected interviewer). The (eventId, memberId) unique
+    # constraint forbids inserting a duplicate, so we must update in place.
+    existing_for_new = next(
+        (p for p in (event.participants or []) if p.memberId == new_interviewer.id),
+        None,
+    )
+
+    # Find current primary interviewer (excluding the incoming one — if the user
+    # picked the same member, there's nothing to swap).
     old_primary = None
     for p in (event.participants or []):
         if p.role == "INTERVIEWER" or p.role is None:
+            if p is existing_for_new:
+                continue
             old_primary = p
             break
 
     if old_primary is not None:
         await _delete_event_participants(db, event, [old_primary])
 
-    # Add new primary interviewer with PENDING_ACCEPTANCE
-    new_participant = StageEventParticipant(
-        eventId=event.id,
-        memberId=new_interviewer.id,
-        role="INTERVIEWER",
-        isBackup=False,
-        approvalStatus="PENDING_ACCEPTANCE",
-    )
-    await repository.add_stage_event_participant(new_participant)
+    if existing_for_new is not None:
+        existing_for_new.role = "INTERVIEWER"
+        existing_for_new.isBackup = False
+        existing_for_new.approvalStatus = "PENDING_ACCEPTANCE"
+        existing_for_new.rejectedAt = None
+        existing_for_new.scheduledTime = None
+    else:
+        new_participant = StageEventParticipant(
+            eventId=event.id,
+            memberId=new_interviewer.id,
+            role="INTERVIEWER",
+            isBackup=False,
+            approvalStatus="PENDING_ACCEPTANCE",
+        )
+        await repository.add_stage_event_participant(new_participant)
 
     candidate_name = _candidate_display_name(event.application)
     interviewer_name = new_interviewer.user.name or new_interviewer.user.email
@@ -2636,10 +2653,6 @@ async def reject_interview(
             raise HTTPException(status_code=400, detail="Select an interviewer to reassign")
         if new_member_id == member_id:
             raise HTTPException(status_code=400, detail="Cannot reassign to the rejecting interviewer")
-        if new_member_id not in team_member_ids:
-            raise HTTPException(status_code=400, detail="Selected interviewer is not in this interview team")
-        if new_member_id in rejected_member_ids:
-            raise HTTPException(status_code=400, detail="Selected interviewer has already rejected this interview")
     else:
         available_member_ids = [
             mid for mid in team_member_ids
